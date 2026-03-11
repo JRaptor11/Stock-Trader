@@ -2,13 +2,46 @@
 
 ![Python](https://img.shields.io/badge/python-3.10+-blue)
 ![FastAPI](https://img.shields.io/badge/framework-FastAPI-green)
+![Trading API](https://img.shields.io/badge/API-Alpaca-orange)
+![Paper Trading](https://img.shields.io/badge/trading-paper--mode-blue)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
-A modular algorithmic trading system built with FastAPI and Alpaca that performs real-time market data streaming, strategy-based signal evaluation, and automated paper trading with built-in risk management and runtime configuration via API endpoints.
+A modular algorithmic trading system built with **FastAPI** and the **Alpaca Trading API** that performs real-time market data streaming, evaluates trading signals through a **confidence-weighted strategy engine**, and executes automated paper trades with built-in risk management and monitoring.
+
+The system emphasizes **reliability, observability, and modular architecture**, making it suitable as a foundation for experimenting with algorithmic trading strategies and distributed trading system design.
 
 ## Architecture Overview
 
 The system consists of a FastAPI backend, a threaded Alpaca market data stream, a modular strategy engine for evaluating trading signals, and background monitoring services that enforce risk management rules and system health checks.
+
+---
+
+## Design Principles
+
+This project was built with several core engineering principles:
+
+### Reliability
+The system is designed to run continuously while maintaining safe behavior under unexpected conditions.
+
+Key mechanisms include:
+
+- crash-protected thread execution
+- automatic stream reconnection
+- heartbeat monitoring for background services
+- graceful shutdown handling
+- resource usage monitoring
+
+### Modularity
+Trading strategies are implemented as independent components.  
+New strategies can be added without modifying the core trading engine.
+
+### Observability
+The system exposes detailed runtime state through:
+
+- monitoring endpoints
+- structured logging
+- trade decision logging
+- diagnostic routes
 
 ---
 
@@ -25,7 +58,7 @@ The system consists of a FastAPI backend, a threaded Alpaca market data stream, 
 │                         FastAPI App                         │
 │                     (lifespan startup)                      │
 │                                                             │
-│          Routers: /production /auth /test /config           │
+│            Routers: admin / auth / dev / public             │
 │                                                             │
 │  ┌───────────────────────┐  ┌────────────────────────────┐  │
 │  │    Strategy Engine    │  │    Background Services     │  │
@@ -59,7 +92,32 @@ The system consists of a FastAPI backend, a threaded Alpaca market data stream, 
 
 This project is for educational and portfolio purposes only. It is not financial advice and should not be used for live trading without proper testing and risk evaluation.
 
+---
 
+## Key Components
+
+### FastAPI Application
+Provides the HTTP interface for monitoring, configuration, and administrative control.
+
+### Threaded Market Data Stream
+A dedicated Alpaca websocket stream processes live trade data and feeds it into the strategy engine.
+
+### Strategy Engine
+Evaluates market conditions using multiple strategies and produces a confidence-based trading signal.
+
+### Background Services
+Several monitoring services run continuously:
+
+- Position tracking
+- Account balance monitoring
+- Market hours tracking
+- Performance monitoring
+
+### Alert System
+Important events trigger notifications through:
+
+- Email alerts
+- Telegram bot integration
 
 ---
 
@@ -67,51 +125,32 @@ This project is for educational and portfolio purposes only. It is not financial
 
 ## Features
 
-
-
-- FastAPI-based backend with structured startup/shutdown lifecycle  
-
-- Alpaca trading integration (paper trading mode)  
-
-- Threaded market data streaming  
-
-- Modular strategy engine with confidence scoring  
-
-- Risk management fail-safes and trade rate limits  
-
-- Runtime configuration management via API routes  
-
-- Telegram bot integration for alerts and commands  
-
-- Email alerts for important events  
-
-- Trade logging and system lifecycle tracking  
+- FastAPI backend with structured startup and shutdown lifecycle  
+- Real-time Alpaca market data streaming  
+- Modular strategy engine with confidence-based signal evaluation  
+- Adaptive strategy weighting based on market volatility  
+- Automated paper trading with order reconciliation protection  
+- Built-in risk management and fail-safe protections  
+- Runtime configuration updates via API endpoints  
+- Background monitoring services for positions, balances, and system health  
+- Email and Telegram alert integration  
+- Trade logging and lifecycle event tracking
 
 
 
 ---
 
-
-
 ## Technology Stack
 
+Core technologies used in the system:
 
-
-- Python
-
-- FastAPI
-
-- Alpaca Trading API
-
-- AsyncIO
-
-- Threading
-
-- REST API design
-
-- Environment-based configuration
-
-
+- **Python** — primary programming language
+- **FastAPI** — high-performance async API framework
+- **Alpaca Trading API** — market data streaming and order execution
+- **AsyncIO** — asynchronous task management
+- **Threading** — isolated streaming and monitoring services
+- **REST API design** — operational monitoring and configuration endpoints
+- **Environment-based configuration** — secure runtime configuration management
 
 ---
 
@@ -124,53 +163,74 @@ This project is for educational and portfolio purposes only. It is not financial
 ```
 app/
 
-main.py # Application startup and lifecycle management
-
-
+main.py
+Application startup and lifecycle management
 
 routes/
+admin_routes.py
+auth_routes.py
+dev_routes.py
+public_routes.py
 
-auth_routes.py # Authentication and token handling
+services/
+Background monitoring services (positions, performance, market hours)
 
-production_routes.py # Production API routes
+stream.py
+Threaded Alpaca market data stream manager
 
-test_routes.py # Test and debugging routes
+strategy.py
+Trading strategies and confidence evaluation
 
-config_routes.py # Runtime configuration endpoints
+state.py
+Global application state container
 
-
+constants.py
+Risk limits and configuration defaults
 
 utils/
-
-config.py # Shared configuration values
-
-alerts_utils.py # Email alerts
-
-telegram_bot_utils.py # Telegram bot startup
-
-logging_utils.py # Logging configuration
-
-threading_utils.py # Safe thread helpers
-
-trade_utils.py # Trade logging utilities
-
-lifecycle_utils.py # Startup/shutdown tracking
-
-
-
-stream.py # Alpaca data stream manager
-
-strategy.py # Trading strategies and confidence scoring
-
-state.py # Global application state container
-
-constants.py # Risk limits and config defaults
+alerts_utils.py
+auth_utils.py
+config_utils.py
+logging_utils.py
+misc_utils.py
+threading_utils.py
+trade_utils.py
+lifecycle_utils.py
 ```
 
 
 ---
 
 
+## Strategy Decision Logging
+
+The trading engine logs detailed information about each trade evaluation.
+
+Important log fields include:
+
+| Field | Description |
+|------|-------------|
+| decision_stage | Which phase of the evaluation pipeline produced the decision |
+| decision_reason | Explanation for the final decision |
+| buy_edge | Positive confidence contribution for a buy |
+| sell_edge | Negative confidence contribution for a sell |
+
+These logs make it possible to analyze why trades occurred and to debug strategy behavior.
+
+---
+
+## Example Trade Decision Log
+
+Example log entry produced during strategy evaluation:
+
+[HandleTrade] symbol=AAPL price=184.23
+[StrategyManager] buy_conf=0.62 sell_conf=-0.14 volatility=low
+[ExecutionCheck] has_position=False cooldown=False
+[OrderExecutor] submitting BUY order qty=10 limit_price=184.25
+
+These logs allow developers to trace exactly how the strategy engine reached a trading decision.
+
+---
 
 ## How It Works
 
@@ -230,38 +290,55 @@ Signals are categorized as:
 
 The bot adapts strategy weighting based on market volatility.
 
+---
 
+### Trading Decision Flow
+
+Each incoming trade tick follows the pipeline below:
+
+1. **Market Data Stream**
+   - Alpaca websocket delivers a trade event.
+
+2. **Market Data Buffer**
+   - The system stores recent price and volume history per symbol.
+
+3. **Strategy Evaluation**
+   - Multiple strategies analyze the updated market data.
+
+4. **Confidence Model**
+   - Signals are combined into a weighted buy/sell confidence score.
+
+5. **Risk Controls**
+   - Fail-safe checks validate the trade decision.
+
+6. **Order Execution**
+   - A buy or sell order is submitted through the Alpaca Trading API.
+
+7. **State Update & Alerts**
+   - Trade state is logged and alerts are sent when appropriate.
 
 ---
 
+### Risk Management & Fail-Safes
 
+Multiple protections ensure the system behaves safely during abnormal market conditions or technical failures.
 
-### Fail-Safes
+Implemented safeguards include:
 
+- maximum account equity loss threshold
+- per-position loss limits
+- trade rate limiting
+- connection failure monitoring
+- resource usage alerts (CPU and memory)
+- order reconciliation to prevent duplicate orders
 
-
-Multiple protections are implemented:
-
-
-
-- Maximum equity loss
-
-- Maximum position loss
-
-- Trade rate limits
-
-- Connection error monitoring
-
-- Resource monitoring (CPU / memory)
-
-
+These mechanisms ensure the system avoids runaway trading behavior and maintains predictable operation.
 
 ---
 
 
 
 ## Running the Project
-
 
 
 ### 1️⃣ Install Dependencies
@@ -381,6 +458,17 @@ python app/main.py
 ---
 
 ### API Response Examples
+
+### Monitoring Endpoints
+
+The system exposes endpoints for operational monitoring:
+
+| Endpoint | Purpose |
+|--------|--------|
+| `/healthz` | Service health check |
+| `/stream-status` | Alpaca stream state and connection stats |
+| `/metrics` | CPU and memory usage |
+| `/uptime-health` | Lightweight uptime check |
 
 #### Health Endpoint
 
@@ -506,21 +594,14 @@ Before publishing the repository:
 
 ## Future Improvements
 
+Planned enhancements include:
 
-
-Possible future enhancements include:
-
-
-
-- Database-backed trade history
-
-- Webhook-based order fill tracking
-
-- Advanced strategy backtesting
-
-- Live dashboard visualization
-
-- Improved authentication system
+- database-backed trade history storage
+- webhook-based order fill tracking
+- strategy backtesting framework
+- live trading dashboard for monitoring
+- multi-symbol portfolio trading
+- advanced performance analytics
 
 
 
