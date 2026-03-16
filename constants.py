@@ -12,7 +12,7 @@ TRADE_RATE_RESPONSE = "cooldown"
 MIN_REENTRY_CHANGE_PCT = 0.0004  # Default 0.2%
 BUY_CONFIDENCE_THRESHOLD = 0.40
 SELL_CONFIDENCE_THRESHOLD = -0.40
-
+CONFIDENCE_CONFLICT_MARGIN = 0.18
 
 # === Fail-Safe Thresholds ===
 EQUITY_THRESHOLD = 10000               # Global equity failsafe

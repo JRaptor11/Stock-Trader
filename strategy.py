@@ -602,6 +602,9 @@ class ConfidenceModel:
             direction = meta.get("direction", "both")
             veto_strength = meta.get("veto_strength")
 
+            if wtype == "execution_helper":
+                continue
+
             if wtype == "signal":
                 buy_part, sell_part = self._extract_signal_parts(raw_score)
                 if buy_part is None and sell_part is None:
@@ -2876,7 +2879,7 @@ class StrategyManager:
                 "direction": "both",
                 "veto_strength": None,
                 "weight_type": "signal",
-                "weight": 3.6,
+                "weight": 2.2,
             },
 
             "FastMomentumClusterStrategy": {
@@ -2884,7 +2887,7 @@ class StrategyManager:
                 "direction": "both",
                 "veto_strength": None,
                 "weight_type": "signal",
-                "weight": 2.0
+                "weight": 1.4
             },
 
             # === 🧠 Lagging confirmation strategies ===
@@ -2893,7 +2896,7 @@ class StrategyManager:
                 "direction": "both",
                 "veto_strength": None,
                 "weight_type": "signal",
-                "weight": 2.8
+                "weight": 2.2
             },
         
             "DropFromPeakSmartStrategy": {
@@ -2901,7 +2904,7 @@ class StrategyManager:
                 "direction": "both",
                 "veto_strength": None,
                 "weight_type": "signal",
-                "weight": 1.8,
+                "weight": 1.2,
             },
 
             # === 🚫 Hard veto brake strategies ===
@@ -2922,10 +2925,10 @@ class StrategyManager:
         
             # === 🛑 Soft sell-side confidence brakes ===
             "MaxUptickHoldStrategy": {
-                "speed": "lagging_soft_brake",
+                "speed": "execution_helper",
                 "direction": "sell",
                 "veto_strength": "soft",
-                "weight_type": "confidence_modifier",
+                "weight_type": "execution_helper",
                 "weight": 1,
             },
             "VolumeSpikeStrategy": {
@@ -2961,10 +2964,10 @@ class StrategyManager:
         
             # === ⚠️ Trade filters (volatility, trend, and dynamic hold logic) ===
             "AdaptiveHoldStrategy": {
-                "speed": "filter",
+                "speed": "execution_helper",
                 "direction": "sell",
                 "veto_strength": None,
-                "weight_type": "confidence_modifier",
+                "weight_type": "execution_helper",
                 "weight": 1,
             },
             "BasicVolatilityFilter": {
@@ -3296,20 +3299,27 @@ class StrategyManager:
         buy_th = float(self.app_state.get("config_defaults", {}).get("BUY_CONFIDENCE_THRESHOLD", 0.40))
         sell_th = float(self.app_state.get("config_defaults", {}).get("SELL_CONFIDENCE_THRESHOLD", -0.40))
 
-        # Slightly stricter entry in calmer conditions.
-        # This helps reduce mediocre flat-market buys.
-        if volatility_score < 0.35:
-            buy_th += 0.03
+        # Stronger default entry requirement
+        buy_th += 0.06
 
-        # Slightly faster exits in highly volatile conditions.
+        # Slight extra entry strictness in calm conditions
+        if volatility_score < 0.35:
+            buy_th += 0.04
+
+        # Slightly easier exits in high volatility
         if volatility_score > 0.80:
-            sell_th += 0.03   # e.g. -0.50 -> -0.47
+            sell_th += 0.03
 
         buy_crossed = buy_conf >= buy_th
         sell_crossed = sell_conf <= sell_th
 
         # How much one side dominates the other
-        conflict_margin = self.app_state.get("config_defaults", {}).get("CONFIDENCE_CONFLICT_MARGIN", 0.12)
+        conflict_margin = float(
+            self.app_state.get("config_defaults", {}).get("CONFIDENCE_CONFLICT_MARGIN", 0.18)
+        )
+
+        if not has_position:
+            conflict_margin += 0.04
 
         buy_strength = float(buy_conf)
         sell_strength = abs(float(sell_conf))
@@ -3342,8 +3352,12 @@ class StrategyManager:
 
         if not has_position:
             if buy_crossed and not sell_crossed:
-                signal = "buy"
-                decision_reason = "buy_only"
+                if buy_edge >= conflict_margin:
+                    signal = "buy"
+                    decision_reason = "buy_only_strong"
+                else:
+                    signal = None
+                    decision_reason = "buy_edge_too_small"
 
             elif buy_crossed and sell_crossed:
                 if buy_edge >= conflict_margin:
@@ -3649,27 +3663,45 @@ strategy_manager = StrategyManager(
     strategies=[
         VolatilityReversalBrake(),
         BasicVolatilityFilter(),
+        OverallTrendStrategy(),
         SmartTrendFilterStrategy(),
         VolumeSpikeStrategy(),
         VolumeBreakoutStrategy(),
-        PriceSurgeStrategy(window=3, threshold_pct=1.2),
+        PriceSurgeStrategy(window=4, threshold_pct=1.5, prehint_fraction=0.20),
         MaxUptickHoldStrategy(max_hold_seconds=18, min_profit=0.001, max_loss=-0.004),
         MomentumBrakeStrategy(soft_block_rate=0.005),
         VolumeMomentumFilterStrategy(),
         # MicroRangeRejectionStrategy(window=5, threshold=0.002),
         OverboughtSoftBrakeStrategy(),
         TopRejectionStrategy(),
-        DropFromPeakSmartStrategy(min_gain=0.0001, drop_from_peak=0.0005, reentry_drop=0.002),
-        AdaptiveHoldStrategy(gain_threshold=0.004, loss_threshold=-0.002, min_hold=8, max_hold=45),
-        FastPredictiveMomentumStrategy(),
-        FastMomentumClusterStrategy(),
+        DropFromPeakSmartStrategy(min_gain=0.0015, drop_from_peak=0.0015, reentry_drop=0.003),
+        AdaptiveHoldStrategy(gain_threshold=0.006, loss_threshold=-0.0035, min_hold=12, max_hold=60),
+        FastPredictiveMomentumStrategy(
+            accel_threshold=0.0006,
+            rsi_slope_threshold=0.35,
+            alignment_bonus=0.15,
+            history_boost=0.05,
+            flat_buy_bias=1.04,
+            flat_sell_dampen=0.95,
+            hold_buy_dampen=0.84,
+            hold_sell_bias=1.08,
+            high_vol_soften=0.88,
+        ),
+        FastMomentumClusterStrategy(
+            boost_factor=0.06,
+            ema_threshold=0.28,
+            rsi_threshold=0.28,
+            pullback_min=0.0015,
+            pullback_max=0.005,
+            retrace_for_sell=0.0045,
+        ),
         MomentumClusterStrategy()
         # LaggingEmaStrategy(),
         # LaggingRsiStrategy(),
         # MacdStrategy()
     ],
     app_state=app_state,
-    min_hold_seconds=10,
+    min_hold_seconds=12,
     required_gain=-0.0001,
     confirmation_window=3
 )
