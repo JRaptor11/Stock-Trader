@@ -1,9 +1,11 @@
 import logging
 import asyncio
+import time
 from datetime import datetime, timezone
 from alpaca.trading.enums import TimeInForce, QueryOrderStatus, OrderSide
 from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest, GetOrdersRequest
 from utils.threading_utils import safe_thread
+from utils.trade_utils import log_trade_to_summary
 from state import app_state
 
 def _order_monitor_thread_entry() -> None:
@@ -39,6 +41,27 @@ def _order_monitor_thread_entry() -> None:
 def normalize_side(side) -> str:
     return str(side).lower().replace("orderside.", "").strip()
 
+def set_entry_lock(symbol: str) -> None:
+    symbol = str(symbol).upper().strip()
+    app_state.setdefault("order_state", {}).setdefault("entry_locks", {})[symbol] = time.time()
+
+def clear_entry_lock(symbol: str) -> None:
+    symbol = str(symbol).upper().strip()
+    app_state.setdefault("order_state", {}).setdefault("entry_locks", {}).pop(symbol, None)
+
+def has_active_entry_lock(symbol: str) -> bool:
+    symbol = str(symbol).upper().strip()
+    order_state = app_state.setdefault("order_state", {})
+    locks = order_state.setdefault("entry_locks", {})
+    ts = locks.get(symbol)
+    if ts is None:
+        return False
+
+    timeout = float(order_state.get("entry_lock_timeout_seconds", 90))
+    if time.time() - ts > timeout:
+        locks.pop(symbol, None)
+        return False
+    return True 
 
 def _safe_float(value, default=0.0) -> float:
     try:
@@ -233,6 +256,7 @@ async def monitor_open_orders_loop() -> None:
 
                     if not order_id:
                         logging.warning(f"[OrderMonitor] Missing order_id for tracked order on {symbol}; removing.")
+                        clear_entry_lock(symbol)
                         del app_state["open_orders"][symbol]
                         continue
 
@@ -252,11 +276,41 @@ async def monitor_open_orders_loop() -> None:
                                 "status": "filled",
                                 "order_id": order_id,
                             }
+                            clear_entry_lock(symbol)
                             logging.info(f"[✓ Filled BUY] {symbol}: {qty} @ ${price:.2f}")
-
                         elif tracked_side == "sell":
-                            app_state.setdefault("open_trades", {}).pop(symbol, None)
+                            trade_info = app_state.setdefault("open_trades", {}).pop(symbol, None)
+                            sell_time = datetime.now(timezone.utc)
+
+                            if trade_info:
+                                buy_price = float(trade_info.get("buy_price", price))
+                                buy_time = trade_info.get("buy_time", sell_time)
+                                profit_loss = float(price) - float(buy_price)
+
+                                trade_type = app_state["strategy"].get("last_exit_reason", "Standard")
+                                log_trade_to_summary(symbol, buy_price, buy_time, price, sell_time, trade_type)
+                                app_state["strategy"]["last_exit_reason"] = "Standard"
+
+                                app_state["strategy"].setdefault("last_sell_price_by_symbol", {})[symbol] = price
+                                logging.info(f"[SellTrack] 💾 Stored last sell price for {symbol}: {price:.2f}")
+
+                                if profit_loss < 0:
+                                    app_state["strategy"]["consecutive_losses"] += 1
+                                    logging.warning(
+                                        f"[Loss Tracker] ❌ Loss recorded. Total consecutive losses: "
+                                        f"{app_state['strategy']['consecutive_losses']}"
+                                    )
+                                    if app_state["strategy"]["consecutive_losses"] >= 3:
+                                        app_state["strategy"]["cooldown_until"] = time.time() + 300
+                                        logging.warning("[Cooldown] 🧊 Triggered 5-minute cooldown due to 3+ consecutive losses")
+                                        app_state["strategy"]["consecutive_losses"] = 0
+                                else:
+                                    app_state["strategy"]["consecutive_losses"] = 0
+                            else:
+                                logging.warning(f"[OrderMonitor] ⚠️ Filled SELL for {symbol} but no matching open_trades entry was found.")
+
                             app_state["strategy"].setdefault("sells_in_progress", set()).discard(symbol)
+                            clear_entry_lock(symbol)
                             logging.info(f"[✓ Filled SELL] {symbol}: {qty} @ ${price:.2f}")
 
                         else:
@@ -268,6 +322,7 @@ async def monitor_open_orders_loop() -> None:
                                 "status": "filled",
                                 "order_id": order_id,
                             }
+                            clear_entry_lock(symbol)
                             logging.info(f"[✓ Filled] {symbol}: {qty} @ ${price:.2f}")
 
                         del app_state["open_orders"][symbol]
@@ -277,8 +332,10 @@ async def monitor_open_orders_loop() -> None:
                             app_state["strategy"].setdefault("sells_in_progress", set()).discard(symbol)
 
                         trade_info = app_state.get("open_trades", {}).get(symbol)
-                        if tracked_side == "buy" and trade_info and trade_info.get("status") == "pending":
-                            app_state["open_trades"].pop(symbol, None)
+                        if tracked_side == "buy":
+                            clear_entry_lock(symbol)
+                            if trade_info and trade_info.get("status") == "pending":
+                                app_state["open_trades"].pop(symbol, None)
 
                         del app_state["open_orders"][symbol]
                         logging.warning(f"[✖️ OrderClosed] {symbol} → {status.upper()} — removed from tracking")
@@ -290,14 +347,16 @@ async def monitor_open_orders_loop() -> None:
                     logging.warning(f"[⚠️ OrderMonitor] {symbol} → Order check failed: {e}")
 
             # interruptible sleep (checks shutdown_event every ~0.25s)
+            loop = asyncio.get_running_loop()
             total = 5.0
             step = 0.25
-            end = asyncio.get_event_loop().time() + total
-            while asyncio.get_event_loop().time() < end:
+            end = loop.time() + total
+
+            while loop.time() < end:
                 if shutdown_event and shutdown_event.is_set():
                     logging.info("[OrderMonitor] Exiting due to shutdown_event.")
                     return
-                await asyncio.sleep(min(step, end - asyncio.get_event_loop().time()))
+                await asyncio.sleep(min(step, end - loop.time()))
 
     finally:
         app_state["monitoring_orders"] = False

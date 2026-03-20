@@ -24,6 +24,9 @@ from utils.orders_utils import (
     check_local_position,
     reconcile_existing_order,
     normalize_side,
+    has_active_entry_lock,
+    set_entry_lock,
+    clear_entry_lock,
 )
 from utils import config_utils
 from patched_stream import PatchedStockDataStream
@@ -342,6 +345,22 @@ class ThreadedAlpacaStream:
     async def _execute_buy(self, symbol, price):
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
+        if has_active_entry_lock(symbol):
+            logging.info(f"[{timestamp}] ⛔ BUY blocked for {symbol} — active entry lock.")
+            return
+
+        trade_info = app_state.get("open_trades", {}).get(symbol)
+        if trade_info and trade_info.get("status") in {"pending", "filled", "pending_sell"}:
+            logging.info(f"[{timestamp}] ⛔ BUY blocked for {symbol} — local trade state already active.")
+            return
+
+        tracked_order = app_state.get("open_orders", {}).get(symbol)
+        if tracked_order:
+            logging.info(f"[{timestamp}] ⛔ BUY blocked for {symbol} — tracked open order already exists.")
+            return
+        
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
         try:
             if not symbol or price is None or price <= 0:
                 raise ValueError(f"Invalid symbol or price: {symbol}, {price}")
@@ -442,12 +461,14 @@ class ThreadedAlpacaStream:
                 market_is_open=market_is_open
             )
 
+            set_entry_lock(symbol)
             submitted_order = app_state["trading_client"].submit_order(order)
             order_id = getattr(submitted_order, "id", None)
 
             logging.info(f"[{timestamp}] ✅ Buy order for {symbol} submitted: {submitted_order}")
 
             if not order_id:
+                clear_entry_lock(symbol)
                 logging.error(f"[{timestamp}] ❌ No order id returned for BUY order on {symbol}.")
                 send_email_alert(f"❌ Buy Order Failed for {symbol}", "No order id returned from submitted order.")
                 return
@@ -472,8 +493,9 @@ class ThreadedAlpacaStream:
                 app_state["last_trade_price_by_symbol"][symbol] = price
                 app_state["last_trade_time"] = time.time()
                 app_state["last_signal"] = "buy"
+                clear_entry_lock(symbol)
                 send_email_alert("✅ Buy Executed", f"✅ Buy Executed for {symbol} at ${price:.2f} @ {timestamp} UTC")
-            else:
+        
                 logging.warning(f"[{timestamp}] ⚠️ Buy order for {symbol} not filled. Status: {status}")
                 track_limit_order(
                     symbol,
@@ -485,6 +507,7 @@ class ThreadedAlpacaStream:
                 )
 
         except Exception as e:
+            clear_entry_lock(symbol)
             logging.error(f"[{timestamp}] ❌ Error submitting BUY order for {symbol}: {e}")
             send_email_alert(f"❌ Buy Order Failed for {symbol}", str(e))
 
@@ -535,6 +558,7 @@ class ThreadedAlpacaStream:
             if qty_to_sell <= 0:
                 logging.warning(f"[{timestamp}] ❌ Confirmed — no {symbol} shares held. Removing stale open_trades entry.")
                 app_state["open_trades"].pop(symbol, None)
+                clear_entry_lock(symbol)
                 return
 
             # === Self-heal stale sell guard ===
@@ -571,6 +595,7 @@ class ThreadedAlpacaStream:
             if decision == "blocked_no_position":
                 logging.warning(f"[{timestamp}] ⏹ SELL blocked for {symbol} — no position exists.")
                 app_state["open_trades"].pop(symbol, None)
+                clear_entry_lock(symbol)
                 sells_in_progress.discard(symbol)
                 return
 
@@ -663,10 +688,11 @@ class ThreadedAlpacaStream:
                     logging.warning(f"[{timestamp}] ⚠️ No matching open trade record for {symbol}")
 
                 app_state["last_signal"] = "sell"
+                clear_entry_lock(symbol)
                 send_email_alert("✅ Sell Executed", f"✅ Sell Executed for {symbol} at ${price:.2f} @ {timestamp} UTC")
                 sells_in_progress.discard(symbol)
                 return
-
+                
             # === Not filled immediately ===
             logging.warning(f"[{timestamp}] ⚠️ Sell order for {symbol} not filled. Status: {status}")
             track_limit_order(

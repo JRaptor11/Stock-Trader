@@ -58,6 +58,10 @@ app_state["recent_volumes"] = SmartDeque(maxlen=app_state["window_size"])
 
 # === Shared Application State ===
 app_state = {
+    "order_state": {
+        "entry_locks": {},              # symbol -> timestamp when lock was set
+        "entry_lock_timeout_seconds": 90,
+    },
 
     # ─────────────────────────────────────────────
     # 🧠 MAIN CONFIGURATION

@@ -3117,6 +3117,8 @@ class StrategyManager:
         sig = sym_state["sig"]
         tel = sym_state["tel"]
 
+        sig["min_hold_override"] = self.min_hold_seconds
+
         ind["volatility_score"] = volatility_score
         tel["volatility_score"] = volatility_score
         tel["recent_max_price"] = recent_max_price
@@ -3327,6 +3329,18 @@ class StrategyManager:
         buy_edge = buy_strength - sell_strength
         sell_edge = sell_strength - buy_strength
 
+        # Extra arbitration controls to reduce overlap / churn
+        conflict_extra_buffer = 0.05
+        min_dominance_ratio = 1.35
+
+        if min(buy_strength, sell_strength) > 1e-6:
+            dominance_ratio = max(buy_strength, sell_strength) / min(buy_strength, sell_strength)
+        else:
+            dominance_ratio = float("inf") if max(buy_strength, sell_strength) > 0 else 1.0
+
+        tel["dominance_ratio"] = float(round(dominance_ratio, 4))
+        tel["conflict_margin"] = float(round(conflict_margin, 4))
+
         tel["buy_edge"] = float(round(buy_edge, 4))
         tel["sell_edge"] = float(round(sell_edge, 4))
         tel["buy_threshold"] = float(round(buy_th, 4))
@@ -3335,7 +3349,7 @@ class StrategyManager:
         logging.info(
             "[Decision] %s | buy_conf=%.4f sell_conf=%.4f buy_th=%.4f sell_th=%.4f "
             "buy_crossed=%s sell_crossed=%s buy_edge=%.4f sell_edge=%.4f "
-            "conflict_margin=%.4f vetoes=%s raw_signals=%s",
+            "conflict_margin=%.4f dominance_ratio=%.4f vetoes=%s raw_signals=%s",
             symbol,
             buy_conf,
             sell_conf,
@@ -3346,6 +3360,7 @@ class StrategyManager:
             buy_edge,
             sell_edge,
             conflict_margin,
+            dominance_ratio,
             vetoes,
             raw_signals,
         )
@@ -3360,7 +3375,13 @@ class StrategyManager:
                     decision_reason = "buy_edge_too_small"
 
             elif buy_crossed and sell_crossed:
-                if buy_edge >= conflict_margin:
+                buy_wins_clean = (
+                    buy_edge >= (conflict_margin + conflict_extra_buffer)
+                    and buy_strength >= (buy_th + 0.05)
+                    and dominance_ratio >= min_dominance_ratio
+                )
+
+                if buy_wins_clean:
                     signal = "buy"
                     decision_reason = "buy_wins_conflict"
                 else:
@@ -3377,7 +3398,13 @@ class StrategyManager:
                 decision_reason = "sell_only"
 
             elif buy_crossed and sell_crossed:
-                if sell_edge >= conflict_margin:
+                sell_wins_clean = (
+                    sell_edge >= (conflict_margin + conflict_extra_buffer)
+                    and sell_strength >= (abs(sell_th) + 0.05)
+                    and dominance_ratio >= min_dominance_ratio
+                )
+
+                if sell_wins_clean:
                     signal = "sell"
                     decision_reason = "sell_wins_conflict"
                 else:
@@ -3393,6 +3420,7 @@ class StrategyManager:
         else:
             decision_stage = "threshold_pass"
 
+        tel["signal"] = signal or ""
         tel["decision_stage"] = decision_stage
         tel["decision_reason"] = decision_reason
 
@@ -3418,7 +3446,7 @@ class StrategyManager:
             logging.info("[Cooldown] %s trading cooldown active until %.0f", symbol, cooldown_until)
             log_trade_decision(
                 symbol,
-                signal,
+                signal or "",
                 price,
                 "blocked",
                 confidence=(buy_conf if signal == "buy" else sell_conf),
@@ -3560,7 +3588,29 @@ class StrategyManager:
                     )
                 )
 
-                if held_duration < dynamic_hold:
+                buy_price = float(trade_info.get("buy_price", price))
+                pnl_pct = ((float(price) - buy_price) / buy_price) if buy_price > 0 else 0.0
+
+                strong_sell_conf = abs(float(sell_conf)) >= 0.75
+                clear_sell_edge = float(sell_edge) >= 0.20
+                losing_trade = pnl_pct <= -0.0025
+                high_volatility = float(volatility_score) >= 0.75
+
+                allow_early_exit = (
+                    strong_sell_conf and clear_sell_edge and (losing_trade or high_volatility)
+                )
+
+                minimum_emergency_hold = 2.0
+                
+                tel["pnl_pct"] = float(round(pnl_pct, 5))
+                tel["dynamic_hold"] = float(dynamic_hold)
+                tel["allow_early_exit"] = bool(allow_early_exit)
+                tel["strong_sell_conf"] = bool(strong_sell_conf)
+                tel["clear_sell_edge"] = bool(clear_sell_edge)
+                tel["losing_trade"] = bool(losing_trade)
+                tel["high_volatility_exit"] = bool(high_volatility)
+
+                if held_duration < dynamic_hold and not (allow_early_exit and held_duration >= minimum_emergency_hold):
                     logging.info(
                         "⏸ %s: Sell blocked (min_hold) Held %.1fs < min %ss.",
                         symbol,
@@ -3587,6 +3637,17 @@ class StrategyManager:
                         sell_threshold=sell_th,
                     )
                     return None, strategy_results
+
+                if allow_early_exit and held_duration >= minimum_emergency_hold and held_duration < dynamic_hold:
+                    logging.info(
+                        "[AdaptiveExit] %s allowing early exit | held=%.1fs pnl_pct=%.4f sell_conf=%.4f sell_edge=%.4f vol=%.4f",
+                        symbol,
+                        held_duration,
+                        pnl_pct,
+                        sell_conf,
+                        sell_edge,
+                        volatility_score,
+                    )
 
                 log_trade_decision(
                     symbol,
