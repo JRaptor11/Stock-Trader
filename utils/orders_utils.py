@@ -69,6 +69,90 @@ def _safe_float(value, default=0.0) -> float:
     except Exception:
         return default
 
+def _get_open_trade_status(symbol: str) -> str | None:
+    trade_info = app_state.get("open_trades", {}).get(symbol)
+    if not isinstance(trade_info, dict):
+        return None
+    status = trade_info.get("status")
+    return str(status).lower().strip() if status is not None else None
+
+
+def _has_broker_pending_sell(symbol: str) -> bool:
+    try:
+        params = GetOrdersRequest(status=QueryOrderStatus.OPEN)
+        open_orders = app_state["trading_client"].get_orders(filter=params)
+        return any(
+            getattr(o, "symbol", None) == symbol
+            and normalize_side(getattr(o, "side", "")) == "sell"
+            for o in open_orders
+        )
+    except Exception as e:
+        logging.warning(f"⚠️ Error checking open sell orders for {symbol}: {e}")
+        return True  # safest fallback
+
+
+def _finalize_filled_buy(symbol: str, order, order_id: str) -> None:
+    qty = _safe_float(getattr(order, "filled_qty", 0), 0)
+    price = _safe_float(getattr(order, "filled_avg_price", 0), 0)
+    now = datetime.now(timezone.utc)
+
+    app_state.setdefault("open_trades", {})[symbol] = {
+        "buy_price": price,
+        "buy_time": now,
+        "quantity": qty,
+        "status": "filled",
+        "order_id": order_id,
+    }
+
+    app_state.setdefault("last_trade_price_by_symbol", {})[symbol] = price
+    app_state["last_trade_time"] = time.time()
+    app_state["last_signal"] = "buy"
+
+    clear_entry_lock(symbol)
+
+    logging.info(f"[✓ Filled BUY] {symbol}: {qty} @ ${price:.2f}")
+
+
+def _finalize_filled_sell(symbol: str, order, order_id: str) -> None:
+    qty = _safe_float(getattr(order, "filled_qty", 0), 0)
+    price = _safe_float(getattr(order, "filled_avg_price", 0), 0)
+    sell_time = datetime.now(timezone.utc)
+
+    trade_info = app_state.setdefault("open_trades", {}).pop(symbol, None)
+
+    if trade_info:
+        buy_price = _safe_float(trade_info.get("buy_price", price), price)
+        buy_time = trade_info.get("buy_time", sell_time)
+        profit_loss = float(price) - float(buy_price)
+
+        trade_type = app_state["strategy"].get("last_exit_reason", "Standard")
+        log_trade_to_summary(symbol, buy_price, buy_time, price, sell_time, trade_type)
+        app_state["strategy"]["last_exit_reason"] = "Standard"
+
+        app_state["strategy"].setdefault("last_sell_price_by_symbol", {})[symbol] = price
+        logging.info(f"[SellTrack] 💾 Stored last sell price for {symbol}: {price:.2f}")
+
+        if profit_loss < 0:
+            app_state["strategy"]["consecutive_losses"] += 1
+            logging.warning(
+                f"[Loss Tracker] ❌ Loss recorded. Total consecutive losses: "
+                f"{app_state['strategy']['consecutive_losses']}"
+            )
+            if app_state["strategy"]["consecutive_losses"] >= 3:
+                app_state["strategy"]["cooldown_until"] = time.time() + 300
+                logging.warning("[Cooldown] 🧊 Triggered 5-minute cooldown due to 3+ consecutive losses")
+                app_state["strategy"]["consecutive_losses"] = 0
+        else:
+            app_state["strategy"]["consecutive_losses"] = 0
+    else:
+        logging.warning(f"[OrderMonitor] ⚠️ Filled SELL for {symbol} but no matching open_trades entry was found.")
+
+    app_state["last_trade_time"] = time.time()
+    app_state["last_signal"] = "sell"
+    app_state["strategy"].setdefault("sells_in_progress", set()).discard(symbol)
+    clear_entry_lock(symbol)
+
+    logging.info(f"[✓ Filled SELL] {symbol}: {qty} @ ${price:.2f}")
 
 def track_limit_order(symbol, order_id, side=None, qty=None, limit_price=None, market_is_open=None):
     """
@@ -156,7 +240,7 @@ def reconcile_existing_order(symbol: str, side, new_price: float, new_qty: float
     # BUY safety: never place a buy if we already have/pending a position
     if side_str == "buy":
         trade_info = app_state.get("open_trades", {}).get(symbol)
-        if trade_info and trade_info.get("status") in {"pending", "filled", "pending_sell"}:
+        if trade_info and str(trade_info.get("status", "")).lower().strip() in {"pending", "filled", "pending_sell", "synced"}:
             return "blocked_has_position", str(trade_info.get("order_id")) if trade_info.get("order_id") else None
 
         try:
@@ -265,65 +349,25 @@ async def monitor_open_orders_loop() -> None:
                     logging.debug(f"[OrderMonitor] {symbol} → {status}")
 
                     if status == "filled":
-                        qty = float(getattr(order, "filled_qty", 0) or 0)
-                        price = float(getattr(order, "filled_avg_price", 0) or 0)
-
                         if tracked_side == "buy":
-                            app_state["open_trades"][symbol] = {
-                                "buy_price": price,
-                                "buy_time": datetime.now(timezone.utc),
-                                "quantity": qty,
-                                "status": "filled",
-                                "order_id": order_id,
-                            }
-                            clear_entry_lock(symbol)
-                            logging.info(f"[✓ Filled BUY] {symbol}: {qty} @ ${price:.2f}")
+                            _finalize_filled_buy(symbol, order, order_id)
+
                         elif tracked_side == "sell":
-                            trade_info = app_state.setdefault("open_trades", {}).pop(symbol, None)
-                            sell_time = datetime.now(timezone.utc)
-
-                            if trade_info:
-                                buy_price = float(trade_info.get("buy_price", price))
-                                buy_time = trade_info.get("buy_time", sell_time)
-                                profit_loss = float(price) - float(buy_price)
-
-                                trade_type = app_state["strategy"].get("last_exit_reason", "Standard")
-                                log_trade_to_summary(symbol, buy_price, buy_time, price, sell_time, trade_type)
-                                app_state["strategy"]["last_exit_reason"] = "Standard"
-
-                                app_state["strategy"].setdefault("last_sell_price_by_symbol", {})[symbol] = price
-                                logging.info(f"[SellTrack] 💾 Stored last sell price for {symbol}: {price:.2f}")
-
-                                if profit_loss < 0:
-                                    app_state["strategy"]["consecutive_losses"] += 1
-                                    logging.warning(
-                                        f"[Loss Tracker] ❌ Loss recorded. Total consecutive losses: "
-                                        f"{app_state['strategy']['consecutive_losses']}"
-                                    )
-                                    if app_state["strategy"]["consecutive_losses"] >= 3:
-                                        app_state["strategy"]["cooldown_until"] = time.time() + 300
-                                        logging.warning("[Cooldown] 🧊 Triggered 5-minute cooldown due to 3+ consecutive losses")
-                                        app_state["strategy"]["consecutive_losses"] = 0
-                                else:
-                                    app_state["strategy"]["consecutive_losses"] = 0
-                            else:
-                                logging.warning(f"[OrderMonitor] ⚠️ Filled SELL for {symbol} but no matching open_trades entry was found.")
-
-                            app_state["strategy"].setdefault("sells_in_progress", set()).discard(symbol)
-                            clear_entry_lock(symbol)
-                            logging.info(f"[✓ Filled SELL] {symbol}: {qty} @ ${price:.2f}")
+                            _finalize_filled_sell(symbol, order, order_id)
 
                         else:
-                            # fallback if older tracked format exists
-                            app_state["open_trades"][symbol] = {
-                                "buy_price": price,
-                                "buy_time": datetime.now(timezone.utc),
-                                "quantity": qty,
-                                "status": "filled",
-                                "order_id": order_id,
-                            }
-                            clear_entry_lock(symbol)
-                            logging.info(f"[✓ Filled] {symbol}: {qty} @ ${price:.2f}")
+                            # backward-compat fallback: infer from broker order side
+                            broker_side = normalize_side(getattr(order, "side", ""))
+                            if broker_side == "buy":
+                                _finalize_filled_buy(symbol, order, order_id)
+                            elif broker_side == "sell":
+                                _finalize_filled_sell(symbol, order, order_id)
+                            else:
+                                logging.warning(
+                                    f"[OrderMonitor] Filled order for {symbol} had unknown side; "
+                                    f"defaulting to buy-style tracking. order_id={order_id}"
+                                )
+                                _finalize_filled_buy(symbol, order, order_id)
 
                         del app_state["open_orders"][symbol]
 
@@ -378,64 +422,68 @@ def create_order_request(symbol, qty, side, price, market_is_open):
             extended_hours=True,
         )
 
-
 def check_position_status(symbol: str) -> tuple[bool, bool]:
     try:
-        # === Check local open_trades ===
         trade_info = app_state.get("open_trades", {}).get(symbol)
         logging.debug(f"[PositionStatus] open_trades for {symbol}: {trade_info}")
-        
-        if trade_info:
-            try:
-                open_orders = app_state["trading_client"].get_orders()
-                logging.debug(f"[PositionStatus] open_orders: {[f'{o.symbol}:{o.side}' for o in open_orders]}")
-                has_pending_sell = any(o.symbol == symbol and o.side == "sell" for o in open_orders)
-                logging.debug(f"[PositionStatus] {symbol}: has_pending_sell={has_pending_sell}")
-                return True, not has_pending_sell
-            except Exception as e:
-                logging.warning(f"⚠️ Error checking open orders for {symbol}: {e}")
-                return True, False
 
-        # === Check Alpaca live positions ===
+        if isinstance(trade_info, dict):
+            status = str(trade_info.get("status", "")).lower().strip()
+
+            # Treat only truly held states as a position
+            if status in {"filled", "pending_sell", "synced"}:
+                has_pending_sell = _has_broker_pending_sell(symbol)
+                logging.debug(f"[PositionStatus] {symbol}: local status={status}, has_pending_sell={has_pending_sell}")
+                return True, not has_pending_sell
+
+            # Pending buy is not yet a true held position
+            if status == "pending":
+                logging.debug(f"[PositionStatus] {symbol}: local status=pending (not held yet)")
+                return False, True
+
         positions = app_state["trading_client"].get_all_positions()
         logging.debug(f"[PositionStatus] Alpaca positions: {[p.symbol for p in positions]}")
-        
-        has_position = any(pos.symbol == symbol and float(pos.qty) > 0 for pos in positions)
+
+        has_position = any(
+            getattr(pos, "symbol", None) == symbol and _safe_float(getattr(pos, "qty", 0), 0) > 0
+            for pos in positions
+        )
 
         if has_position:
-            try:
-                params = GetOrdersRequest(status=QueryOrderStatus.OPEN)
-                open_orders = app_state["trading_client"].get_orders(filter=params)
-                logging.debug(f"[PositionStatus] open_orders: {[f'{o.symbol}:{o.side}' for o in open_orders]}")
-                has_pending_sell = any(o.symbol == symbol and o.side == "sell" for o in open_orders)
-                logging.debug(f"[PositionStatus] {symbol}: has_pending_sell={has_pending_sell}")
-                return True, not has_pending_sell
-            except Exception as e:
-                logging.warning(f"⚠️ Error checking open orders for {symbol}: {e}")
-                return True, False
+            has_pending_sell = _has_broker_pending_sell(symbol)
+            logging.debug(f"[PositionStatus] {symbol}: broker has_position={has_position}, has_pending_sell={has_pending_sell}")
+            return True, not has_pending_sell
 
-        # ✅ No position found anywhere
         return False, True
 
     except Exception as e:
-        logging.warning(f"⚠️ Fallback position check failed: {e}")
+        logging.warning(f"⚠️ Fallback position check failed for {symbol}: {e}")
         return False, True
 
 def check_local_position(symbol, open_trades) -> tuple[bool, bool]:
-    has_position = symbol in open_trades
-    can_sell = False
+    trade_info = open_trades.get(symbol)
+    if not isinstance(trade_info, dict):
+        return False, True
 
-    if has_position:
-        try:
-            params = GetOrdersRequest(status=QueryOrderStatus.OPEN) 
-            open_orders = app_state["trading_client"].get_orders(filter=params)
-            has_pending_sell = any(
-                o.symbol == symbol and o.side == "sell" for o in open_orders
-            )
-            can_sell = not has_pending_sell
-        except Exception as e:
-            logging.warning(f"⚠️ Error checking open orders for {symbol}: {e}")
-            can_sell = False  # safest fallback
+    status = str(trade_info.get("status", "")).lower().strip()
+
+    # Only these statuses should count as actually holding
+    has_position = status in {"filled", "pending_sell", "synced"}
+    if not has_position:
+        return False, True
+
+    try:
+        params = GetOrdersRequest(status=QueryOrderStatus.OPEN)
+        open_orders = app_state["trading_client"].get_orders(filter=params)
+        has_pending_sell = any(
+            getattr(o, "symbol", None) == symbol
+            and normalize_side(getattr(o, "side", "")) == "sell"
+            for o in open_orders
+        )
+        can_sell = not has_pending_sell
+    except Exception as e:
+        logging.warning(f"⚠️ Error checking open orders for {symbol}: {e}")
+        can_sell = False
 
     return has_position, can_sell
 

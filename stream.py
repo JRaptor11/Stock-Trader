@@ -12,7 +12,7 @@ from heartbeat import Heartbeat
 from state import app_state, active_handle_trade
 from strategy import strategy_manager
 from utils.alerts_utils import send_email_alert
-from utils.trade_utils import log_trade_to_summary, handle_trade_update
+from utils.trade_utils import handle_trade_update
 from utils.threading_utils import safe_thread
 # from utils.lifecycle_utils import record_program_shutdown
 
@@ -27,6 +27,8 @@ from utils.orders_utils import (
     has_active_entry_lock,
     set_entry_lock,
     clear_entry_lock,
+    _finalize_filled_buy,
+    _finalize_filled_sell,
 )
 from utils import config_utils
 from patched_stream import PatchedStockDataStream
@@ -350,8 +352,9 @@ class ThreadedAlpacaStream:
             return
 
         trade_info = app_state.get("open_trades", {}).get(symbol)
-        if trade_info and trade_info.get("status") in {"pending", "filled", "pending_sell"}:
-            logging.info(f"[{timestamp}] ⛔ BUY blocked for {symbol} — local trade state already active.")
+        trade_status = str(trade_info.get("status", "")).lower().strip() if isinstance(trade_info, dict) else ""
+        if trade_status in {"pending", "filled", "pending_sell", "synced"}:
+            logging.info(f"[{timestamp}] ⛔ BUY blocked for {symbol} — local trade state already active ({trade_status}).")
             return
 
         tracked_order = app_state.get("open_orders", {}).get(symbol)
@@ -482,29 +485,28 @@ class ThreadedAlpacaStream:
                 "buy_price": price,
                 "buy_time": datetime.now(timezone.utc),
                 "quantity": qty_to_buy,
-                "status": "pending"
+                "status": "pending",
             }
 
             await asyncio.sleep(1)
-            status = str(app_state["trading_client"].get_order_by_id(order_id).status).lower()
+            latest_order = app_state["trading_client"].get_order_by_id(order_id)
+            status = str(getattr(latest_order, "status", "")).lower()
 
             if status == "filled":
-                app_state["open_trades"][symbol]["status"] = "filled"
-                app_state["last_trade_price_by_symbol"][symbol] = price
-                app_state["last_trade_time"] = time.time()
-                app_state["last_signal"] = "buy"
-                clear_entry_lock(symbol)
+                _finalize_filled_buy(symbol, latest_order, order_id)
                 send_email_alert("✅ Buy Executed", f"✅ Buy Executed for {symbol} at ${price:.2f} @ {timestamp} UTC")
-        
-                logging.warning(f"[{timestamp}] ⚠️ Buy order for {symbol} not filled. Status: {status}")
-                track_limit_order(
-                    symbol,
-                    order_id,
-                    side=OrderSide.BUY,
-                    qty=qty_to_buy,
-                    limit_price=price,
-                    market_is_open=market_is_open,
-                )
+                return
+
+            logging.warning(f"[{timestamp}] ⚠️ Buy order for {symbol} not filled. Status: {status}")
+            track_limit_order(
+                symbol,
+                order_id,
+                side=OrderSide.BUY,
+                qty=qty_to_buy,
+                limit_price=price,
+                market_is_open=market_is_open,
+            )
+            logging.info(f"[{timestamp}] 🕵️ Buy order for {symbol} not filled immediately — tracking for completion...")
 
         except Exception as e:
             clear_entry_lock(symbol)
@@ -650,49 +652,20 @@ class ThreadedAlpacaStream:
             sells_in_progress.add(symbol)
             app_state.setdefault("sell_guard_times", {})[symbol] = time.time()
 
-            if symbol in app_state["open_trades"]:
-                app_state["open_trades"][symbol]["status"] = "pending_sell"
-
+            trade_info = app_state.get("open_trades", {}).get(symbol)
+            if isinstance(trade_info, dict):
+                trade_info["status"] = "pending_sell"
+            
             # === Check immediate fill ===
             await asyncio.sleep(1)
-            status = str(app_state["trading_client"].get_order_by_id(order_id).status).lower()
+            latest_order = app_state["trading_client"].get_order_by_id(order_id)
+            status = str(getattr(latest_order, "status", "")).lower()
 
             if status == "filled":
-                trade_info = app_state.setdefault("open_trades", {}).pop(symbol, None)
-                sell_time = datetime.now(timezone.utc)
-
-                if trade_info:
-                    buy_price = trade_info.get("buy_price", price)
-                    profit_loss = price - buy_price
-
-                    trade_type = app_state["strategy"].get("last_exit_reason", "Standard")
-                    log_trade_to_summary(symbol, buy_price, trade_info["buy_time"], price, sell_time, trade_type)
-                    app_state["strategy"]["last_exit_reason"] = "Standard"
-
-                    app_state["strategy"].setdefault("last_sell_price_by_symbol", {})[symbol] = price
-                    logging.info(f"[SellTrack] 💾 Stored last sell price for {symbol}: {price:.2f}")
-
-                    if profit_loss < 0:
-                        app_state["strategy"]["consecutive_losses"] += 1
-                        logging.warning(
-                            f"[Loss Tracker] ❌ Loss recorded. Total consecutive losses: "
-                            f"{app_state['strategy']['consecutive_losses']}"
-                        )
-                        if app_state["strategy"]["consecutive_losses"] >= 3:
-                            app_state["strategy"]["cooldown_until"] = time.time() + 300
-                            logging.warning("[Cooldown] 🧊 Triggered 5-minute cooldown due to 3+ consecutive losses")
-                            app_state["strategy"]["consecutive_losses"] = 0
-                    else:
-                        app_state["strategy"]["consecutive_losses"] = 0
-                else:
-                    logging.warning(f"[{timestamp}] ⚠️ No matching open trade record for {symbol}")
-
-                app_state["last_signal"] = "sell"
-                clear_entry_lock(symbol)
+                _finalize_filled_sell(symbol, latest_order, order_id)
                 send_email_alert("✅ Sell Executed", f"✅ Sell Executed for {symbol} at ${price:.2f} @ {timestamp} UTC")
-                sells_in_progress.discard(symbol)
                 return
-                
+                            
             # === Not filled immediately ===
             logging.warning(f"[{timestamp}] ⚠️ Sell order for {symbol} not filled. Status: {status}")
             track_limit_order(

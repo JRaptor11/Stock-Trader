@@ -56,8 +56,11 @@ def was_last_program_shutdown_abnormal():
 
 def sync_open_positions_to_app_state(app_state):
     """
-    Syncs held positions from Alpaca to app_state['open_trades']
-    if not already populated. This prevents runtime errors due to missing trade info.
+    Sync held broker positions into app_state['open_trades'] if needed.
+
+    These entries are marked as status='synced' because they were reconstructed
+    from live Alpaca positions rather than created by this process during a
+    fresh local order lifecycle.
     """
     try:
         positions = app_state["trading_client"].get_all_positions()
@@ -66,23 +69,72 @@ def sync_open_positions_to_app_state(app_state):
         logging.debug(f"[Sync] Existing app_state['open_trades']: {app_state.get('open_trades')}")
 
         open_trades = app_state.setdefault("open_trades", {})
-        
+        live_position_symbols = set()
+
         if not positions:
             logging.info("[Sync] No positions reported by Alpaca. Clearing open_trades.")
             open_trades.clear()
             return
 
         for pos in positions:
-            symbol = pos.symbol
-            qty = float(pos.qty)
-            if qty > 0:
-                if symbol not in open_trades:
-                    logging.warning(f"⚠️ No trade info found for held position. Adding {symbol} to open_trades.")
-                    open_trades[symbol] = {
-                        "buy_price": float(pos.avg_entry_price),
-                        "buy_time": datetime.now(timezone.utc),  # Approximate
-                        "order_id": None  # Unknown — left as None
-                    }
+            symbol = str(getattr(pos, "symbol", "")).upper().strip()
+            qty = float(getattr(pos, "qty", 0) or 0)
+
+            if qty <= 0 or not symbol:
+                continue
+
+            live_position_symbols.add(symbol)
+
+            existing = open_trades.get(symbol)
+            avg_entry_price = float(getattr(pos, "avg_entry_price", 0) or 0)
+
+            if not isinstance(existing, dict):
+                logging.warning(f"⚠️ No trade info found for held position. Adding {symbol} to open_trades.")
+                open_trades[symbol] = {
+                    "buy_price": avg_entry_price,
+                    "buy_time": datetime.now(timezone.utc),  # approximate reconstruction time
+                    "quantity": qty,
+                    "status": "synced",
+                    "order_id": None,
+                    "max_price": avg_entry_price,
+                }
+                continue
+
+            existing_status = str(existing.get("status", "")).lower().strip()
+
+            # If the entry exists but is not a real active held state, repair it.
+            if existing_status not in {"filled", "pending_sell", "synced"}:
+                logging.warning(
+                    f"[Sync] Repairing {symbol} local trade state from status={existing_status!r} to synced."
+                )
+                open_trades[symbol] = {
+                    "buy_price": avg_entry_price,
+                    "buy_time": existing.get("buy_time", datetime.now(timezone.utc)),
+                    "quantity": qty,
+                    "status": "synced",
+                    "order_id": existing.get("order_id"),
+                    "max_price": max(float(existing.get("max_price", avg_entry_price) or avg_entry_price), avg_entry_price),
+                }
+            else:
+                # Keep valid active states, but patch missing fields if needed
+                existing["buy_price"] = float(existing.get("buy_price", avg_entry_price) or avg_entry_price)
+                existing["buy_time"] = existing.get("buy_time", datetime.now(timezone.utc))
+                existing["quantity"] = float(existing.get("quantity", qty) or qty)
+                existing["status"] = existing_status or "synced"
+                existing["order_id"] = existing.get("order_id")
+                existing["max_price"] = float(existing.get("max_price", existing["buy_price"]) or existing["buy_price"])
+
+        # Remove stale local entries for symbols no longer held at broker,
+        # but only if they are supposed to represent held positions.
+        for symbol in list(open_trades.keys()):
+            trade_info = open_trades.get(symbol)
+            if not isinstance(trade_info, dict):
+                continue
+
+            status = str(trade_info.get("status", "")).lower().strip()
+            if status in {"filled", "pending_sell", "synced"} and symbol not in live_position_symbols:
+                logging.warning(f"[Sync] Removing stale local open_trades entry for {symbol}; broker shows no live position.")
+                open_trades.pop(symbol, None)
 
     except Exception as e:
         logging.error(f"❌ Failed to sync open positions: {e}")

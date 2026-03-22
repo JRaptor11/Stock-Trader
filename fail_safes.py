@@ -4,11 +4,14 @@ import time
 import logging
 from state import app_state, app_state_lock, fail_safe_event
 from utils.alerts_utils import send_email_alert
-from utils.trade_utils import log_trade_to_csv, log_trade_to_summary
-from utils import config_utils as config
+from utils.trade_utils import log_trade_to_csv
 from utils.config_utils import get_config
 
 # === Fail-Safe Actions ===
+def _is_held_trade_status(status: str | None) -> bool:
+    status = str(status or "").lower().strip()
+    return status in {"filled", "pending_sell", "synced"}
+
 async def sell_position(symbol, price=None):
     """
     Forces a sell of the given symbol if a position exists.
@@ -23,6 +26,56 @@ async def sell_position(symbol, price=None):
     if symbol in liquidation_in_progress:
         logging.warning(f"[SELL_POSITION] Forced liquidation already in progress for {symbol}")
         return
+
+    async with app_state["fail_safes"]["position_lock"]:
+        trade_info = app_state.get("open_trades", {}).get(symbol)
+        trade_status = str(trade_info.get("status", "")).lower().strip() if isinstance(trade_info, dict) else ""
+
+        if not isinstance(trade_info, dict) or not _is_held_trade_status(trade_status):
+            logging.warning(
+                f"[SELL_POSITION] No active held trade found for {symbol}. "
+                f"status={trade_status!r}. Aborting sell."
+            )
+            liquidation_in_progress.discard(symbol)
+            return
+
+        stream_manager = app_state["stream"].get("manager")
+        if not stream_manager:
+            logging.error("[SELL_POSITION] Stream manager not available. Cannot execute sell.")
+            return
+
+        liquidation_in_progress.add(symbol)
+
+        try:
+            live_price = app_state.get("last_trade_price_by_symbol", {}).get(symbol)
+            if live_price and live_price > 0:
+                price = live_price
+
+            if not price or price <= 0:
+                price = trade_info.get("buy_price", 0)
+
+            if not price or price <= 0:
+                logging.error(f"[SELL_POSITION] No valid liquidation price available for {symbol}")
+                return
+
+            logging.info(f"[SELL_POSITION] 🚨 Forced liquidation for {symbol} at ${price:.2f}")
+
+            app_state["strategy"].setdefault("last_sell", {})[symbol] = {
+                "price": price,
+                "time": datetime.now(timezone.utc),
+                "entry_price": trade_info.get("buy_price", price),
+                "reason": "fail_safe",
+            }
+
+            await stream_manager._execute_sell(symbol, price)
+            logging.info(f"[SELL_POSITION] ✅ Forced sell submitted/completed for {symbol}")
+
+        except asyncio.TimeoutError:
+            logging.error(f"[SELL_POSITION] ⌛ Sell timeout for {symbol}")
+        except Exception as e:
+            logging.error(f"[SELL_POSITION] ❌ Error during forced sell of {symbol}: {e}")
+        finally:
+            liquidation_in_progress.discard(symbol)
 
     async with app_state["fail_safes"]["position_lock"]:
         if symbol not in app_state.get("open_trades", {}):
@@ -102,7 +155,15 @@ async def check_global_fail_safe():
 
         open_trades_snapshot = dict(app_state.get("open_trades", {}))
         for symbol, trade_data in open_trades_snapshot.items():
-            price = app_state.get("last_trade_price_by_symbol", {}).get(symbol) or trade_data.get("buy_price", 0)
+            status = str(trade_data.get("status", "")).lower().strip() if isinstance(trade_data, dict) else ""
+            if not _is_held_trade_status(status):
+                logging.debug(f"[FailSafe] Skipping global forced sell for {symbol}; local status={status!r}")
+                continue
+
+            price = app_state.get("last_trade_price_by_symbol", {}).get(symbol)
+            if not price or price <= 0:
+                price = trade_data.get("buy_price", 0)
+
             await sell_position(symbol, price)
 
 
@@ -117,23 +178,41 @@ async def check_per_stock_fail_safe():
         last_price_snapshot = dict(app_state.get("last_trade_price_by_symbol", {}))
 
     for symbol, trade_data in open_trades_snapshot.items():
-        entry_price = trade_data.get("buy_price", 0)
-        current_price = last_price_snapshot.get(symbol, 0)
+        if not isinstance(trade_data, dict):
+            continue
 
-        logging.debug(f"[FailSafe] {symbol}: Entry=${entry_price}, Current=${current_price}")
+        status = str(trade_data.get("status", "")).lower().strip()
+        if not _is_held_trade_status(status):
+            logging.debug(f"[FailSafe] Skipping {symbol}; non-held local status={status!r}")
+            continue
+
+        entry_price = float(trade_data.get("buy_price", 0) or 0)
+        current_price = last_price_snapshot.get(symbol)
+
+        logging.debug(f"[FailSafe] {symbol}: status={status}, Entry=${entry_price}, Current=${current_price}")
 
         # --- invalid price cache logic (guard writes with the lock) ---
         with app_state_lock:
             last_cached = cache.get(symbol)
-            
-        if entry_price <= 0 or current_price <= 0:
+
+        if entry_price <= 0:
+            with app_state_lock:
+                if cache.get(symbol) == "invalid_entry":
+                    continue
+                cache[symbol] = "invalid_entry"
+
+            logging.error(f"[FailSafe] Invalid buy_price ({entry_price}) for {symbol}")
+            continue
+
+        if current_price is None or float(current_price) <= 0:
             with app_state_lock:
                 if cache.get(symbol) == current_price:
                     continue
                 cache[symbol] = current_price
 
-            logging.error(
-                f"[FailSafe] Invalid buy_price ({entry_price}) or current price ({current_price}) for {symbol}"
+            logging.warning(
+                f"[FailSafe] Skipping per-stock check for {symbol} because no valid live price is available yet "
+                f"(current_price={current_price})"
             )
             continue
         else:
@@ -142,10 +221,11 @@ async def check_per_stock_fail_safe():
                 with app_state_lock:
                     cache.pop(symbol, None)
 
+        current_price = float(current_price)
         percent_loss = ((entry_price - current_price) / entry_price) * 100
         threshold = get_config("MAX_POSITION_LOSS_PERCENT")
         logging.debug(f"[FailSafe] {symbol} loss: {percent_loss:.2f}% (Threshold: {threshold}%)")
-        
+
         if percent_loss >= threshold:
             logging.warning(f"⚠️ Fail-safe triggered for {symbol}! Loss: {percent_loss:.2f}%")
             send_email_alert(
@@ -156,7 +236,7 @@ async def check_per_stock_fail_safe():
 
             with app_state_lock:
                 fs["state"] = True
-                fs["symbol"] = symbol  # keep for backward compatibility / latest trigger
+                fs["symbol"] = symbol
                 fs.setdefault("symbols", set()).add(symbol)
                 fs["updated_at"] = time.time()
                 fs["last_trigger_reason"] = "per_stock"
