@@ -4,6 +4,7 @@ import logging
 from datetime import datetime, timezone
 
 from telegram import Update
+from telegram.error import Conflict
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -44,7 +45,6 @@ from state import app_state
 # • Authorized chat validation
 # • Wrapping route functions for Telegram responses
 # • Bot startup, registration, and cleanup
-#
 # ================================================================
 
 # ================================================================
@@ -141,6 +141,7 @@ def make_route_wrapper(route_func, label: str = "Response"):
     - takes no required positional arguments
     - returns a JSON-serializable result or stringifiable object
     """
+
     async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not is_allowed_chat(update):
             return
@@ -181,10 +182,7 @@ def make_route_wrapper(route_func, label: str = "Response"):
                     disable_web_page_preview=True,
                 )
 
-            logging.info(
-                "[TelegramBot] ✅ Successfully replied with %s data",
-                label,
-            )
+            logging.info("[TelegramBot] ✅ Successfully replied with %s data", label)
 
         except Exception as e:
             logging.exception(
@@ -400,10 +398,20 @@ def start_telegram_bot():
 
                 bot_app.add_handler(MessageHandler(filters.ALL, log_all_updates))
 
+                logging.info("[TelegramBot] ⏳ Waiting 20s before starting polling to let older instance shut down...")
+                await asyncio.sleep(20)
+
                 logging.info("[TelegramBot] 🔄 Starting async bot loop...")
                 await bot_app.initialize()
                 await bot_app.start()
-                await bot_app.updater.start_polling()
+
+                try:
+                    await bot_app.updater.start_polling(drop_pending_updates=True)
+                except Conflict:
+                    logging.warning("[TelegramBot] ⚠️ Polling conflict detected. Another instance is still using this bot token.")
+                    logging.warning("[TelegramBot] ⏳ Backing off 60s before giving up startup for this instance.")
+                    await asyncio.sleep(60)
+                    return
 
                 for chat_id in allowed_ids:
                     try:
