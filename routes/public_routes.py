@@ -47,7 +47,7 @@ public_routes = APIRouter()
 # HEALTH / UPTIME
 # ================================================================
 
-@public_routes.get("/uptime-health")
+@public_routes.api_route("/uptime-health", methods=["GET", "HEAD"])
 async def uptime_health_check():
     """
     Lightweight health check used by uptime monitors.
@@ -71,7 +71,7 @@ async def uptime_health_check():
             },
             status_code=500,
         )
-
+    
 # ================================================================
 # ROUTE DISCOVERY
 # ================================================================
