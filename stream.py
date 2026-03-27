@@ -24,6 +24,7 @@ from utils.orders_utils import (
     check_local_position,
     reconcile_existing_order,
     normalize_side,
+    normalize_status,
     has_active_entry_lock,
     set_entry_lock,
     clear_entry_lock,
@@ -352,7 +353,7 @@ class ThreadedAlpacaStream:
             return
 
         trade_info = app_state.get("open_trades", {}).get(symbol)
-        trade_status = str(trade_info.get("status", "")).lower().strip() if isinstance(trade_info, dict) else ""
+        trade_status = normalize_status(trade_info.get("status", "")) if isinstance(trade_info, dict) else ""
         if trade_status in {"pending", "filled", "pending_sell", "synced"}:
             logging.info(f"[{timestamp}] ⛔ BUY blocked for {symbol} — local trade state already active ({trade_status}).")
             return
@@ -437,7 +438,7 @@ class ThreadedAlpacaStream:
                     for _ in range(10):
                         try:
                             old_order = app_state["trading_client"].get_order_by_id(existing_order_id)
-                            old_status = str(getattr(old_order, "status", "")).lower()
+                            old_status = normalize_status(getattr(old_order, "status", ""))
                             if old_status in {"canceled", "expired", "rejected", "filled", "done_for_day"}:
                                 break
                         except Exception:
@@ -490,7 +491,7 @@ class ThreadedAlpacaStream:
 
             await asyncio.sleep(1)
             latest_order = app_state["trading_client"].get_order_by_id(order_id)
-            status = str(getattr(latest_order, "status", "")).lower()
+            status = normalize_status(getattr(latest_order, "status", ""))
 
             if status == "filled":
                 _finalize_filled_buy(symbol, latest_order, order_id)
@@ -614,7 +615,7 @@ class ThreadedAlpacaStream:
                     for _ in range(10):
                         try:
                             old_order = app_state["trading_client"].get_order_by_id(existing_order_id)
-                            old_status = str(getattr(old_order, "status", "")).lower()
+                            old_status = normalize_status(getattr(old_order, "status", ""))
                             if old_status in {"canceled", "expired", "rejected", "filled", "done_for_day"}:
                                 break
                         except Exception:
@@ -659,7 +660,7 @@ class ThreadedAlpacaStream:
             # === Check immediate fill ===
             await asyncio.sleep(1)
             latest_order = app_state["trading_client"].get_order_by_id(order_id)
-            status = str(getattr(latest_order, "status", "")).lower()
+            status = normalize_status(getattr(latest_order, "status", ""))
 
             if status == "filled":
                 _finalize_filled_sell(symbol, latest_order, order_id)

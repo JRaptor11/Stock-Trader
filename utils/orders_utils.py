@@ -41,6 +41,19 @@ def _order_monitor_thread_entry() -> None:
 def normalize_side(side) -> str:
     return str(side).lower().replace("orderside.", "").strip()
 
+def normalize_status(status) -> str:
+    """
+    Normalize Alpaca order status values so enum-style strings like
+    'OrderStatus.FILLED' become plain 'filled'.
+    """
+    if status is None:
+        return ""
+
+    # If it's an enum object, prefer its .value
+    value = getattr(status, "value", status)
+
+    return str(value).lower().replace("orderstatus.", "").strip()
+
 def set_entry_lock(symbol: str) -> None:
     symbol = str(symbol).upper().strip()
     app_state.setdefault("order_state", {}).setdefault("entry_locks", {})[symbol] = time.time()
@@ -345,7 +358,7 @@ async def monitor_open_orders_loop() -> None:
                         continue
 
                     order = client.get_order_by_id(order_id)
-                    status = str(getattr(order, "status", "")).lower()
+                    status = normalize_status(getattr(order, "status", ""))
                     logging.debug(f"[OrderMonitor] {symbol} → {status}")
 
                     if status == "filled":
