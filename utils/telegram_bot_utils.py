@@ -35,25 +35,10 @@ from . import config_utils as config
 from state import app_state
 
 
-# ================================================================
-# telegram_bot_utils.py
-#
-# Telegram bot command interface for the trading bot.
-# ================================================================
-
 telegram_start_lock = asyncio.Lock()
 
 
 def get_allowed_chat_ids() -> list[int]:
-    """
-    Return normalized Telegram chat IDs as a list of ints.
-    Supports:
-    - comma-separated string: "123,456"
-    - single string: "123"
-    - single int: 123
-    - list/tuple/set: [123, "456"]
-    - None -> []
-    """
     raw_ids = getattr(config, "TELEGRAM_CHAT_ID", None)
 
     if raw_ids is None:
@@ -111,12 +96,15 @@ def is_allowed_chat(update: Update) -> bool:
     return True
 
 
-def make_route_wrapper(route_func, label: str = "Response"):
-    """
-    Wrap an async FastAPI route so it can be called as a Telegram command.
-    Assumes the wrapped route function is async and takes no required args.
-    """
+def is_shutdown_in_progress() -> bool:
+    try:
+        shutdown_event = app_state.get("stream", {}).get("shutdown_event")
+        return bool(shutdown_event and shutdown_event.is_set())
+    except Exception:
+        return False
 
+
+def make_route_wrapper(route_func, label: str = "Response"):
     async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not is_allowed_chat(update):
             return
@@ -281,7 +269,6 @@ def start_telegram_bot():
                     bot_app,
                     reason="telegram polling conflict",
                 )
-
             return
 
         logging.exception("[TelegramBot] Unhandled Telegram polling error: %s", error)
@@ -292,6 +279,10 @@ def start_telegram_bot():
         async with telegram_start_lock:
             if telegram_state.get("bot_started"):
                 logging.warning("[TelegramBot] 🚫 Bot already running inside lock — skipping start")
+                return
+
+            if is_shutdown_in_progress():
+                logging.info("[TelegramBot] Shutdown already in progress. Skipping Telegram startup.")
                 return
 
             telegram_state["bot_started"] = True
@@ -305,15 +296,12 @@ def start_telegram_bot():
 
                 bot_app = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()
                 telegram_state["bot_app"] = bot_app
-
                 bot_app.add_error_handler(telegram_error_handler)
 
-                # General commands
                 bot_app.add_handler(CommandHandler("test", test_command))
                 bot_app.add_handler(CommandHandler("help", help_command))
                 bot_app.add_handler(CommandHandler("go_fetch", go_fetch_command))
 
-                # Public commands
                 bot_app.add_handler(
                     CommandHandler(
                         "uptime_health",
@@ -321,58 +309,51 @@ def start_telegram_bot():
                     )
                 )
 
-                # Admin commands
-                bot_app.add_handler(
-                    CommandHandler("start_stream", make_route_wrapper(start_stream, "Start Stream"))
-                )
-                bot_app.add_handler(
-                    CommandHandler("shutdown_stream", make_route_wrapper(shutdown_stream, "Shutdown Stream"))
-                )
-                bot_app.add_handler(
-                    CommandHandler("stream_status", make_route_wrapper(stream_status, "Stream Status"))
-                )
-                bot_app.add_handler(
-                    CommandHandler("metrics", make_route_wrapper(metrics, "Metrics"))
-                )
-                bot_app.add_handler(
-                    CommandHandler("healthz", make_route_wrapper(health_check, "Full Health Check"))
-                )
-                bot_app.add_handler(
-                    CommandHandler("force_alert", make_route_wrapper(force_alert, "Force Alert"))
-                )
-                bot_app.add_handler(
-                    CommandHandler("config_all", make_route_wrapper(get_all_config, "Config Snapshot"))
-                )
+                bot_app.add_handler(CommandHandler("start_stream", make_route_wrapper(start_stream, "Start Stream")))
+                bot_app.add_handler(CommandHandler("shutdown_stream", make_route_wrapper(shutdown_stream, "Shutdown Stream")))
+                bot_app.add_handler(CommandHandler("stream_status", make_route_wrapper(stream_status, "Stream Status")))
+                bot_app.add_handler(CommandHandler("metrics", make_route_wrapper(metrics, "Metrics")))
+                bot_app.add_handler(CommandHandler("healthz", make_route_wrapper(health_check, "Full Health Check")))
+                bot_app.add_handler(CommandHandler("force_alert", make_route_wrapper(force_alert, "Force Alert")))
+                bot_app.add_handler(CommandHandler("config_all", make_route_wrapper(get_all_config, "Config Snapshot")))
 
-                # Dev commands
-                bot_app.add_handler(
-                    CommandHandler("test_positions", make_route_wrapper(test_positions, "Positions"))
-                )
-                bot_app.add_handler(
-                    CommandHandler("test_alert", make_route_wrapper(test_alert, "Email Alert"))
-                )
-                bot_app.add_handler(
-                    CommandHandler("test_telegram", make_route_wrapper(test_telegram_alert, "Telegram Alert"))
-                )
-                bot_app.add_handler(
-                    CommandHandler("diagnostics", make_route_wrapper(run_diagnostics, "Diagnostics"))
-                )
-                bot_app.add_handler(
-                    CommandHandler("trades", make_route_wrapper(view_trade_log, "Trades View"))
-                )
+                bot_app.add_handler(CommandHandler("test_positions", make_route_wrapper(test_positions, "Positions")))
+                bot_app.add_handler(CommandHandler("test_alert", make_route_wrapper(test_alert, "Email Alert")))
+                bot_app.add_handler(CommandHandler("test_telegram", make_route_wrapper(test_telegram_alert, "Telegram Alert")))
+                bot_app.add_handler(CommandHandler("diagnostics", make_route_wrapper(run_diagnostics, "Diagnostics")))
+                bot_app.add_handler(CommandHandler("trades", make_route_wrapper(view_trade_log, "Trades View")))
 
                 bot_app.add_handler(MessageHandler(filters.ALL, log_all_updates))
+
+                if is_shutdown_in_progress():
+                    logging.info("[TelegramBot] Shutdown already in progress before startup delay. Aborting Telegram startup.")
+                    return
 
                 logging.info("[TelegramBot] ⏳ Waiting 20s before starting polling to let older instance shut down...")
                 await asyncio.sleep(20)
 
+                if is_shutdown_in_progress():
+                    logging.info("[TelegramBot] Shutdown began during Telegram startup delay. Aborting Telegram startup.")
+                    return
+
                 logging.info("[TelegramBot] 🔄 Initializing Telegram bot...")
+                if is_shutdown_in_progress():
+                    logging.info("[TelegramBot] Shutdown already in progress before initialize(). Aborting Telegram startup.")
+                    return
                 await bot_app.initialize()
 
                 logging.info("[TelegramBot] 🔄 Starting Telegram bot...")
+                if is_shutdown_in_progress():
+                    logging.info("[TelegramBot] Shutdown already in progress before start(). Aborting Telegram startup.")
+                    return
                 await bot_app.start()
 
                 logging.info("[TelegramBot] 🔄 Starting Telegram polling...")
+                if is_shutdown_in_progress():
+                    logging.info("[TelegramBot] Shutdown already in progress before start_polling(). Aborting Telegram startup.")
+                    await shutdown_telegram_app(bot_app, reason="shutdown before polling start")
+                    return
+
                 try:
                     await bot_app.updater.start_polling(drop_pending_updates=True)
                 except Conflict:
@@ -382,7 +363,17 @@ def start_telegram_bot():
                     await shutdown_telegram_app(bot_app, reason="startup polling conflict")
                     return
 
+                if is_shutdown_in_progress():
+                    logging.info("[TelegramBot] Shutdown detected after polling start. Stopping Telegram bot.")
+                    await shutdown_telegram_app(bot_app, reason="shutdown detected after polling start")
+                    return
+
                 for chat_id in allowed_ids:
+                    if is_shutdown_in_progress():
+                        logging.info("[TelegramBot] Shutdown detected before sending startup messages. Stopping Telegram bot.")
+                        await shutdown_telegram_app(bot_app, reason="shutdown before startup messages")
+                        return
+
                     try:
                         await bot_app.bot.send_message(
                             chat_id=chat_id,
@@ -400,6 +391,10 @@ def start_telegram_bot():
 
                 while True:
                     await asyncio.sleep(5)
+
+                    if is_shutdown_in_progress():
+                        logging.info("[TelegramBot] Shutdown detected in polling loop. Exiting Telegram bot task.")
+                        break
 
                     if bot_app.updater and not bot_app.updater.running:
                         logging.warning("[TelegramBot] Polling no longer running. Exiting Telegram bot task.")
@@ -425,6 +420,10 @@ def start_telegram_bot():
     if existing_task and not existing_task.done():
         logging.warning("[TelegramBot] 🚫 Existing Telegram task still running — skipping restart")
         return existing_task
+
+    if is_shutdown_in_progress():
+        logging.info("[TelegramBot] Shutdown already in progress. Refusing to create Telegram start task.")
+        return None
 
     telegram_task = asyncio.create_task(
         run_telegram_bot(),
