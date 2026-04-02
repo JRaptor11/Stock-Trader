@@ -78,6 +78,22 @@ from alpaca.trading.client import TradingClient
 load_dotenv()
 
 
+def get_bool_env(name: str, default: bool = False) -> bool:
+    """
+    Parse boolean environment variables safely.
+
+    Accepted truthy values:
+    - true
+    - 1
+    - yes
+    - on
+    """
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"true", "1", "yes", "on"}
+
+
 def ensure_app_state_structure() -> None:
     """Ensure expected nested dicts/containers exist to prevent KeyErrors."""
 
@@ -177,7 +193,9 @@ def load_environment_config() -> None:
     if not config.HEALTH_USERNAME or not config.HEALTH_PASSWORD:
         raise RuntimeError("HEALTH_USERNAME / HEALTH_PASSWORD must be set")
 
-    config.ENABLE_DEV_ROUTES = os.getenv("ENABLE_DEV_ROUTES", "false").strip().lower() == "true"
+    # Keep config in sync for diagnostics/runtime checks.
+    # Router mounting itself is decided earlier at import time.
+    config.ENABLE_DEV_ROUTES = get_bool_env("ENABLE_DEV_ROUTES", False)
 
 
 async def safe_close_trading_client(client) -> None:
@@ -561,15 +579,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Evaluate this BEFORE router mounting so dev routes are included correctly.
+config.ENABLE_DEV_ROUTES = get_bool_env("ENABLE_DEV_ROUTES", False)
+
 app.include_router(public_routes, prefix="/api/public", tags=["public"])
 app.include_router(auth_routes, prefix="/api/auth", tags=["auth"])
 app.include_router(admin_routes, prefix="/api/admin", tags=["admin"])
 
-if getattr(config, "ENABLE_DEV_ROUTES", False):
-    logging.info("✅ Including dev_routes router at /api/dev")
+if config.ENABLE_DEV_ROUTES:
     app.include_router(dev_routes, prefix="/api/dev", tags=["dev"])
-else:
-    logging.info("❌ Dev routes NOT included")
 
 logging.info(f"🔧 ENV is: {os.getenv('ENV', 'development')}")
 
