@@ -202,8 +202,6 @@ class ThreadedAlpacaStream:
             return
 
         token = active_handle_trade.set(True)
-        task = asyncio.current_task()
-        app_state["main"]["async_tasks"].add(task)
 
         try:
             if not hasattr(trade, "price") or not isinstance(trade.price, (float, int)):
@@ -342,7 +340,6 @@ class ThreadedAlpacaStream:
             send_email_alert("❌ Trade Handling Crash", str(e))
         finally:
             active_handle_trade.reset(token)
-            app_state["main"]["async_tasks"].discard(task)
 
     
     async def _execute_buy(self, symbol, price):
@@ -704,7 +701,8 @@ class ThreadedAlpacaStream:
         finally:
             try:
                 if self._loop and not self._loop.is_closed():
-                    pending = [t for t in asyncio.all_tasks(self._loop) if not t.done()]
+                    current = asyncio.current_task(loop=self._loop)
+                    pending = [t for t in asyncio.all_tasks(self._loop) if not t.done() and t is not current]
 
                     for t in pending:
                         t.cancel()
@@ -782,27 +780,36 @@ class ThreadedAlpacaStream:
 
             async def _shutdown_async():
                 try:
-                    if self._manage_task and not self._manage_task.done():
-                        self._manage_task.cancel()
-                        await asyncio.gather(self._manage_task, return_exceptions=True)
-                        logging.info("✅ Manage task cancelled cleanly.")
-                except Exception:
-                    logging.exception("⚠️ Failed to cancel/manage stream task during shutdown.")
-
-                try:
                     if self._stream:
                         try:
                             await asyncio.wait_for(self._stream.stop(), timeout=5)
                             logging.info("✅ Alpaca stream shut down cleanly.")
                         except asyncio.TimeoutError:
-                            logging.warning("⚠️ Timed out stopping Alpaca stream after task cancellation.")
+                            logging.warning("⚠️ Timed out stopping Alpaca stream.")
                         except Exception:
                             logging.exception("⚠️ Error during Alpaca stop()")
-                        finally:
-                            self._stream = None
-                            app_state["stream"]["instance"] = None
                 except Exception:
-                    logging.exception("⚠️ Unexpected error in _shutdown_async cleanup.")
+                    logging.exception("⚠️ Unexpected error while stopping Alpaca stream.")
+
+                try:
+                    if self._manage_task and not self._manage_task.done():
+                        await asyncio.wait_for(
+                            asyncio.shield(self._manage_task),
+                            timeout=3
+                        )
+                except asyncio.TimeoutError:
+                    logging.warning("⚠️ Manage task did not exit on its own; cancelling as fallback.")
+                    try:
+                        self._manage_task.cancel()
+                        await asyncio.gather(self._manage_task, return_exceptions=True)
+                    except Exception:
+                        logging.exception("⚠️ Failed to cancel/manage stream task during shutdown.")
+                except Exception:
+                    logging.exception("⚠️ Unexpected error while waiting for manage task.")
+
+                finally:
+                    self._stream = None
+                    app_state["stream"]["instance"] = None
 
             fut = asyncio.run_coroutine_threadsafe(_shutdown_async(), loop)
 

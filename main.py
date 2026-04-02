@@ -177,9 +177,8 @@ def load_environment_config() -> None:
     if not config.HEALTH_USERNAME or not config.HEALTH_PASSWORD:
         raise RuntimeError("HEALTH_USERNAME / HEALTH_PASSWORD must be set")
 
-    config.ENABLE_DEV_ROUTES = os.getenv("ENABLE_DEV_ROUTES", "false").lower() == "true"
+    config.ENABLE_DEV_ROUTES = os.getenv("ENABLE_DEV_ROUTES", "false").strip().lower() == "true"
 
-    logging.info(f"ENABLE_DEV_ROUTES resolved to: {config.ENABLE_DEV_ROUTES}")
 
 async def safe_close_trading_client(client) -> None:
     """Close the trading client safely whether close() is sync or async."""
@@ -348,6 +347,8 @@ async def lifespan(app_fastapi):
         app_state["stream"]["shutdown_event"].clear()
 
         load_environment_config()
+
+        logging.info(f"ENABLE_DEV_ROUTES resolved to: {config.ENABLE_DEV_ROUTES}")
 
         if app_state["fail_safes"].get("position_lock") is None:
             app_state["fail_safes"]["position_lock"] = asyncio.Lock()
@@ -564,7 +565,7 @@ app.include_router(public_routes, prefix="/api/public", tags=["public"])
 app.include_router(auth_routes, prefix="/api/auth", tags=["auth"])
 app.include_router(admin_routes, prefix="/api/admin", tags=["admin"])
 
-if getattr(config, "ENABLE_DEV_ROUTES", False):
+if getattr(config, "ENABLE_DEV_ROUTES"):
     app.include_router(dev_routes, prefix="/api/dev", tags=["dev"])
 
 logging.info(f"🔧 ENV is: {os.getenv('ENV', 'development')}")
