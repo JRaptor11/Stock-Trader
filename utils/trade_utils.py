@@ -163,9 +163,11 @@ def ensure_trade_logs_exist():
             writer = csv.writer(f)
             writer.writerow([
                 "Timestamp",
-                "Action",
                 "Symbol",
+                "Action",
                 "Price",
+                "Quantity",
+                "Order ID",
             ])
 
     # --- Trade decision log ---
@@ -232,6 +234,28 @@ def log_trade_to_csv(symbol, side, price, timestamp):
             writer.writerow(["timestamp", "side", "price"])
         writer.writerow([timestamp, side, price])
 
+
+def log_trade_to_history(symbol, action, price, quantity=None, order_id=None, timestamp=None):
+    """
+    Append a real execution event to the shared trade_history.csv file.
+    Multi-symbol safe.
+    """
+    path = app_state["paths"]["TRADE_HISTORY_FILE"]
+
+    if timestamp is None:
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+    with open(path, mode="a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            timestamp,
+            symbol,
+            action,
+            f"{float(price):.2f}" if price is not None else "",
+            str(quantity) if quantity is not None else "",
+            str(order_id) if order_id is not None else "",
+        ])
+        
 
 def log_trade_to_summary(symbol, buy_price, buy_time, sell_price, sell_time, trade_type="Standard"):
     profit_loss = float(sell_price) - float(buy_price)
