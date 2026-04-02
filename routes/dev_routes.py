@@ -1,14 +1,19 @@
 # dev_routes.py
 
+import os
+import csv
+import io
+
 import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, JSONResponse
 
 from state import app_state
 from utils import config_utils as config
 from utils.alerts_utils import send_email_alert, send_telegram_alert
+from utils.trade_utils import TRADE_REASON_LOG
 from utils.auth_utils import verify_credentials
 from utils.misc_utils import with_retries
 from stream import FakeTrade
@@ -290,7 +295,7 @@ def test_positions():
 # TRADE LOGS / DECISIONS
 # ================================================================
 
-@dev_routes.get("/trades")
+@dev_routes.get("/trades-live")
 @with_retries()
 def view_trade_log():
     """
@@ -303,7 +308,7 @@ def view_trade_log():
     }
 
 
-@dev_routes.get("/trades-csv", response_class=PlainTextResponse)
+@dev_routes.get("/trades-csv-live", response_class=PlainTextResponse)
 @with_retries()
 def view_trade_log_csv():
     """
@@ -345,6 +350,143 @@ def debug_open_trades():
     return {
         "open_trades": app_state.get("open_trades", {}),
         "count": len(app_state.get("open_trades", {})),
+    }
+
+@dev_routes.get("/trade-history")
+@with_retries()
+def view_trade_history():
+    """
+    Return parsed rows from trade_history.csv as JSON.
+    """
+    path = app_state.get("paths", {}).get("TRADE_HISTORY_FILE", "trade_history.csv")
+
+    if not os.path.exists(path):
+        return {
+            "status": "missing",
+            "file": path,
+            "rows": [],
+            "count": 0,
+            "message": "trade_history.csv not found"
+        }
+
+    rows = []
+    with open(path, mode="r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            rows.append(row)
+
+    return {
+        "status": "ok",
+        "file": path,
+        "count": len(rows),
+        "rows": rows
+    }
+
+
+@dev_routes.get("/trade-history-csv", response_class=PlainTextResponse)
+@with_retries()
+def download_trade_history_csv():
+    """
+    Return raw trade_history.csv contents.
+    """
+    path = app_state.get("paths", {}).get("TRADE_HISTORY_FILE", "trade_history.csv")
+
+    if not os.path.exists(path):
+        return f"file_not_found,{path}"
+
+    with open(path, mode="r", encoding="utf-8") as f:
+        return f.read()
+
+
+@dev_routes.get("/trade-summary")
+@with_retries()
+def view_trade_summary():
+    """
+    Return parsed rows from trade_summary.csv as JSON.
+    """
+    path = app_state.get("paths", {}).get("TRADE_SUMMARY_FILE", "trade_summary.csv")
+
+    if not os.path.exists(path):
+        return {
+            "status": "missing",
+            "file": path,
+            "rows": [],
+            "count": 0,
+            "message": "trade_summary.csv not found"
+        }
+
+    rows = []
+    with open(path, mode="r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            rows.append(row)
+
+    return {
+        "status": "ok",
+        "file": path,
+        "count": len(rows),
+        "rows": rows
+    }
+
+
+@dev_routes.get("/trade-summary-csv", response_class=PlainTextResponse)
+@with_retries()
+def download_trade_summary_csv():
+    """
+    Return raw trade_summary.csv contents.
+    """
+    path = app_state.get("paths", {}).get("TRADE_SUMMARY_FILE", "trade_summary.csv")
+
+    if not os.path.exists(path):
+        return f"file_not_found,{path}"
+
+    with open(path, mode="r", encoding="utf-8") as f:
+        return f.read()
+
+
+@dev_routes.get("/trade-decisions-csv", response_class=PlainTextResponse)
+@with_retries()
+def download_trade_decisions_csv():
+    """
+    Return raw trade_decisions_log.csv contents.
+    """
+    path = TRADE_REASON_LOG
+
+    if not os.path.exists(path):
+        return f"file_not_found,{path}"
+
+    with open(path, mode="r", encoding="utf-8") as f:
+        return f.read()
+
+
+@dev_routes.get("/trade-decisions-history")
+@with_retries()
+def view_trade_decisions_history():
+    """
+    Return parsed rows from trade_decisions_log.csv as JSON.
+    """
+    path = TRADE_REASON_LOG
+
+    if not os.path.exists(path):
+        return {
+            "status": "missing",
+            "file": path,
+            "rows": [],
+            "count": 0,
+            "message": "trade_decisions_log.csv not found"
+        }
+
+    rows = []
+    with open(path, mode="r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            rows.append(row)
+
+    return {
+        "status": "ok",
+        "file": path,
+        "count": len(rows),
+        "rows": rows
     }
 
 

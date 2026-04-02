@@ -177,6 +177,7 @@ def load_environment_config() -> None:
     if not config.HEALTH_USERNAME or not config.HEALTH_PASSWORD:
         raise RuntimeError("HEALTH_USERNAME / HEALTH_PASSWORD must be set")
 
+    config.ENABLE_DEV_ROUTES = os.getenv("ENABLE_DEV_ROUTES")
 
 async def safe_close_trading_client(client) -> None:
     """Close the trading client safely whether close() is sync or async."""

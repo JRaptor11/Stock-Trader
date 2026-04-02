@@ -20,6 +20,8 @@ HEALTH_PASSWORD = None
 PRICE_WINDOW = 200
 VOLUME_WINDOW = 200
 
+ENABLE_DEV_ROUTES = False
+
 def get_config(key):
     return app_state["config_overrides"].get(key, app_state["config_defaults"].get(key))
 
