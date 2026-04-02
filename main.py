@@ -179,6 +179,8 @@ def load_environment_config() -> None:
 
     config.ENABLE_DEV_ROUTES = os.getenv("ENABLE_DEV_ROUTES", "false").lower() == "true"
 
+    logging.info(f"ENABLE_DEV_ROUTES resolved to: {config.ENABLE_DEV_ROUTES}")
+
 async def safe_close_trading_client(client) -> None:
     """Close the trading client safely whether close() is sync or async."""
     close_fn = getattr(client, "close", None)
