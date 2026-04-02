@@ -565,8 +565,11 @@ app.include_router(public_routes, prefix="/api/public", tags=["public"])
 app.include_router(auth_routes, prefix="/api/auth", tags=["auth"])
 app.include_router(admin_routes, prefix="/api/admin", tags=["admin"])
 
-if getattr(config, "ENABLE_DEV_ROUTES"):
+if getattr(config, "ENABLE_DEV_ROUTES", False):
+    logging.info("✅ Including dev_routes router at /api/dev")
     app.include_router(dev_routes, prefix="/api/dev", tags=["dev"])
+else:
+    logging.info("❌ Dev routes NOT included")
 
 logging.info(f"🔧 ENV is: {os.getenv('ENV', 'development')}")
 
