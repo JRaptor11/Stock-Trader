@@ -7,7 +7,7 @@ import io
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse, PlainTextResponse, JSONResponse
 
 from state import app_state
@@ -85,9 +85,56 @@ def get_stream_manager():
         raise HTTPException(status_code=503, detail="Stream manager is not available")
     return manager
 
-# ================================================================
-# ROUTE DISCOVERY
-# ================================================================
+
+def _normalize_symbol(symbol: str | None) -> str | None:
+    if symbol is None:
+        return None
+    symbol = symbol.strip().upper()
+    return symbol or None
+
+
+def _filter_rows_by_symbol(rows: list[dict], symbol: str | None, symbol_keys: list[str]) -> list[dict]:
+    """
+    Filter CSV DictReader rows by symbol using one of several possible column names.
+    """
+    symbol = _normalize_symbol(symbol)
+    if not symbol:
+        return rows
+
+    filtered = []
+    for row in rows:
+        for key in symbol_keys:
+            value = row.get(key)
+            if value and str(value).strip().upper() == symbol:
+                filtered.append(row)
+                break
+
+    return filtered
+
+
+def _read_csv_rows(path: str) -> list[dict]:
+    rows = []
+    with open(path, mode="r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            rows.append(row)
+    return rows
+
+
+def _rows_to_csv_text(rows: list[dict], fieldnames: list[str] | None = None) -> str:
+    output = io.StringIO()
+
+    if fieldnames is None:
+        if rows:
+            fieldnames = list(rows[0].keys())
+        else:
+            return ""
+
+    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    writer.writeheader()
+    if rows:
+        writer.writerows(rows)
+    return output.getvalue()
 
 # ================================================================
 # ROUTE DISCOVERY
@@ -354,9 +401,10 @@ def debug_open_trades():
 
 @dev_routes.get("/trade-history")
 @with_retries()
-def view_trade_history():
+def view_trade_history(symbol: str | None = Query(default=None)):
     """
     Return parsed rows from trade_history.csv as JSON.
+    Optional ?symbol=NVDA filter.
     """
     path = app_state.get("paths", {}).get("TRADE_HISTORY_FILE", "trade_history.csv")
 
@@ -364,45 +412,49 @@ def view_trade_history():
         return {
             "status": "missing",
             "file": path,
+            "symbol_filter": _normalize_symbol(symbol),
             "rows": [],
             "count": 0,
-            "message": "trade_history.csv not found"
+            "message": "trade_history.csv not found",
         }
 
-    rows = []
-    with open(path, mode="r", newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            rows.append(row)
+    rows = _read_csv_rows(path)
+    rows = _filter_rows_by_symbol(rows, symbol, ["Symbol", "symbol"])
 
     return {
         "status": "ok",
         "file": path,
+        "symbol_filter": _normalize_symbol(symbol),
         "count": len(rows),
-        "rows": rows
+        "rows": rows,
     }
 
 
 @dev_routes.get("/trade-history-csv", response_class=PlainTextResponse)
 @with_retries()
-def download_trade_history_csv():
+def download_trade_history_csv(symbol: str | None = Query(default=None)):
     """
     Return raw trade_history.csv contents.
+    Optional ?symbol=NVDA filter.
     """
     path = app_state.get("paths", {}).get("TRADE_HISTORY_FILE", "trade_history.csv")
 
     if not os.path.exists(path):
         return f"file_not_found,{path}"
 
-    with open(path, mode="r", encoding="utf-8") as f:
-        return f.read()
+    all_rows = _read_csv_rows(path)
+    filtered_rows = _filter_rows_by_symbol(all_rows, symbol, ["Symbol", "symbol"])
+
+    fieldnames = list(all_rows[0].keys()) if all_rows else None
+    return _rows_to_csv_text(filtered_rows, fieldnames=fieldnames)
 
 
 @dev_routes.get("/trade-summary")
 @with_retries()
-def view_trade_summary():
+def view_trade_summary(symbol: str | None = Query(default=None)):
     """
     Return parsed rows from trade_summary.csv as JSON.
+    Optional ?symbol=NVDA filter.
     """
     path = app_state.get("paths", {}).get("TRADE_SUMMARY_FILE", "trade_summary.csv")
 
@@ -410,60 +462,49 @@ def view_trade_summary():
         return {
             "status": "missing",
             "file": path,
+            "symbol_filter": _normalize_symbol(symbol),
             "rows": [],
             "count": 0,
-            "message": "trade_summary.csv not found"
+            "message": "trade_summary.csv not found",
         }
 
-    rows = []
-    with open(path, mode="r", newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            rows.append(row)
+    rows = _read_csv_rows(path)
+    rows = _filter_rows_by_symbol(rows, symbol, ["Symbol", "symbol"])
 
     return {
         "status": "ok",
         "file": path,
+        "symbol_filter": _normalize_symbol(symbol),
         "count": len(rows),
-        "rows": rows
+        "rows": rows,
     }
 
 
 @dev_routes.get("/trade-summary-csv", response_class=PlainTextResponse)
 @with_retries()
-def download_trade_summary_csv():
+def download_trade_summary_csv(symbol: str | None = Query(default=None)):
     """
     Return raw trade_summary.csv contents.
+    Optional ?symbol=NVDA filter.
     """
     path = app_state.get("paths", {}).get("TRADE_SUMMARY_FILE", "trade_summary.csv")
 
     if not os.path.exists(path):
         return f"file_not_found,{path}"
 
-    with open(path, mode="r", encoding="utf-8") as f:
-        return f.read()
+    all_rows = _read_csv_rows(path)
+    filtered_rows = _filter_rows_by_symbol(all_rows, symbol, ["Symbol", "symbol"])
+
+    fieldnames = list(all_rows[0].keys()) if all_rows else None
+    return _rows_to_csv_text(filtered_rows, fieldnames=fieldnames)
 
 
-@dev_routes.get("/trade-decisions-csv", response_class=PlainTextResponse)
+@dev_routes.get("/trade-decisions")
 @with_retries()
-def download_trade_decisions_csv():
-    """
-    Return raw trade_decisions_log.csv contents.
-    """
-    path = TRADE_REASON_LOG
-
-    if not os.path.exists(path):
-        return f"file_not_found,{path}"
-
-    with open(path, mode="r", encoding="utf-8") as f:
-        return f.read()
-
-
-@dev_routes.get("/trade-decisions-history")
-@with_retries()
-def view_trade_decisions_history():
+def view_trade_decisions(symbol: str | None = Query(default=None)):
     """
     Return parsed rows from trade_decisions_log.csv as JSON.
+    Optional ?symbol=NVDA filter.
     """
     path = TRADE_REASON_LOG
 
@@ -471,23 +512,41 @@ def view_trade_decisions_history():
         return {
             "status": "missing",
             "file": path,
+            "symbol_filter": _normalize_symbol(symbol),
             "rows": [],
             "count": 0,
-            "message": "trade_decisions_log.csv not found"
+            "message": "trade_decisions_log.csv not found",
         }
 
-    rows = []
-    with open(path, mode="r", newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            rows.append(row)
+    rows = _read_csv_rows(path)
+    rows = _filter_rows_by_symbol(rows, symbol, ["symbol", "Symbol"])
 
     return {
         "status": "ok",
         "file": path,
+        "symbol_filter": _normalize_symbol(symbol),
         "count": len(rows),
-        "rows": rows
+        "rows": rows,
     }
+
+
+@dev_routes.get("/trade-decisions-csv", response_class=PlainTextResponse)
+@with_retries()
+def download_trade_decisions_csv(symbol: str | None = Query(default=None)):
+    """
+    Return raw trade_decisions_log.csv contents.
+    Optional ?symbol=NVDA filter.
+    """
+    path = TRADE_REASON_LOG
+
+    if not os.path.exists(path):
+        return f"file_not_found,{path}"
+
+    all_rows = _read_csv_rows(path)
+    filtered_rows = _filter_rows_by_symbol(all_rows, symbol, ["symbol", "Symbol"])
+
+    fieldnames = list(all_rows[0].keys()) if all_rows else None
+    return _rows_to_csv_text(filtered_rows, fieldnames=fieldnames)
 
 
 # ================================================================
