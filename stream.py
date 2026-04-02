@@ -12,7 +12,7 @@ from heartbeat import Heartbeat
 from state import app_state, active_handle_trade
 from strategy import strategy_manager
 from utils.alerts_utils import send_email_alert
-from utils.trade_utils import handle_trade_update
+from utils.trade_utils import handle_trade_update, log_trade_to_history
 from utils.threading_utils import safe_thread
 # from utils.lifecycle_utils import record_program_shutdown
 
@@ -492,6 +492,13 @@ class ThreadedAlpacaStream:
 
             if status == "filled":
                 _finalize_filled_buy(symbol, latest_order, order_id)
+                log_trade_to_history(
+                    symbol=symbol,
+                    action="BUY",
+                    price=price,
+                    quantity=1,
+                    order_id=order_id,
+                )
                 send_email_alert("✅ Buy Executed", f"✅ Buy Executed for {symbol} at ${price:.2f} @ {timestamp} UTC")
                 return
 
@@ -661,6 +668,13 @@ class ThreadedAlpacaStream:
 
             if status == "filled":
                 _finalize_filled_sell(symbol, latest_order, order_id)
+                log_trade_to_history(
+                    symbol=symbol,
+                    action="SELL",
+                    price=price,
+                    quantity=1,
+                    order_id=order_id,
+                )
                 send_email_alert("✅ Sell Executed", f"✅ Sell Executed for {symbol} at ${price:.2f} @ {timestamp} UTC")
                 return
                             
