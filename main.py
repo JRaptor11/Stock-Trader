@@ -381,10 +381,6 @@ async def lifespan(app_fastapi):
     try:
         logging.info("🚀 Initializing trading bot...")
 
-        logging.info(
-            f"[Layers] Running every {interval_seconds} seconds"
-        )
-
         # Always reset shutdown event for a fresh process start
         app_state["stream"]["shutdown_event"].clear()
 
