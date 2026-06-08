@@ -230,7 +230,6 @@ async def _background_startup_after_bind() -> None:
     This keeps Render port detection fast.
     """
     try:
-        # Small delay so Uvicorn can finish startup and Render can detect the port
         await asyncio.sleep(2)
 
         if app_state["stream"]["shutdown_event"].is_set():
@@ -296,15 +295,27 @@ async def _background_startup_after_bind() -> None:
         app_state["strategy"]["atr_filter"] = AtrNoiseFilter(period=14)
         app_state["strategy"]["volatility_scorer"] = VolatilityScorer()
 
-        app_state["layers"] = {}
+        # ─────────────────────────────────────────────
+        # Layered portfolio architecture
+        # observation-only / no live orders
+        # ─────────────────────────────────────────────
+        app_state["layers"] = {
+            "paper_portfolio": PaperPortfolio(),
+            "engine": LayeredPortfolioEngine(
+                app_state["market_data"]["buffer"],
+                top_n=5,
+            ),
+        }
 
-        app_state["layers"]["paper_portfolio"] = PaperPortfolio()
-
-        app_state["layers"]["engine"] = LayeredPortfolioEngine(
-            app_state["market_data"]["buffer"],
-            top_n=5,
+        layer_task = asyncio.create_task(
+            run_layer_monitor(interval_seconds=900),
+            name="layer-monitor-task",
         )
+        app_state["main"]["async_tasks"].add(layer_task)
 
+        logging.info("[Layers] Layer engine initialized and monitor task scheduled.")
+
+        # Start Alpaca stream after layer monitor is scheduled
         app_state["stream"]["manager"] = ThreadedAlpacaStream(
             config.API_KEY,
             config.SECRET_KEY,
@@ -312,13 +323,6 @@ async def _background_startup_after_bind() -> None:
         )
         stream = app_state["stream"]["manager"]
         stream.start()
-
-        layer_task = asyncio.create_task(
-            run_layer_monitor(interval_seconds=900),
-            name="layer-monitor-task",
-        )
-
-        app_state["main"]["async_tasks"].add(layer_task)
 
         position_task = asyncio.create_task(
             app_state["services"]["position_tracker"]["instance"].update_positions(),
