@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime, timezone
+from bar_data import fetch_recent_bars
 
 from state import app_state
 
@@ -29,7 +30,31 @@ async def run_layer_monitor(interval_seconds: int = 900) -> None:
                 else:
                     logging.info("[Layers] Starting scheduled evaluation.")
                     
-                    result = layer_engine.evaluate(symbols)
+                    md = app_state.get("market_data", {}).get("buffer")
+                    if md:
+                        tick_counts = {
+                            symbol: len(md.get_recent_prices(symbol))
+                            for symbol in symbols
+                        }
+                        logging.info("[Layers] Tick counts: %s", tick_counts)
+
+                    bars_by_symbol = fetch_recent_bars(
+                        app_state.get("stock_data_client"),
+                        symbols,
+                        lookback_hours=48,
+                        timeframe_minutes=15,
+                    )
+
+                    bar_counts = {
+                        symbol: len(bars)
+                        for symbol, bars in bars_by_symbol.items()
+                    }
+                    logging.info("[Layers] Bar counts: %s", bar_counts)
+
+                    result = layer_engine.evaluate(
+                        symbols,
+                        bars_by_symbol=bars_by_symbol,
+                    )
 
                     logging.info("[Layers] Evaluation complete.")
 

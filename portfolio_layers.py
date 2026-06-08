@@ -71,6 +71,69 @@ class Layer1StockRanker:
         # Clamp so volume confirms price action but cannot dominate.
         return max(-0.25, min(0.25, ratio - 1.0))
 
+    def rank_from_bars(self, bars_by_symbol: Dict[str, list]) -> List[StockScore]:
+        scores = []
+
+        for symbol, bars in bars_by_symbol.items():
+            if len(bars) < 20:
+                continue
+
+            closes = [b["close"] for b in bars]
+            volumes = [b["volume"] for b in bars]
+            trade_counts = [b.get("trade_count", 0.0) for b in bars]
+
+            last_price = closes[-1]
+
+            ret_20 = self._pct_return(closes, 20) or 0.0
+            ret_10 = self._pct_return(closes, 10) or 0.0
+
+            ema_10 = self._ema(closes, 10)
+            ema_20 = self._ema(closes, 20)
+
+            trend_score = 0.0
+            if ema_10 and ema_20:
+                trend_score = (ema_10 - ema_20) / ema_20
+
+            recent_vol = sum(volumes[-4:]) / 4
+            base_vol = sum(volumes[-20:]) / 20
+            volume_score = 0.0 if base_vol <= 0 else max(-0.25, min(0.25, recent_vol / base_vol - 1.0))
+
+            recent_trades = sum(trade_counts[-4:]) / 4
+            base_trades = sum(trade_counts[-20:]) / 20
+            trade_count_score = 0.0 if base_trades <= 0 else max(-0.25, min(0.25, recent_trades / base_trades - 1.0))
+
+            volatility = self._volatility_penalty(closes, lookback=20)
+
+            score = (
+                0.40 * ret_20
+                + 0.25 * ret_10
+                + 0.20 * trend_score
+                + 0.075 * volume_score
+                + 0.075 * trade_count_score
+                - 0.10 * volatility
+            )
+
+            reason = (
+                f"ret_20={ret_20:.4f}, "
+                f"ret_10={ret_10:.4f}, "
+                f"trend={trend_score:.4f}, "
+                f"volume={volume_score:.4f}, "
+                f"trade_count={trade_count_score:.4f}, "
+                f"volatility={volatility:.4f}, "
+                f"bars={len(bars)}"
+            )
+
+            scores.append(
+                StockScore(
+                    symbol=symbol,
+                    score=score,
+                    last_price=last_price,
+                    reason=reason,
+                )
+            )
+
+        return sorted(scores, key=lambda x: x.score, reverse=True)
+
     def score_symbol(self, symbol: str) -> Optional[StockScore]:
         prices = self.market_data_buffer.get_recent_prices(symbol, limit=120)
         volumes = self.market_data_buffer.get_recent_volumes(symbol, limit=120)
@@ -153,9 +216,18 @@ class LayeredPortfolioEngine:
         self.ranker = Layer1StockRanker(market_data_buffer)
         self.portfolio_builder = Layer2PortfolioBuilder(top_n=top_n)
 
-    def evaluate(self, symbols: List[str]) -> dict:
-        ranked = self.ranker.rank(symbols)
+    def evaluate(self, symbols: List[str], bars_by_symbol: Dict[str, list] | None = None) -> dict:
+        if bars_by_symbol is not None:
+            ranked = self.ranker.rank_from_bars(bars_by_symbol)
+        else:
+            ranked = self.ranker.rank(symbols)
+
         target = self.portfolio_builder.build_target_portfolio(ranked)
+
+        return {
+            "ranked": ranked,
+            "target_portfolio": target,
+        }
 
         return {
             "ranked": ranked,

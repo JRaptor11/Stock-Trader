@@ -74,6 +74,7 @@ from config import (
 
 from strategy import AtrNoiseFilter, VolatilityScorer
 from alpaca.trading.client import TradingClient
+from alpaca.data.historical import StockHistoricalDataClient
 
 from layer_monitor import run_layer_monitor
 from portfolio_layers import LayeredPortfolioEngine
@@ -244,6 +245,10 @@ async def _background_startup_after_bind() -> None:
             )
 
         app_state["trading_client"] = TradingClient(config.API_KEY, config.SECRET_KEY, paper=True)
+        app_state["stock_data_client"] = StockHistoricalDataClient(
+            config.API_KEY,
+            config.SECRET_KEY,
+        )
 
         if not callable(app_state["trading_client"].get_all_positions) or not callable(
             app_state["trading_client"].submit_order

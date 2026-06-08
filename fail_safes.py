@@ -8,6 +8,12 @@ from utils.trade_utils import log_trade_to_csv
 from utils.config_utils import get_config
 
 # === Fail-Safe Actions ===
+async def send_fail_safe_alert_async(subject: str, body: str) -> None:
+    try:
+        await asyncio.to_thread(send_email_alert, subject, body)
+    except Exception:
+        logging.warning("[FailSafe] Failed to send email alert; continuing.", exc_info=True)
+
 def _is_held_trade_status(status: str | None) -> bool:
     status = str(status or "").lower().strip()
     return status in {"filled", "pending_sell", "synced"}
@@ -77,46 +83,6 @@ async def sell_position(symbol, price=None):
         finally:
             liquidation_in_progress.discard(symbol)
 
-    async with app_state["fail_safes"]["position_lock"]:
-        if symbol not in app_state.get("open_trades", {}):
-            logging.warning(f"[SELL_POSITION] No open trade found for {symbol}. Aborting sell.")
-            liquidation_in_progress.discard(symbol)
-            return
-
-        stream_manager = app_state["stream"].get("manager")
-        if not stream_manager:
-            logging.error("[SELL_POSITION] Stream manager not available. Cannot execute sell.")
-            return
-
-        liquidation_in_progress.add(symbol)
-
-        try:
-            live_price = app_state.get("last_trade_price_by_symbol", {}).get(symbol)
-            if live_price and live_price > 0:
-                price = live_price
-
-            if not price or price <= 0:
-                price = app_state["open_trades"].get(symbol, {}).get("buy_price", 0)
-
-            logging.info(f"[SELL_POSITION] 🚨 Forced liquidation for {symbol} at ${price:.2f}")
-
-            app_state["strategy"].setdefault("last_sell", {})[symbol] = {
-                "price": price,
-                "time": datetime.now(timezone.utc),
-                "entry_price": app_state["open_trades"].get(symbol, {}).get("buy_price", price),
-                "reason": "fail_safe",
-            }
-
-            await stream_manager._execute_sell(symbol, price)
-            logging.info(f"[SELL_POSITION] ✅ Forced sell submitted/completed for {symbol}")
-
-        except asyncio.TimeoutError:
-            logging.error(f"[SELL_POSITION] ⌛ Sell timeout for {symbol}")
-        except Exception as e:
-            logging.error(f"[SELL_POSITION] ❌ Error during forced sell of {symbol}: {e}")
-        finally:
-            liquidation_in_progress.discard(symbol)
-
 async def check_global_fail_safe():
     """
     Triggers a forced sell of all open positions if account equity drops below threshold.
@@ -140,12 +106,6 @@ async def check_global_fail_safe():
 
         logging.warning(f"⚠️ Global fail-safe triggered! Equity below {equity_threshold}")
 
-        if not app_state["fail_safes"].get("email_suppressed", False):
-            send_email_alert(
-                "Global Fail-Safe Triggered",
-                f"Equity dropped to ${equity:.2f}. Selling all positions."
-            )
-
         with app_state_lock:
             app_state["fail_safes"]["state"] = True
             app_state["fail_safes"]["updated_at"] = time.time()
@@ -166,6 +126,11 @@ async def check_global_fail_safe():
 
             await sell_position(symbol, price)
 
+        if not app_state["fail_safes"].get("email_suppressed", False):
+            await send_fail_safe_alert_async(
+                "Global Fail-Safe Triggered",
+                f"Equity dropped to ${equity:.2f}. Forced liquidation was triggered."
+            )
 
 async def check_per_stock_fail_safe():
 
@@ -228,10 +193,6 @@ async def check_per_stock_fail_safe():
 
         if percent_loss >= threshold:
             logging.warning(f"⚠️ Fail-safe triggered for {symbol}! Loss: {percent_loss:.2f}%")
-            send_email_alert(
-                "Per-Stock Fail-Safe Triggered",
-                f"{symbol} dropped {percent_loss:.2f}%. Selling position."
-            )
             log_trade_to_csv(symbol, "FAILSAFE", current_price, time.strftime("%Y-%m-%d %H:%M:%S"))
 
             with app_state_lock:
@@ -245,6 +206,11 @@ async def check_per_stock_fail_safe():
             logging.error(f"[FailSafe] state=True set at {time.strftime('%H:%M:%S')}")
 
             await sell_position(symbol, current_price)
+
+            await send_fail_safe_alert_async(
+                "Per-Stock Fail-Safe Triggered",
+                f"{symbol} dropped {percent_loss:.2f}%. Forced sell was triggered."
+            )
 
 async def _sleep_with_shutdown(seconds: float, step: float = 0.25) -> None:
     """
