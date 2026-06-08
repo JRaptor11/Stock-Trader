@@ -22,9 +22,27 @@ def fetch_recent_bars(data_client, symbols, lookback_hours=24, timeframe_minutes
 
     try:
         bars = data_client.get_stock_bars(request)
-    except Exception:
-        logging.exception("[Bars] Failed to fetch stock bars.")
+
+        logging.info(
+            "[Bars] Successfully fetched bars for symbols=%s",
+            symbols,
+        )
+
+    except Exception as e:
+        logging.exception(
+            "[Bars] Failed to fetch stock bars | symbols=%s start=%s end=%s error=%s",
+            symbols,
+            start,
+            end,
+            e,
+        )
         return {}
+
+    try:
+        raw_symbols = list(getattr(bars, "data", {}).keys())
+        logging.info("[Bars] Raw response symbols: %s", raw_symbols)
+    except Exception:
+        logging.warning("[Bars] Could not inspect raw bar response.")
 
     result = {}
 

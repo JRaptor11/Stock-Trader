@@ -45,9 +45,14 @@ async def run_layer_monitor(interval_seconds: int = 900) -> None:
                         timeframe_minutes=15,
                     )
 
+                    logging.info(
+                        "[Layers] Symbols being evaluated: %s",
+                        symbols,
+                    )
+
                     bar_counts = {
-                        symbol: len(bars)
-                        for symbol, bars in bars_by_symbol.items()
+                        symbol: len(bars_by_symbol.get(symbol, []))
+                        for symbol in symbols
                     }
                     logging.info("[Layers] Bar counts: %s", bar_counts)
 
