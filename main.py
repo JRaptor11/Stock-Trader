@@ -75,6 +75,10 @@ from config import (
 from strategy import AtrNoiseFilter, VolatilityScorer
 from alpaca.trading.client import TradingClient
 
+from layer_monitor import run_layer_monitor
+from portfolio_layers import LayeredPortfolioEngine
+from paper_portfolio import PaperPortfolio
+
 load_dotenv()
 
 
@@ -292,6 +296,15 @@ async def _background_startup_after_bind() -> None:
         app_state["strategy"]["atr_filter"] = AtrNoiseFilter(period=14)
         app_state["strategy"]["volatility_scorer"] = VolatilityScorer()
 
+        app_state["layers"] = {}
+
+        app_state["layers"]["paper_portfolio"] = PaperPortfolio()
+
+        app_state["layers"]["engine"] = LayeredPortfolioEngine(
+            app_state["market_data"]["buffer"],
+            top_n=5,
+        )
+
         app_state["stream"]["manager"] = ThreadedAlpacaStream(
             config.API_KEY,
             config.SECRET_KEY,
@@ -299,6 +312,13 @@ async def _background_startup_after_bind() -> None:
         )
         stream = app_state["stream"]["manager"]
         stream.start()
+
+        layer_task = asyncio.create_task(
+            run_layer_monitor(interval_seconds=900),
+            name="layer-monitor-task",
+        )
+
+        app_state["main"]["async_tasks"].add(layer_task)
 
         position_task = asyncio.create_task(
             app_state["services"]["position_tracker"]["instance"].update_positions(),
@@ -360,6 +380,10 @@ async def lifespan(app_fastapi):
 
     try:
         logging.info("🚀 Initializing trading bot...")
+
+        logging.info(
+            f"[Layers] Running every {interval_seconds} seconds"
+        )
 
         # Always reset shutdown event for a fresh process start
         app_state["stream"]["shutdown_event"].clear()
