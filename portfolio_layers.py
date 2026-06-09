@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 import statistics
+import logging
 
 
 @dataclass
@@ -192,21 +193,174 @@ class Layer1StockRanker:
 
 
 class Layer2PortfolioBuilder:
-    def __init__(self, top_n: int = 5, cash_buffer_pct: float = 0.05):
+    def __init__(
+        self,
+        top_n: int = 5,
+        min_cash_pct: float = 0.05,
+        max_cash_pct: float = 0.70,
+        min_position_pct: float = 0.05,
+        max_position_pct: float = 0.30,
+        score_epsilon: float = 0.001,
+    ):
         self.top_n = top_n
-        self.cash_buffer_pct = cash_buffer_pct
+        self.min_cash_pct = min_cash_pct
+        self.max_cash_pct = max_cash_pct
+        self.min_position_pct = min_position_pct
+        self.max_position_pct = max_position_pct
+        self.score_epsilon = score_epsilon
+
+    @staticmethod
+    def _clamp(value: float, low: float, high: float) -> float:
+        return max(low, min(high, value))
+
+    def _market_strength_label(self, avg_score: float) -> str:
+        if avg_score >= 0.04:
+            return "strong"
+        if avg_score >= 0.02:
+            return "healthy"
+        if avg_score >= 0.00:
+            return "mixed_positive"
+        if avg_score >= -0.02:
+            return "weak"
+        return "very_weak"
+
+    def _cash_allocation(self, selected: List[StockScore]) -> tuple[float, str]:
+        if not selected:
+            return 1.0, "no_candidates"
+
+        avg_score = sum(s.score for s in selected) / len(selected)
+        market_strength = self._market_strength_label(avg_score)
+
+        weak_score = -0.04
+        strong_score = 0.04
+
+        strength_factor = (avg_score - weak_score) / (strong_score - weak_score)
+        strength_factor = self._clamp(strength_factor, 0.0, 1.0)
+
+        cash_pct = self.max_cash_pct - (
+            strength_factor * (self.max_cash_pct - self.min_cash_pct)
+        )
+
+        cash_pct = self._clamp(cash_pct, self.min_cash_pct, self.max_cash_pct)
+
+        return cash_pct, market_strength
+
+    def _normalize_with_constraints(
+        self,
+        raw_weights: Dict[str, float],
+        investable_pct: float,
+    ) -> Dict[str, float]:
+        remaining_symbols = set(raw_weights.keys())
+        final_weights = {}
+        remaining_allocation = investable_pct
+
+        while remaining_symbols:
+            total_raw = sum(raw_weights[symbol] for symbol in remaining_symbols)
+
+            if total_raw <= 0:
+                equal_weight = remaining_allocation / len(remaining_symbols)
+                proposed = {
+                    symbol: equal_weight
+                    for symbol in remaining_symbols
+                }
+            else:
+                proposed = {
+                    symbol: remaining_allocation * (raw_weights[symbol] / total_raw)
+                    for symbol in remaining_symbols
+                }
+
+            locked_this_round = False
+
+            for symbol in list(remaining_symbols):
+                weight = proposed[symbol]
+
+                if weight < self.min_position_pct:
+                    final_weights[symbol] = self.min_position_pct
+                    remaining_allocation -= self.min_position_pct
+                    remaining_symbols.remove(symbol)
+                    locked_this_round = True
+
+                elif weight > self.max_position_pct:
+                    final_weights[symbol] = self.max_position_pct
+                    remaining_allocation -= self.max_position_pct
+                    remaining_symbols.remove(symbol)
+                    locked_this_round = True
+
+            if not locked_this_round:
+                for symbol in remaining_symbols:
+                    final_weights[symbol] = proposed[symbol]
+                break
+
+            if remaining_allocation <= 0:
+                break
+
+        total = sum(final_weights.values())
+
+        if total > 0 and abs(total - investable_pct) > 0.000001:
+            scale = investable_pct / total
+            final_weights = {
+                symbol: weight * scale
+                for symbol, weight in final_weights.items()
+            }
+
+        return final_weights
 
     def build_target_portfolio(self, ranked_scores: List[StockScore]) -> Dict[str, float]:
         selected = ranked_scores[: self.top_n]
 
         if not selected:
-            return {"CASH": 1.0}
+            return {
+                "CASH": 1.0,
+                "_meta": {
+                    "market_strength": "no_candidates",
+                    "avg_top_score": None,
+                    "top_score": None,
+                    "cash_pct": 1.0,
+                    "investable_pct": 0.0,
+                    "weighting_mode": "none",
+                },
+            }
 
-        investable_pct = 1.0 - self.cash_buffer_pct
-        weight = investable_pct / len(selected)
+        cash_pct, market_strength = self._cash_allocation(selected)
+        investable_pct = 1.0 - cash_pct
 
-        target = {score.symbol: weight for score in selected}
-        target["CASH"] = self.cash_buffer_pct
+        scores = [s.score for s in selected]
+        min_score = min(scores)
+        max_score = max(scores)
+        score_spread = max_score - min_score
+
+        raw_weights = {
+            s.symbol: max(
+                (s.score - min_score) + self.score_epsilon,
+                self.score_epsilon,
+            )
+            for s in selected
+        }
+
+        target = self._normalize_with_constraints(
+            raw_weights=raw_weights,
+            investable_pct=investable_pct,
+        )
+
+        target = {
+            symbol: round(weight, 4)
+            for symbol, weight in target.items()
+        }
+
+        target["CASH"] = round(cash_pct, 4)
+
+        avg_score = sum(scores) / len(scores)
+        top_score = selected[0].score
+
+        target["_meta"] = {
+            "market_strength": market_strength,
+            "avg_top_score": round(avg_score, 4),
+            "top_score": round(top_score, 4),
+            "score_spread": round(score_spread, 4),
+            "cash_pct": round(cash_pct, 4),
+            "investable_pct": round(investable_pct, 4),
+            "weighting_mode": "score_weighted",
+        }
 
         return target
 
