@@ -3,14 +3,14 @@ from datetime import datetime, timedelta, timezone
 
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.data.requests import StockBarsRequest
-
+from alpaca.data.enums import DataFeed
 
 def fetch_recent_bars(data_client, symbols, lookback_hours=24, timeframe_minutes=15):
     if not data_client:
         logging.warning("[Bars] No Alpaca data client available.")
         return {}
 
-    end = datetime.now(timezone.utc)
+    end = datetime.now(timezone.utc) - timedelta(minutes=20)
     start = end - timedelta(hours=lookback_hours)
 
     request = StockBarsRequest(
@@ -18,14 +18,18 @@ def fetch_recent_bars(data_client, symbols, lookback_hours=24, timeframe_minutes
         timeframe=TimeFrame(timeframe_minutes, TimeFrameUnit.Minute),
         start=start,
         end=end,
+        feed=DataFeed.IEX,
     )
 
     try:
         bars = data_client.get_stock_bars(request)
 
         logging.info(
-            "[Bars] Successfully fetched bars for symbols=%s",
+            "[Bars] Fetching %s-minute IEX bars | symbols=%s start=%s end=%s",
+            timeframe_minutes,
             symbols,
+            start,
+            end,
         )
 
     except Exception as e:
