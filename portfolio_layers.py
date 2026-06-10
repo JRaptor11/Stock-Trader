@@ -97,20 +97,40 @@ class Layer1StockRanker:
 
             recent_vol = sum(volumes[-4:]) / 4
             base_vol = sum(volumes[-20:]) / 20
-            volume_score = 0.0 if base_vol <= 0 else max(-0.25, min(0.25, recent_vol / base_vol - 1.0))
+            volume_score = (
+                0.0
+                if base_vol <= 0
+                else max(-0.25, min(0.25, ((recent_vol / base_vol) - 1.0) / 4.0))
+            )
 
             recent_trades = sum(trade_counts[-4:]) / 4
             base_trades = sum(trade_counts[-20:]) / 20
-            trade_count_score = 0.0 if base_trades <= 0 else max(-0.25, min(0.25, recent_trades / base_trades - 1.0))
+            trade_count_score = (
+                0.0
+                if base_trades <= 0
+                else max(-0.25, min(0.25, ((recent_trades / base_trades) - 1.0) / 4.0))
+            )
 
             volatility = self._volatility_penalty(closes, lookback=20)
 
-            score = (
-                0.40 * ret_20
-                + 0.25 * ret_10
+            direction_score = (
+                0.50 * ret_20
+                + 0.30 * ret_10
                 + 0.20 * trend_score
-                + 0.075 * volume_score
-                + 0.075 * trade_count_score
+            )
+
+            activity_score = (
+                0.50 * volume_score
+                + 0.50 * trade_count_score
+            )
+
+            activity_multiplier = 1.0 + max(-0.25, min(0.25, activity_score))
+
+            volume_ratio = 0.0 if base_vol <= 0 else recent_vol / base_vol
+            trade_count_ratio = 0.0 if base_trades <= 0 else recent_trades / base_trades
+
+            score = (
+                direction_score * activity_multiplier
                 - 0.10 * volatility
             )
 
@@ -118,8 +138,12 @@ class Layer1StockRanker:
                 f"ret_20={ret_20:.4f}, "
                 f"ret_10={ret_10:.4f}, "
                 f"trend={trend_score:.4f}, "
+                f"direction={direction_score:.4f}, "
+                f"volume_ratio={volume_ratio:.4f}, "
                 f"volume={volume_score:.4f}, "
+                f"trade_count_ratio={trade_count_ratio:.4f}, "
                 f"trade_count={trade_count_score:.4f}, "
+                f"activity_mult={activity_multiplier:.4f}, "
                 f"volatility={volatility:.4f}, "
                 f"bars={len(bars)}"
             )
