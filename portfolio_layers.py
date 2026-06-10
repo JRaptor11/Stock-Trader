@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 import statistics
 import logging
+import math
 
 
 @dataclass
@@ -97,18 +98,20 @@ class Layer1StockRanker:
 
             recent_vol = sum(volumes[-4:]) / 4
             base_vol = sum(volumes[-20:]) / 20
+            volume_ratio = 0.0 if base_vol <= 0 else recent_vol / base_vol
             volume_score = (
                 0.0
-                if base_vol <= 0
-                else max(-0.25, min(0.25, ((recent_vol / base_vol) - 1.0) / 4.0))
+                if volume_ratio <= 0
+                else max(-0.25, min(0.25, math.log(volume_ratio) / 3.0))
             )
 
             recent_trades = sum(trade_counts[-4:]) / 4
             base_trades = sum(trade_counts[-20:]) / 20
+            trade_count_ratio = 0.0 if base_trades <= 0 else recent_trades / base_trades
             trade_count_score = (
                 0.0
-                if base_trades <= 0
-                else max(-0.25, min(0.25, ((recent_trades / base_trades) - 1.0) / 4.0))
+                if trade_count_ratio <= 0
+                else max(-0.25, min(0.25, math.log(trade_count_ratio) / 3.0))
             )
 
             volatility = self._volatility_penalty(closes, lookback=20)
