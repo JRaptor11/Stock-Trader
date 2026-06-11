@@ -270,7 +270,7 @@ class Layer2PortfolioBuilder:
 
         cash_pct = self._clamp(cash_pct, self.min_cash_pct, self.max_cash_pct)
 
-        return cash_pct, market_strength
+        return cash_pct, market_strength, strength_factor
 
     def _normalize_with_constraints(
         self,
@@ -340,15 +340,17 @@ class Layer2PortfolioBuilder:
                 "CASH": 1.0,
                 "_meta": {
                     "market_strength": "no_candidates",
+                    "strength_factor": None,
                     "avg_top_score": None,
                     "top_score": None,
+                    "score_spread": None,
                     "cash_pct": 1.0,
                     "investable_pct": 0.0,
                     "weighting_mode": "none",
                 },
             }
 
-        cash_pct, market_strength = self._cash_allocation(selected)
+        cash_pct, market_strength, strength_factor = self._cash_allocation(selected)
         investable_pct = 1.0 - cash_pct
 
         scores = [s.score for s in selected]
@@ -381,6 +383,7 @@ class Layer2PortfolioBuilder:
 
         target["_meta"] = {
             "market_strength": market_strength,
+            "strength_factor": round(strength_factor, 4),
             "avg_top_score": round(avg_score, 4),
             "top_score": round(top_score, 4),
             "score_spread": round(score_spread, 4),

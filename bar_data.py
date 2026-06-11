@@ -70,4 +70,30 @@ def fetch_recent_bars(data_client, symbols, lookback_hours=24, timeframe_minutes
             logging.exception("[Bars] Failed parsing bars for %s", symbol)
             result[symbol] = []
 
+    latest_bar_times = {}
+    latest_bar_ages_minutes = {}
+
+    now_utc = datetime.now(timezone.utc)
+
+    for symbol, symbol_bars in result.items():
+        if not symbol_bars:
+            latest_bar_times[symbol] = None
+            latest_bar_ages_minutes[symbol] = None
+            continue
+
+        latest_ts = symbol_bars[-1].get("timestamp")
+
+        latest_bar_times[symbol] = latest_ts
+
+        if latest_ts:
+            latest_bar_ages_minutes[symbol] = round(
+                (now_utc - latest_ts).total_seconds() / 60,
+                1,
+            )
+        else:
+            latest_bar_ages_minutes[symbol] = None
+
+    logging.info("[Bars] Latest bar times: %s", latest_bar_times)
+    logging.info("[Bars] Latest bar ages minutes: %s", latest_bar_ages_minutes)
+
     return result
