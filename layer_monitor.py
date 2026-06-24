@@ -4,6 +4,54 @@ from datetime import datetime, timezone
 from bar_data import fetch_recent_bars
 
 from state import app_state
+from layer3_rebalancer import run_layer3_dry_run
+
+
+def store_latest_layer_result(symbols, bar_counts, ranked, target):
+    """
+    Store the latest Layer 1/2 result in app_state so Layer 3 can read it.
+
+    This does not place trades.
+    It only creates a clean handoff from Layer 1/2 -> Layer 3.
+    """
+    layers = app_state.setdefault("layers", {})
+
+    ranked_snapshot = []
+    for r in ranked or []:
+        ranked_snapshot.append({
+            "symbol": getattr(r, "symbol", None),
+            "score": float(getattr(r, "score", 0.0) or 0.0),
+            "last_price": float(getattr(r, "last_price", 0.0) or 0.0),
+            "reason": getattr(r, "reason", ""),
+        })
+
+    target = target or {}
+    target_meta = target.get("_meta", {}) if isinstance(target, dict) else {}
+
+    latest = layers.setdefault("latest", {})
+    latest["timestamp"] = datetime.now(timezone.utc).isoformat()
+    latest["symbols_evaluated"] = list(symbols or [])
+    latest["bar_counts"] = dict(bar_counts or {})
+    latest["ranked"] = ranked_snapshot
+    latest["target_portfolio"] = dict(target)
+    latest["target_meta"] = dict(target_meta)
+
+    rebalance = layers.setdefault("rebalance", {})
+    rebalance.setdefault("enabled", True)
+    rebalance.setdefault("dry_run", True)
+    rebalance.setdefault("last_cycle_id", 0)
+    rebalance.setdefault("last_run_at", None)
+    rebalance.setdefault("last_plan", [])
+    rebalance.setdefault("last_summary", {})
+    rebalance.setdefault("target_seen_counts", {})
+    rebalance.setdefault("target_absent_counts", {})
+    rebalance.setdefault("last_error", None)
+
+    logging.info(
+        "[Layers] Stored latest Layer 1/2 result for Layer 3 | ranked_count=%s target=%s",
+        len(ranked_snapshot),
+        target,
+    )
 
 
 async def run_layer_monitor(interval_seconds: int = 900) -> None:
@@ -65,6 +113,16 @@ async def run_layer_monitor(interval_seconds: int = 900) -> None:
 
                     ranked = result.get("ranked", [])
                     target = result.get("target_portfolio", {})
+
+                    store_latest_layer_result(
+                        symbols=symbols,
+                        bar_counts=bar_counts,
+                        ranked=ranked,
+                        target=target,
+                    )
+
+                    layer3_summary = run_layer3_dry_run()
+                    logging.info("[Layer3] Dry-run summary: %s", layer3_summary)
 
                     if not ranked:
                         logging.info(
