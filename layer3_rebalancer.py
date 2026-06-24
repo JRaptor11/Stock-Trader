@@ -11,6 +11,17 @@ except Exception:
     GetOrdersRequest = None
 
 
+L3_MAX_TRADES_PER_CYCLE = 3
+L3_MAX_BUYS_PER_CYCLE = 1
+L3_MAX_SELLS_PER_CYCLE = 2
+
+L3_MAX_BUY_NOTIONAL_PER_CYCLE = 7500.0
+L3_MAX_SELL_NOTIONAL_PER_CYCLE = 7500.0
+
+L3_MAX_NEW_POSITION_WEIGHT_PER_CYCLE = 0.075   # Max 7.5% equity into a brand-new position
+L3_MAX_ADD_WEIGHT_PER_CYCLE = 0.075            # Max 7.5% equity added to an existing position
+L3_MAX_TRIM_WEIGHT_PER_CYCLE = 0.075           # Max 7.5% equity trimmed per cycle
+
 IGNORED_TARGET_KEYS = {"CASH", "_META"}
 
 # Layer 3 dry-run planning thresholds.
@@ -375,6 +386,36 @@ def _build_row(
     }
 
 
+def _cap_planned_notional(decision: str, delta_value: float, current_qty: float, equity: float) -> tuple[float, str | None]:
+    """
+    Cap how aggressively Layer 3 moves toward a target in one cycle.
+
+    Returns:
+        capped_notional, cap_reason
+    """
+    abs_delta = abs(delta_value)
+
+    if decision == "BUY":
+        if current_qty <= 0:
+            max_by_weight = equity * L3_MAX_NEW_POSITION_WEIGHT_PER_CYCLE
+            cap = min(abs_delta, L3_MAX_BUY_NOTIONAL_PER_CYCLE, max_by_weight)
+            reason = "new_position_scale_in_capped" if cap < abs_delta else None
+            return cap, reason
+
+        max_by_weight = equity * L3_MAX_ADD_WEIGHT_PER_CYCLE
+        cap = min(abs_delta, L3_MAX_BUY_NOTIONAL_PER_CYCLE, max_by_weight)
+        reason = "add_position_scale_in_capped" if cap < abs_delta else None
+        return cap, reason
+
+    if decision == "SELL":
+        max_by_weight = equity * L3_MAX_TRIM_WEIGHT_PER_CYCLE
+        cap = min(abs_delta, L3_MAX_SELL_NOTIONAL_PER_CYCLE, max_by_weight)
+        reason = "sell_scale_out_capped" if cap < abs_delta else None
+        return cap, reason
+
+    return abs_delta, None
+
+
 def run_layer3_dry_run() -> dict:
     """
     Broker-aware Layer 3 dry-run planner.
@@ -546,8 +587,19 @@ def run_layer3_dry_run() -> dict:
             else:
                 decision = "BUY"
                 reason = "underweight_vs_target"
-                planned_qty = _whole_share_qty(delta_value, live_price)
+
+                capped_notional, cap_reason = _cap_planned_notional(
+                    decision="BUY",
+                    delta_value=delta_value,
+                    current_qty=current_qty,
+                    equity=equity,
+                )
+
+                planned_qty = _whole_share_qty(capped_notional, live_price)
                 planned_notional = planned_qty * live_price
+
+                if cap_reason:
+                    reason = cap_reason
 
                 if planned_qty <= 0:
                     decision = "HOLD"
@@ -561,8 +613,19 @@ def run_layer3_dry_run() -> dict:
             else:
                 decision = "SELL"
                 reason = "overweight_vs_target"
-                planned_qty = min(current_qty, _whole_share_qty(delta_value, live_price))
+
+                capped_notional, cap_reason = _cap_planned_notional(
+                    decision="SELL",
+                    delta_value=delta_value,
+                    current_qty=current_qty,
+                    equity=equity,
+                )
+
+                planned_qty = min(current_qty, _whole_share_qty(capped_notional, live_price))
                 planned_notional = planned_qty * live_price
+
+                if cap_reason:
+                    reason = cap_reason
 
                 if planned_qty <= 0:
                     decision = "HOLD"
