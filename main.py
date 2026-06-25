@@ -116,6 +116,9 @@ def ensure_app_state_structure() -> None:
     app_state.setdefault("secrets", {})
     app_state.setdefault("log_level", {})
 
+    execution = app_state.setdefault("execution", {})
+    execution.setdefault("old_stream_strategy_enabled", False)
+
     stream = app_state.setdefault("stream", {})
     stream.setdefault("manager", None)
     stream.setdefault("instance", None)
@@ -212,6 +215,10 @@ def load_environment_config() -> None:
     # Router mounting itself is decided earlier at import time.
     config.ENABLE_DEV_ROUTES = get_bool_env("ENABLE_DEV_ROUTES", False)
 
+    config.OLD_STREAM_STRATEGY_ENABLED = get_bool_env(
+        "OLD_STREAM_STRATEGY_ENABLED",
+        False,
+    )
 
 async def safe_close_trading_client(client) -> None:
     """Close the trading client safely whether close() is sync or async."""
@@ -412,6 +419,22 @@ async def lifespan(app_fastapi):
         app_state["stream"]["shutdown_event"].clear()
 
         load_environment_config()
+
+        # Keep the legacy tick strategy observation-only by default.
+        # Market-data collection and signal calculation remain active.
+        app_state["execution"]["old_stream_strategy_enabled"] = (
+            config.OLD_STREAM_STRATEGY_ENABLED
+        )
+
+        if config.OLD_STREAM_STRATEGY_ENABLED:
+            logging.warning(
+                "[ExecutionMode] Legacy stream strategy order execution is ENABLED."
+            )
+        else:
+            logging.info(
+                "[ExecutionMode] Legacy stream strategy is observation-only; "
+                "order execution is disabled."
+            )
 
         logging.info(f"ENABLE_DEV_ROUTES resolved to: {config.ENABLE_DEV_ROUTES}")
 

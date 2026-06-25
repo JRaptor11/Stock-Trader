@@ -79,6 +79,14 @@ app_state = {
     "log_level":{},
 
     # ─────────────────────────────────────────────
+    # 🚦 EXECUTION MODE
+    # ─────────────────────────────────────────────
+    "execution": {
+        # The legacy strategy can calculate signals but cannot place orders.
+        "old_stream_strategy_enabled": False,
+    },
+
+    # ─────────────────────────────────────────────
     # 🫀 HEARTBEAT MONITOR
     # ─────────────────────────────────────────────
     "heartbeat": {
@@ -128,6 +136,7 @@ app_state = {
         # momentum, and future derived-feature calculations have enough history.
         "buffer": MarketDataBuffer(maxlen_prices=100, maxlen_volumes=100),
     },
+
 
     # ─────────────────────────────────────────────
     # 📡 TELEGRAM BOT

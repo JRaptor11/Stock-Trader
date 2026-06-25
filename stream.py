@@ -40,6 +40,17 @@ import concurrent.futures
 # Save original thread constructor for patching elsewhere if desired
 _original_thread = threading.Thread
 
+
+def _old_stream_strategy_enabled() -> bool:
+    """Return whether the legacy tick strategy may submit broker orders."""
+    return bool(
+        app_state.get("execution", {}).get(
+            "old_stream_strategy_enabled",
+            False,
+        )
+    )
+
+
 class FakeTrade:
     """ Helper for generating test trade objects """
     def __init__(self, price, symbol):
@@ -49,6 +60,7 @@ class FakeTrade:
 
     def __repr__(self):
         return f"<FakeTrade symbol={self.symbol} price={self.price} size={self.size}>"
+
 
 class ThreadedAlpacaStream:
     def __init__(self, api_key, secret_key, symbols):
@@ -300,6 +312,15 @@ class ThreadedAlpacaStream:
 
             if signal == "buy":
                 logging.info(f"[HandleTrade] 🟢 BUY signal detected — entering buy logic")
+
+                if not _old_stream_strategy_enabled():
+                    logging.info(
+                        "[ExecutionMode] %s legacy BUY suppressed; "
+                        "stream strategy is observation-only.",
+                        symbol,
+                    )
+                    return
+
                 # 💡 Smart safeguard: avoid duplicate buys
                 if ( has_position or not can_sell ) and not app_state["stream"].get("allow_multiple_positions", False):
                     logging.warning(f"[{timestamp}] 🛑 Buy skipped — already holding {symbol} position.")
@@ -328,6 +349,15 @@ class ThreadedAlpacaStream:
                     can_sell,
                     app_state.get("open_trades", {}).get(symbol),
                 )
+
+                if not _old_stream_strategy_enabled():
+                    logging.info(
+                        "[ExecutionMode] %s legacy SELL suppressed; "
+                        "stream strategy is observation-only.",
+                        symbol,
+                    )
+                    return
+
                 try:
                     await self._execute_sell(symbol, price)
                 except Exception as e:
@@ -345,6 +375,15 @@ class ThreadedAlpacaStream:
     
     async def _execute_buy(self, symbol, price):
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+        if not _old_stream_strategy_enabled():
+            logging.warning(
+                "[%s] [ExecutionMode] Direct legacy BUY blocked for %s; "
+                "stream strategy execution is disabled.",
+                timestamp,
+                symbol,
+            )
+            return
 
         if has_active_entry_lock(symbol):
             logging.info(f"[{timestamp}] ⛔ BUY blocked for {symbol} — active entry lock.")
@@ -534,6 +573,16 @@ class ThreadedAlpacaStream:
     
     async def _execute_sell(self, symbol, price):
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+        if not _old_stream_strategy_enabled():
+            logging.warning(
+                "[%s] [ExecutionMode] Direct legacy SELL blocked for %s; "
+                "stream strategy execution is disabled.",
+                timestamp,
+                symbol,
+            )
+            return
+
         sells_in_progress = self.app_state["strategy"].setdefault("sells_in_progress", set())
 
         try:
