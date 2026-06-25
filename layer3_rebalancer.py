@@ -15,6 +15,7 @@ L3_MAX_TRADES_PER_CYCLE = 3
 L3_MAX_BUYS_PER_CYCLE = 1
 L3_MAX_SELLS_PER_CYCLE = 2
 
+L3_MAX_TOTAL_BUY_NOTIONAL_PER_CYCLE = 7500.0
 L3_MAX_BUY_NOTIONAL_PER_CYCLE = 7500.0
 L3_MAX_SELL_NOTIONAL_PER_CYCLE = 7500.0
 
@@ -386,6 +387,116 @@ def _build_row(
     }
 
 
+def _plan_priority(row):
+    decision = row.get("decision")
+    symbol = row.get("symbol", "")
+
+    if decision == "SELL":
+        return (
+            0,
+            -abs(_safe_float(row.get("delta_value"), 0.0)),
+            symbol,
+        )
+
+    if decision == "BUY":
+        return (
+            1,
+            -_safe_float(row.get("delta_value"), 0.0),
+            symbol,
+        )
+
+    if decision == "HOLD":
+        return (2, symbol)
+
+    return (3, symbol)
+
+
+def _defer_trade(row: dict, reason: str, blocked_by_reason: str) -> dict:
+    row["decision"] = "SKIP"
+    row["reason"] = reason
+    row["planned_qty"] = 0.0
+    row["planned_notional"] = 0.0
+    row["blocked_by"] = list(row.get("blocked_by", [])) + [blocked_by_reason]
+    return row
+
+
+def _apply_cycle_trade_limits(plan: list[dict]) -> list[dict]:
+    buys_used = 0
+    sells_used = 0
+    trades_used = 0
+    buy_notional_used = 0.0
+
+    limited_plan = []
+
+    for row in plan:
+        decision = row.get("decision")
+
+        if decision not in {"BUY", "SELL"}:
+            limited_plan.append(row)
+            continue
+
+        planned_notional = _safe_float(row.get("planned_notional"), 0.0)
+
+        if planned_notional <= 0:
+            limited_plan.append(row)
+            continue
+
+        if trades_used >= L3_MAX_TRADES_PER_CYCLE:
+            limited_plan.append(
+                _defer_trade(
+                    row,
+                    reason="cycle_trade_limit_deferred",
+                    blocked_by_reason="cycle_trade_limit",
+                )
+            )
+            continue
+
+        if decision == "BUY":
+            if buys_used >= L3_MAX_BUYS_PER_CYCLE:
+                limited_plan.append(
+                    _defer_trade(
+                        row,
+                        reason="cycle_buy_limit_deferred",
+                        blocked_by_reason="cycle_buy_limit",
+                    )
+                )
+                continue
+
+            if buy_notional_used + planned_notional > L3_MAX_TOTAL_BUY_NOTIONAL_PER_CYCLE:
+                limited_plan.append(
+                    _defer_trade(
+                        row,
+                        reason="cycle_buy_notional_limit_deferred",
+                        blocked_by_reason="cycle_buy_notional_limit",
+                    )
+                )
+                continue
+
+            buys_used += 1
+            trades_used += 1
+            buy_notional_used += planned_notional
+            limited_plan.append(row)
+            continue
+
+        if decision == "SELL":
+            if sells_used >= L3_MAX_SELLS_PER_CYCLE:
+                limited_plan.append(
+                    _defer_trade(
+                        row,
+                        reason="cycle_sell_limit_deferred",
+                        blocked_by_reason="cycle_sell_limit",
+                    )
+                )
+                continue
+
+            sells_used += 1
+            trades_used += 1
+            limited_plan.append(row)
+            continue
+
+    return limited_plan
+
+
 def _cap_planned_notional(decision: str, delta_value: float, current_qty: float, equity: float) -> tuple[float, str | None]:
     """
     Cap how aggressively Layer 3 moves toward a target in one cycle.
@@ -663,13 +774,8 @@ def run_layer3_dry_run() -> dict:
         plan.append(row)
 
     # Sells first, then buys, then holds/skips.
-    priority = {
-        "SELL": 0,
-        "BUY": 1,
-        "HOLD": 2,
-        "SKIP": 3,
-    }
-    plan.sort(key=lambda row: (priority.get(row["decision"], 99), row["symbol"]))
+    plan.sort(key=_plan_priority)
+    plan = _apply_cycle_trade_limits(plan)
 
     # Cash estimate pass.
     estimated_cash = cash
@@ -731,6 +837,13 @@ def run_layer3_dry_run() -> dict:
         "plan_count": len(plan),
         "decision_counts": decision_counts,
         "fail_safe_active": fail_safe_active,
+
+        "cycle_trade_limits": {
+            "max_trades": L3_MAX_TRADES_PER_CYCLE,
+            "max_buys": L3_MAX_BUYS_PER_CYCLE,
+            "max_sells": L3_MAX_SELLS_PER_CYCLE,
+            "max_total_buy_notional": L3_MAX_TOTAL_BUY_NOTIONAL_PER_CYCLE,
+        },
     }
 
     rebalance["last_cycle_id"] = cycle_id
