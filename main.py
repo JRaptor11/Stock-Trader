@@ -80,6 +80,8 @@ from layer_monitor import run_layer_monitor
 from portfolio_layers import LayeredPortfolioEngine
 from paper_portfolio import PaperPortfolio
 
+from portfolio_reconciler import run_portfolio_reconciler
+
 load_dotenv()
 
 
@@ -149,6 +151,14 @@ def ensure_app_state_structure() -> None:
     strategy.setdefault("volatility_scorer", None)
 
     app_state.setdefault("open_trades", {})
+
+    portfolio_reconcile = app_state.setdefault("portfolio_reconcile", {})
+    portfolio_reconcile.setdefault("running", False)
+    portfolio_reconcile.setdefault("broker_snapshot", {})
+    portfolio_reconcile.setdefault("last_summary", {})
+    portfolio_reconcile.setdefault("last_mismatches", [])
+    portfolio_reconcile.setdefault("last_repairs", [])
+    portfolio_reconcile.setdefault("last_error", None)
 
     telegram = app_state.setdefault("telegram", {})
     telegram.setdefault("bot_started", False)
@@ -358,6 +368,14 @@ async def _background_startup_after_bind() -> None:
             sync_open_positions_to_app_state(app_state)
         except Exception:
             logging.warning("⚠️ Initial position sync failed (startup continues).", exc_info=True)
+
+        portfolio_reconcile_task = asyncio.create_task(
+            run_portfolio_reconciler(interval_seconds=300, repair=True),
+            name="portfolio-reconciler-task",
+        )
+        app_state["main"]["async_tasks"].add(portfolio_reconcile_task)
+
+        logging.info("[PortfolioReconcile] Portfolio reconciler task scheduled.")
 
         t1 = safe_thread(monitor_fail_safes, name="FailSafeMonitor", daemon=True)
         app_state["main"]["threads"].append(t1)
