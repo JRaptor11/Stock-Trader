@@ -8,6 +8,11 @@ from utils.threading_utils import safe_thread
 from utils.trade_utils import log_trade_to_summary
 from state import app_state
 
+
+EXTENDED_LIMIT_ORDER_MAX_AGE_SECONDS = 15 * 60
+CANCEL_EXTENDED_LIMITS_WHEN_MARKET_OPENS = True
+
+
 def _order_monitor_thread_entry() -> None:
     """
     Thread entrypoint: runs the async order monitor loop in its own event loop.
@@ -200,6 +205,193 @@ def clear_tracked_order(symbol: str) -> None:
     app_state.setdefault("open_orders", {}).pop(symbol, None)
 
 
+def _parse_tracked_at(value):
+    if not value:
+        return None
+
+    try:
+        text = str(value)
+        if text.endswith("Z"):
+            text = text.replace("Z", "+00:00")
+
+        dt = datetime.fromisoformat(text)
+
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+
+        return dt.astimezone(timezone.utc)
+
+    except Exception:
+        return None
+
+
+def _order_age_seconds(tracked: dict) -> float:
+    tracked_at = _parse_tracked_at(tracked.get("tracked_at")) if isinstance(tracked, dict) else None
+
+    if not tracked_at:
+        return 0.0
+
+    return max(0.0, (datetime.now(timezone.utc) - tracked_at).total_seconds())
+
+
+def _cleanup_local_order_state_after_cancel(symbol: str, side: str | None) -> None:
+    """
+    Remove local tracking for an order we intentionally canceled.
+
+    Important:
+    - For canceled BUY orders, remove pending local open_trades entries only.
+    - Do not remove real filled/synced positions.
+    - For canceled SELL orders, clear sell guards so future sells are not blocked forever.
+    """
+    side = normalize_side(side) if side else None
+
+    clear_tracked_order(symbol)
+
+    if side == "buy":
+        clear_entry_lock(symbol)
+
+        trade_info = app_state.get("open_trades", {}).get(symbol)
+        if isinstance(trade_info, dict):
+            status = str(trade_info.get("status", "")).lower().strip()
+            if status == "pending":
+                app_state["open_trades"].pop(symbol, None)
+
+    elif side == "sell":
+        app_state.setdefault("strategy", {}).setdefault("sells_in_progress", set()).discard(symbol)
+
+
+def cancel_tracked_order(symbol: str, reason: str = "manual_cleanup") -> bool:
+    """
+    Request cancellation for one tracked broker order.
+
+    Important:
+    Do not immediately clear local tracking after a cancel request.
+    The order may briefly remain pending_cancel, or it could still fill before
+    the broker confirms cancellation. The monitor loop should finalize the real
+    terminal state.
+    """
+    tracked = get_tracked_order(symbol)
+
+    if not isinstance(tracked, dict):
+        logging.info("[OrderCleanup] No tracked order found for %s.", symbol)
+        return False
+
+    order_id = tracked.get("order_id")
+    side = tracked.get("side")
+
+    if not order_id:
+        logging.warning("[OrderCleanup] %s tracked order missing order_id; clearing local state.", symbol)
+        _cleanup_local_order_state_after_cancel(symbol, side)
+        return True
+
+    try:
+        app_state["trading_client"].cancel_order_by_id(order_id)
+
+        tracked["cancel_requested"] = True
+        tracked["cancel_reason"] = reason
+        tracked["cancel_requested_at"] = datetime.now(timezone.utc).isoformat()
+
+        logging.warning(
+            "[OrderCleanup] Requested cancel for tracked order | symbol=%s side=%s order_id=%s reason=%s",
+            symbol,
+            side,
+            order_id,
+            reason,
+        )
+
+        return True
+
+    except Exception as e:
+        message = str(e).lower()
+
+        # If broker already closed/removed it, local tracking is stale and should be cleared.
+        if "not found" in message or "404" in message:
+            logging.warning(
+                "[OrderCleanup] Broker order not found for %s; clearing local stale order. order_id=%s",
+                symbol,
+                order_id,
+            )
+            _cleanup_local_order_state_after_cancel(symbol, side)
+            return True
+
+        logging.warning(
+            "[OrderCleanup] Failed to request cancel for %s; keeping tracking for now. order_id=%s error=%s",
+            symbol,
+            order_id,
+            e,
+        )
+        return False
+
+
+def cancel_stale_extended_limit_orders_if_market_open() -> int:
+    """
+    Cancel extended-hours limit orders that survived into regular market hours.
+
+    This prevents a premarket limit order from blocking the symbol all day after
+    price has moved away from the stale limit.
+    """
+    if not CANCEL_EXTENDED_LIMITS_WHEN_MARKET_OPENS:
+        return 0
+
+    client = app_state.get("trading_client")
+    if not client:
+        return 0
+
+    try:
+        clock = client.get_clock()
+        market_is_open = bool(getattr(clock, "is_open", False))
+    except Exception as e:
+        logging.warning("[OrderCleanup] Could not check market clock: %s", e)
+        return 0
+
+    if not market_is_open:
+        return 0
+
+    canceled = 0
+
+    for symbol, tracked in list(app_state.setdefault("open_orders", {}).items()):
+        if not isinstance(tracked, dict):
+            continue
+
+        was_created_outside_market = tracked.get("market_is_open") is False
+        age_seconds = _order_age_seconds(tracked)
+
+        if not was_created_outside_market:
+            continue
+
+        if age_seconds < EXTENDED_LIMIT_ORDER_MAX_AGE_SECONDS:
+            continue
+
+        order_id = tracked.get("order_id")
+
+        try:
+            order = client.get_order_by_id(order_id)
+            status = normalize_status(getattr(order, "status", ""))
+            order_type = str(getattr(order, "type", "")).lower()
+        except Exception as e:
+            logging.warning(
+                "[OrderCleanup] Could not fetch tracked order for stale check | symbol=%s order_id=%s error=%s",
+                symbol,
+                order_id,
+                e,
+            )
+            continue
+
+        if status in {"filled", "canceled", "expired", "rejected", "done_for_day"}:
+            continue
+
+        if "limit" not in order_type:
+            continue
+
+        if cancel_tracked_order(symbol, reason="stale_extended_limit_survived_market_open"):
+            canceled += 1
+
+    if canceled:
+        logging.warning("[OrderCleanup] Canceled %s stale extended-hours limit order(s) after market open.", canceled)
+
+    return canceled
+
+
 def get_open_order_for_symbol_side(symbol: str, side: str):
     """
     Return the first broker-side open order matching symbol + side, else None.
@@ -336,6 +528,11 @@ async def monitor_open_orders_loop() -> None:
             # Exit if nothing to monitor
             if not app_state["open_orders"]:
                 return
+            
+            cancel_stale_extended_limit_orders_if_market_open()
+
+            if not app_state["open_orders"]:
+                return
 
             for symbol, tracked in list(app_state["open_orders"].items()):
                 if shutdown_event and shutdown_event.is_set():
@@ -385,16 +582,7 @@ async def monitor_open_orders_loop() -> None:
                         del app_state["open_orders"][symbol]
 
                     elif status in ("canceled", "expired", "rejected", "done_for_day"):
-                        if tracked_side == "sell":
-                            app_state["strategy"].setdefault("sells_in_progress", set()).discard(symbol)
-
-                        trade_info = app_state.get("open_trades", {}).get(symbol)
-                        if tracked_side == "buy":
-                            clear_entry_lock(symbol)
-                            if trade_info and trade_info.get("status") == "pending":
-                                app_state["open_trades"].pop(symbol, None)
-
-                        del app_state["open_orders"][symbol]
+                        _cleanup_local_order_state_after_cancel(symbol, tracked_side)
                         logging.warning(f"[✖️ OrderClosed] {symbol} → {status.upper()} — removed from tracking")
 
                     else:
@@ -500,3 +688,38 @@ def check_local_position(symbol, open_trades) -> tuple[bool, bool]:
 
     return has_position, can_sell
 
+
+def should_block_extended_order_near_open(buffer_seconds: int = 15 * 60) -> tuple[bool, str]:
+    """
+    Prevent new extended-hours limit orders shortly before regular market open.
+
+    This avoids submitting a premarket limit order that immediately becomes stale
+    when the market opens and price moves away.
+    """
+    client = app_state.get("trading_client")
+    if not client:
+        return True, "missing_trading_client"
+
+    try:
+        clock = client.get_clock()
+    except Exception as e:
+        return True, f"clock_check_failed: {e}"
+
+    if bool(getattr(clock, "is_open", False)):
+        return False, "market_open"
+
+    now = datetime.now(timezone.utc)
+    next_open = getattr(clock, "next_open", None)
+
+    if not next_open:
+        return False, "next_open_unavailable"
+
+    if next_open.tzinfo is None:
+        next_open = next_open.replace(tzinfo=timezone.utc)
+
+    seconds_until_open = (next_open.astimezone(timezone.utc) - now).total_seconds()
+
+    if 0 <= seconds_until_open <= buffer_seconds:
+        return True, f"market_opens_in_{int(seconds_until_open)}s"
+
+    return False, "safe_extended_hours_window"

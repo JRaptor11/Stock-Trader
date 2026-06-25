@@ -30,6 +30,7 @@ from utils.orders_utils import (
     clear_entry_lock,
     _finalize_filled_buy,
     _finalize_filled_sell,
+    should_block_extended_order_near_open
 )
 from utils import config_utils
 from patched_stream import PatchedStockDataStream
@@ -377,6 +378,18 @@ class ThreadedAlpacaStream:
             try:
                 clock = app_state["trading_client"].get_clock()
                 market_is_open = clock.is_open
+
+                if not market_is_open:
+                    should_block, block_reason = should_block_extended_order_near_open()
+
+                    if should_block:
+                        logging.info(
+                            "[OrderBlock] Extended-hours order blocked near market open | symbol=%s reason=%s",
+                            symbol,
+                            block_reason,
+                        )
+                        return
+    
             except Exception as e:
                 logging.error(f"[{timestamp}] ⚠️ Could not determine market status: {e}")
                 send_email_alert("⚠️ Market Status Check Failed", str(e))
@@ -531,6 +544,18 @@ class ThreadedAlpacaStream:
             try:
                 clock = app_state["trading_client"].get_clock()
                 market_is_open = clock.is_open
+
+                if not market_is_open:
+                    should_block, block_reason = should_block_extended_order_near_open()
+
+                    if should_block:
+                        logging.info(
+                            "[OrderBlock] Extended-hours order blocked near market open | symbol=%s reason=%s",
+                            symbol,
+                            block_reason,
+                        )
+                        return
+    
             except Exception as e:
                 logging.error(f"[{timestamp}] ⚠️ Could not determine market status: {e}")
                 send_email_alert("⚠️ Market Status Check Failed", str(e))
