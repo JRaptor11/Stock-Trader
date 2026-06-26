@@ -85,6 +85,27 @@ from portfolio_reconciler import run_portfolio_reconciler
 load_dotenv()
 
 
+def get_int_env(name: str, default: int) -> int:
+    """
+    Parse integer environment variables safely.
+    """
+    raw = os.getenv(name)
+
+    if raw is None:
+        return default
+
+    try:
+        return int(raw.strip())
+    except ValueError:
+        logging.warning(
+            "Invalid integer env var %s=%r. Using default=%s.",
+            name,
+            raw,
+            default,
+        )
+        return default
+
+
 def get_bool_env(name: str, default: bool = False) -> bool:
     """
     Parse boolean environment variables safely.
@@ -120,6 +141,8 @@ def ensure_app_state_structure() -> None:
     execution.setdefault("old_stream_strategy_enabled", False)
     execution.setdefault("layer3_execution_enabled", False)
     execution.setdefault("layer3_market_hours_only", True)
+    execution.setdefault("layer3_bootstrap_confirmation_enabled", True)
+    execution.setdefault("layer3_bootstrap_min_bar_count", 8)
 
     layers = app_state.setdefault("layers", {})
     layers.setdefault("paper_portfolio", None)
@@ -241,6 +264,16 @@ def load_environment_config() -> None:
     config.LAYER3_MARKET_HOURS_ONLY = get_bool_env(
         "LAYER3_MARKET_HOURS_ONLY",
         True,
+    )
+
+    config.LAYER3_BOOTSTRAP_CONFIRMATION_ENABLED = get_bool_env(
+    "LAYER3_BOOTSTRAP_CONFIRMATION_ENABLED",
+        True,
+    )
+
+    config.LAYER3_BOOTSTRAP_MIN_BAR_COUNT = get_int_env(
+        "LAYER3_BOOTSTRAP_MIN_BAR_COUNT",
+        8,
     )
 
 async def safe_close_trading_client(client) -> None:
@@ -461,6 +494,21 @@ async def lifespan(app_fastapi):
         )
         app_state["execution"]["layer3_market_hours_only"] = (
             config.LAYER3_MARKET_HOURS_ONLY
+        )
+        app_state["execution"]["layer3_bootstrap_confirmation_enabled"] = (
+            config.LAYER3_BOOTSTRAP_CONFIRMATION_ENABLED
+        )
+        app_state["execution"]["layer3_bootstrap_min_bar_count"] = (
+            config.LAYER3_BOOTSTRAP_MIN_BAR_COUNT
+        )
+
+        logging.info(
+            "[Layer3Execution] execution_enabled=%s market_hours_only=%s "
+            "bootstrap_confirmation_enabled=%s bootstrap_min_bar_count=%s",
+            config.LAYER3_EXECUTION_ENABLED,
+            config.LAYER3_MARKET_HOURS_ONLY,
+            config.LAYER3_BOOTSTRAP_CONFIRMATION_ENABLED,
+            config.LAYER3_BOOTSTRAP_MIN_BAR_COUNT,
         )
 
         if config.OLD_STREAM_STRATEGY_ENABLED:

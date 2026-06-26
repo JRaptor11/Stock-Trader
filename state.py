@@ -89,6 +89,9 @@ app_state = {
         # Layer 3 execution remains dry-run by default.
         "layer3_execution_enabled": False,
         "layer3_market_hours_only": True,
+
+        "layer3_bootstrap_confirmation_enabled": True,
+        "layer3_bootstrap_min_bar_count": 8,
     },
 
     # ─────────────────────────────────────────────

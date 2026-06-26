@@ -49,6 +49,12 @@ def store_latest_layer_result(symbols, bar_counts, ranked, target):
     rebalance.setdefault("target_absent_counts", {})
     rebalance.setdefault("last_error", None)
 
+    rebalance.setdefault("bootstrap_confirmation_applied", False)
+    rebalance.setdefault("bootstrap_confirmation_symbols", [])
+    rebalance.setdefault("last_confirmation_update_at", None)
+    rebalance.setdefault("confirmation_updates_allowed", None)
+    rebalance.setdefault("confirmation_updates_blocked_reason", None)
+
     logging.info(
         "[Layers] Stored latest Layer 1/2 result for Layer 3 | ranked_count=%s target=%s",
         len(ranked_snapshot),

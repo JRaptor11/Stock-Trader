@@ -2,6 +2,7 @@ import logging
 from datetime import datetime, timezone
 
 from state import app_state
+from utils import config_utils as config
 
 try:
     from alpaca.trading.enums import QueryOrderStatus
@@ -44,6 +45,80 @@ def _safe_float(value, default=0.0) -> float:
 
 def _norm_symbol(symbol) -> str:
     return str(symbol or "").upper().strip()
+
+
+def _safe_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _layer3_bool_setting(name: str, default: bool) -> bool:
+    return bool(
+        app_state.get("execution", {}).get(
+            name,
+            getattr(config, name.upper(), default),
+        )
+    )
+
+
+def _layer3_int_setting(name: str, default: int) -> int:
+    return _safe_int(
+        app_state.get("execution", {}).get(
+            name,
+            getattr(config, name.upper(), default),
+        ),
+        default,
+    )
+
+
+def _get_market_is_open() -> bool:
+    client = app_state.get("trading_client")
+
+    if client is None:
+        return False
+
+    try:
+        clock = client.get_clock()
+        return bool(getattr(clock, "is_open", False))
+    except Exception:
+        logging.warning(
+            "[Layer3] Could not fetch market clock for confirmation logic.",
+            exc_info=True,
+        )
+        return False
+
+
+def _target_symbols_from_portfolio(target_portfolio: dict) -> set[str]:
+    symbols = set()
+
+    if not isinstance(target_portfolio, dict):
+        return symbols
+
+    for symbol, weight in target_portfolio.items():
+        symbol_str = str(symbol or "").upper().strip()
+
+        if not symbol_str:
+            continue
+
+        if symbol_str.startswith("_"):
+            continue
+
+        if symbol_str in {"CASH", "USD"}:
+            continue
+
+        try:
+            weight_float = float(weight or 0.0)
+        except Exception:
+            weight_float = 0.0
+
+        if weight_float <= 0:
+            continue
+
+        symbols.add(symbol_str)
+
+    return symbols
 
 
 def clean_target_portfolio(target: dict) -> tuple[dict, float, dict]:
@@ -246,12 +321,18 @@ def _get_open_order_symbols() -> tuple[set, dict]:
     return symbols, details
 
 
-def _update_target_stability(rebalance: dict, target_weights: dict, positions: dict) -> tuple[dict, dict]:
+def _update_target_stability(
+    rebalance: dict,
+    target_weights: dict,
+    positions: dict,
+) -> tuple[dict, dict]:
     """
     Track how many consecutive cycles a symbol has appeared in the target,
     and how many consecutive cycles a held symbol has been absent from the target.
 
-    This prevents Layer 3 from rotating aggressively every 20 minutes.
+    If LAYER3_MARKET_HOURS_ONLY=true, confirmation counters only advance
+    while the market is open. Layer 3 may still plan/log after hours,
+    but it should not become more confident from closed-market cycles.
     """
     seen_counts = rebalance.setdefault("target_seen_counts", {})
     absent_counts = rebalance.setdefault("target_absent_counts", {})
@@ -259,22 +340,50 @@ def _update_target_stability(rebalance: dict, target_weights: dict, positions: d
     target_symbols = set(target_weights.keys())
     all_symbols = set(target_symbols) | set(positions.keys())
 
+    market_is_open = _get_market_is_open()
+    market_hours_only = _layer3_bool_setting(
+        "layer3_market_hours_only",
+        True,
+    )
+
+    confirmation_updates_allowed = (
+        market_is_open or not market_hours_only
+    )
+
+    rebalance["market_is_open"] = market_is_open
+    rebalance["confirmation_updates_allowed"] = confirmation_updates_allowed
+    rebalance["confirmation_updates_blocked_reason"] = (
+        None if confirmation_updates_allowed else "market_closed"
+    )
+
+    if not confirmation_updates_allowed:
+        logging.info(
+            "[Layer3] Confirmation counters frozen because market is closed "
+            "and LAYER3_MARKET_HOURS_ONLY=true."
+        )
+        return seen_counts, absent_counts
+
     for symbol in all_symbols:
         if symbol in target_symbols:
-            seen_counts[symbol] = int(seen_counts.get(symbol, 0) or 0) + 1
+            seen_counts[symbol] = _safe_int(seen_counts.get(symbol, 0), 0) + 1
             absent_counts[symbol] = 0
         else:
-            absent_counts[symbol] = int(absent_counts.get(symbol, 0) or 0) + 1
+            absent_counts[symbol] = _safe_int(absent_counts.get(symbol, 0), 0) + 1
             seen_counts[symbol] = 0
+
+    rebalance["last_confirmation_update_at"] = datetime.now(
+        timezone.utc
+    ).isoformat()
 
     # Optional cleanup so these dicts do not grow forever.
     keep_symbols = all_symbols
+
     for symbol in list(seen_counts.keys()):
-        if symbol not in keep_symbols and int(seen_counts.get(symbol, 0) or 0) <= 0:
+        if symbol not in keep_symbols and _safe_int(seen_counts.get(symbol, 0), 0) <= 0:
             seen_counts.pop(symbol, None)
 
     for symbol in list(absent_counts.keys()):
-        if symbol not in keep_symbols and int(absent_counts.get(symbol, 0) or 0) <= 0:
+        if symbol not in keep_symbols and _safe_int(absent_counts.get(symbol, 0), 0) <= 0:
             absent_counts.pop(symbol, None)
 
     return seen_counts, absent_counts
@@ -527,6 +636,96 @@ def _cap_planned_notional(decision: str, delta_value: float, current_qty: float,
     return abs_delta, None
 
 
+def _maybe_bootstrap_layer3_confirmation(
+    rebalance: dict,
+    target_symbols: set[str],
+    required_seen_count: int,
+    market_is_open: bool,
+) -> list[str]:
+    """
+    Warm-start target confirmation after startup/redeploy.
+
+    Bootstrap is allowed only when:
+    - LAYER3_BOOTSTRAP_CONFIRMATION_ENABLED=true
+    - the symbol is currently in the target portfolio
+    - the symbol has enough recent bars
+    - either the market is open OR LAYER3_MARKET_HOURS_ONLY=false
+    """
+
+    bootstrap_enabled = _layer3_bool_setting(
+        "layer3_bootstrap_confirmation_enabled",
+        True,
+    )
+
+    if not bootstrap_enabled:
+        return []
+
+    if rebalance.get("bootstrap_confirmation_applied"):
+        return []
+
+    market_hours_only = _layer3_bool_setting(
+        "layer3_market_hours_only",
+        True,
+    )
+
+    if market_hours_only and not market_is_open:
+        logging.info(
+            "[Layer3Bootstrap] Skipping bootstrap because market is closed "
+            "and LAYER3_MARKET_HOURS_ONLY=true."
+        )
+        return []
+
+    min_bar_count = _layer3_int_setting(
+        "layer3_bootstrap_min_bar_count",
+        8,
+    )
+
+    latest = app_state.get("layers", {}).get("latest", {})
+    bar_counts = latest.get("bar_counts", {}) or {}
+
+    target_seen_counts = rebalance.setdefault("target_seen_counts", {})
+
+    bootstrapped_symbols = []
+
+    for symbol in sorted(target_symbols):
+        bars_available = _safe_int(bar_counts.get(symbol, 0), 0)
+
+        if bars_available < min_bar_count:
+            logging.info(
+                "[Layer3Bootstrap] %s not bootstrapped; bars_available=%s "
+                "min_required=%s",
+                symbol,
+                bars_available,
+                min_bar_count,
+            )
+            continue
+
+        current_seen = _safe_int(target_seen_counts.get(symbol, 0), 0)
+        target_seen_counts[symbol] = max(
+            current_seen,
+            required_seen_count,
+        )
+        bootstrapped_symbols.append(symbol)
+
+    rebalance["bootstrap_confirmation_applied"] = True
+    rebalance["bootstrap_confirmation_symbols"] = bootstrapped_symbols
+
+    if bootstrapped_symbols:
+        logging.warning(
+            "[Layer3Bootstrap] Bootstrapped target confirmation for symbols=%s "
+            "required_seen_count=%s min_bar_count=%s",
+            bootstrapped_symbols,
+            required_seen_count,
+            min_bar_count,
+        )
+    else:
+        logging.info(
+            "[Layer3Bootstrap] Bootstrap completed but no symbols qualified."
+        )
+
+    return bootstrapped_symbols
+
+
 def run_layer3_dry_run() -> dict:
     """
     Broker-aware Layer 3 dry-run planner.
@@ -578,7 +777,28 @@ def run_layer3_dry_run() -> dict:
     ranked_prices = _ranked_price_map(latest)
     positions = _get_positions_snapshot()
     open_order_symbols, open_order_details = _get_open_order_symbols()
-    seen_counts, absent_counts = _update_target_stability(rebalance, target_weights, positions)
+
+    seen_counts, absent_counts = _update_target_stability(
+        rebalance,
+        target_weights,
+        positions,
+    )
+
+    market_is_open = bool(rebalance.get("market_is_open", False))
+    confirmation_updates_allowed = bool(
+        rebalance.get("confirmation_updates_allowed", False)
+    )
+
+    target_symbols = set(target_weights.keys())
+    bootstrapped_symbols = []
+
+    if confirmation_updates_allowed:
+        bootstrapped_symbols = _maybe_bootstrap_layer3_confirmation(
+            rebalance=rebalance,
+            target_symbols=target_symbols,
+            required_seen_count=L3_REQUIRE_TARGET_CONFIRMATION_CYCLES,
+            market_is_open=market_is_open,
+        )
 
     fail_safe_active = bool(app_state.get("fail_safes", {}).get("state"))
 
@@ -820,6 +1040,20 @@ def run_layer3_dry_run() -> dict:
         "dry_run": True,
         "cycle_id": cycle_id,
         "timestamp": timestamp,
+
+        "market_is_open": market_is_open,
+        "confirmation_updates_allowed": confirmation_updates_allowed,
+        "confirmation_updates_blocked_reason": rebalance.get(
+            "confirmation_updates_blocked_reason"
+        ),
+        "bootstrap_confirmation_applied": rebalance.get(
+            "bootstrap_confirmation_applied",
+            False,
+        ),
+        "bootstrap_confirmation_symbols": rebalance.get(
+            "bootstrap_confirmation_symbols",
+            [],
+        ),
 
         "target_symbol_count": len(target_weights),
         "target_cash_pct": round(target_cash_pct, 6),
