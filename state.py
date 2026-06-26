@@ -82,8 +82,29 @@ app_state = {
     # 🚦 EXECUTION MODE
     # ─────────────────────────────────────────────
     "execution": {
-        # The legacy strategy can calculate signals but cannot place orders.
+        # Keep old tick-by-tick strategy observational by default.
+        # The stream still collects ticks, but old stream.py buy/sell execution is blocked.
         "old_stream_strategy_enabled": False,
+
+        # Layer 3 execution remains dry-run by default.
+        "layer3_execution_enabled": False,
+        "layer3_market_hours_only": True,
+    },
+
+    # ─────────────────────────────────────────────
+    # 🧱 LAYERED PORTFOLIO STATE
+    # ─────────────────────────────────────────────
+    "layers": {
+        "paper_portfolio": None,
+        "engine": None,
+
+        "latest": {},
+        "rebalance": {},
+        "execution": {
+            "last_cycle_id": None,
+            "last_attempted_at": None,
+            "last_result": None,
+        },
     },
 
     # ─────────────────────────────────────────────

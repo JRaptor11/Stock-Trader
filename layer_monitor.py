@@ -5,14 +5,16 @@ from bar_data import fetch_recent_bars
 
 from state import app_state
 from layer3_rebalancer import run_layer3_dry_run
+from layer3_executor import execute_layer3_plan
 
 
 def store_latest_layer_result(symbols, bar_counts, ranked, target):
     """
     Store the latest Layer 1/2 result in app_state so Layer 3 can read it.
 
-    This does not place trades.
-    It only creates a clean handoff from Layer 1/2 -> Layer 3.
+    This function does not place trades.
+    It only creates the handoff from Layer 1/2 target generation
+    to Layer 3 planning/execution.
     """
     layers = app_state.setdefault("layers", {})
 
@@ -58,9 +60,11 @@ async def run_layer_monitor(interval_seconds: int = 900) -> None:
     """
     Runs Layer 1/2 evaluation on a timer.
 
-    This does NOT place trades.
-    It only logs rankings and target portfolio.
-    Safe during off-hours because it does not depend on incoming trade ticks.
+    Layer 1/2 builds the target portfolio.
+    Layer 3 builds a rebalance plan.
+
+    Order execution is controlled by LAYER3_EXECUTION_ENABLED.
+    When disabled, Layer 3 remains dry-run only.
     """
     logging.info("[Layers] Layer monitor started.")
 
@@ -77,7 +81,7 @@ async def run_layer_monitor(interval_seconds: int = 900) -> None:
                     logging.info("[Layers] No symbols configured. Skipping.")
                 else:
                     logging.info("[Layers] Starting scheduled evaluation.")
-                    
+
                     md = app_state.get("market_data", {}).get("buffer")
                     if md:
                         tick_counts = {
@@ -121,8 +125,36 @@ async def run_layer_monitor(interval_seconds: int = 900) -> None:
                         target=target,
                     )
 
-                    layer3_summary = run_layer3_dry_run()
-                    logging.info("[Layer3] Dry-run summary: %s", layer3_summary)
+                    layer3_result = run_layer3_dry_run()
+
+                    if isinstance(layer3_result, dict) and (
+                        "plan" in layer3_result or "summary" in layer3_result
+                    ):
+                        layer3_plan = layer3_result.get("plan", [])
+                        layer3_summary = layer3_result.get("summary", {})
+                    else:
+                        # Backward-compatible fallback:
+                        # If run_layer3_dry_run() still returns only a summary,
+                        # read the plan/summary from app_state["layers"]["rebalance"].
+                        rebalance = app_state.get("layers", {}).get("rebalance", {})
+                        layer3_plan = rebalance.get("last_plan", [])
+                        layer3_summary = (
+                            layer3_result
+                            if isinstance(layer3_result, dict)
+                            else rebalance.get("last_summary", {})
+                        )
+
+                    logging.info("[Layer3] Plan summary: %s", layer3_summary)
+
+                    layer3_execution_result = execute_layer3_plan(
+                        layer3_plan,
+                        layer3_summary,
+                    )
+
+                    logging.info(
+                        "[Layer3Exec] Execution result: %s",
+                        layer3_execution_result,
+                    )
 
                     if not ranked:
                         logging.info(

@@ -24,6 +24,9 @@ ENABLE_DEV_ROUTES = False
 
 OLD_STREAM_STRATEGY_ENABLED = False
 
+LAYER3_EXECUTION_ENABLED = False
+LAYER3_MARKET_HOURS_ONLY = True
+
 def get_config(key):
     return app_state["config_overrides"].get(key, app_state["config_defaults"].get(key))
 

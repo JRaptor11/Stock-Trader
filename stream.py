@@ -42,6 +42,21 @@ _original_thread = threading.Thread
 
 
 def _old_stream_strategy_enabled() -> bool:
+    """
+    Return whether the legacy tick-by-tick stream strategy may submit orders.
+
+    This should NOT control whether live ticks are received.
+    It only controls whether stream.py may call _execute_buy/_execute_sell.
+    """
+    return bool(
+        app_state.get("execution", {}).get(
+            "old_stream_strategy_enabled",
+            False,
+        )
+    )
+
+
+def _old_stream_strategy_enabled() -> bool:
     """Return whether the legacy tick strategy may submit broker orders."""
     return bool(
         app_state.get("execution", {}).get(
@@ -316,7 +331,8 @@ class ThreadedAlpacaStream:
                 if not _old_stream_strategy_enabled():
                     logging.info(
                         "[ExecutionMode] %s legacy BUY suppressed; "
-                        "stream strategy is observation-only.",
+                        "stream strategy is observation-only; ",
+                        "tick tracking remains active.",
                         symbol,
                     )
                     return
@@ -353,7 +369,8 @@ class ThreadedAlpacaStream:
                 if not _old_stream_strategy_enabled():
                     logging.info(
                         "[ExecutionMode] %s legacy SELL suppressed; "
-                        "stream strategy is observation-only.",
+                        "stream strategy is observation-only; ",
+                        "tick tracking remains active.",
                         symbol,
                     )
                     return
@@ -379,7 +396,7 @@ class ThreadedAlpacaStream:
         if not _old_stream_strategy_enabled():
             logging.warning(
                 "[%s] [ExecutionMode] Direct legacy BUY blocked for %s; "
-                "stream strategy execution is disabled.",
+                "old stream execution is disabled.",
                 timestamp,
                 symbol,
             )
@@ -577,7 +594,7 @@ class ThreadedAlpacaStream:
         if not _old_stream_strategy_enabled():
             logging.warning(
                 "[%s] [ExecutionMode] Direct legacy SELL blocked for %s; "
-                "stream strategy execution is disabled.",
+                "old stream execution is disabled.",
                 timestamp,
                 symbol,
             )

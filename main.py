@@ -118,6 +118,19 @@ def ensure_app_state_structure() -> None:
 
     execution = app_state.setdefault("execution", {})
     execution.setdefault("old_stream_strategy_enabled", False)
+    execution.setdefault("layer3_execution_enabled", False)
+    execution.setdefault("layer3_market_hours_only", True)
+
+    layers = app_state.setdefault("layers", {})
+    layers.setdefault("paper_portfolio", None)
+    layers.setdefault("engine", None)
+    layers.setdefault("latest", {})
+    layers.setdefault("rebalance", {})
+
+    layer_execution = layers.setdefault("execution", {})
+    layer_execution.setdefault("last_cycle_id", None)
+    layer_execution.setdefault("last_attempted_at", None)
+    layer_execution.setdefault("last_result", None)
 
     stream = app_state.setdefault("stream", {})
     stream.setdefault("manager", None)
@@ -218,6 +231,16 @@ def load_environment_config() -> None:
     config.OLD_STREAM_STRATEGY_ENABLED = get_bool_env(
         "OLD_STREAM_STRATEGY_ENABLED",
         False,
+    )
+
+    config.LAYER3_EXECUTION_ENABLED = get_bool_env(
+        "LAYER3_EXECUTION_ENABLED",
+        False,
+    )
+
+    config.LAYER3_MARKET_HOURS_ONLY = get_bool_env(
+        "LAYER3_MARKET_HOURS_ONLY",
+        True,
     )
 
 async def safe_close_trading_client(client) -> None:
@@ -321,13 +344,21 @@ async def _background_startup_after_bind() -> None:
         # Layered portfolio architecture
         # observation-only / no live orders
         # ─────────────────────────────────────────────
-        app_state["layers"] = {
-            "paper_portfolio": PaperPortfolio(),
-            "engine": LayeredPortfolioEngine(
-                app_state["market_data"]["buffer"],
-                top_n=5,
-            ),
-        }
+        layers = app_state.setdefault("layers", {})
+
+        layers["paper_portfolio"] = PaperPortfolio()
+        layers["engine"] = LayeredPortfolioEngine(
+            app_state["market_data"]["buffer"],
+            top_n=5,
+        )
+
+        layers.setdefault("latest", {})
+        layers.setdefault("rebalance", {})
+
+        layer_execution = layers.setdefault("execution", {})
+        layer_execution.setdefault("last_cycle_id", None)
+        layer_execution.setdefault("last_attempted_at", None)
+        layer_execution.setdefault("last_result", None)
 
         layer_task = asyncio.create_task(
             run_layer_monitor(interval_seconds=1200),
@@ -425,15 +456,30 @@ async def lifespan(app_fastapi):
         app_state["execution"]["old_stream_strategy_enabled"] = (
             config.OLD_STREAM_STRATEGY_ENABLED
         )
+        app_state["execution"]["layer3_execution_enabled"] = (
+            config.LAYER3_EXECUTION_ENABLED
+        )
+        app_state["execution"]["layer3_market_hours_only"] = (
+            config.LAYER3_MARKET_HOURS_ONLY
+        )
 
         if config.OLD_STREAM_STRATEGY_ENABLED:
             logging.warning(
-                "[ExecutionMode] Legacy stream strategy order execution is ENABLED."
+                "[ExecutionMode] Legacy tick-by-tick stream execution is ENABLED."
             )
         else:
             logging.info(
-                "[ExecutionMode] Legacy stream strategy is observation-only; "
-                "order execution is disabled."
+                "[ExecutionMode] Legacy tick-by-tick stream execution is disabled; "
+                "tick tracking remains active."
+            )
+
+        if config.LAYER3_EXECUTION_ENABLED:
+            logging.warning(
+                "[Layer3Execution] Layer 3 paper order execution is ENABLED."
+            )
+        else:
+            logging.info(
+                "[Layer3Execution] Layer 3 execution is disabled; dry-run planning only."
             )
 
         logging.info(f"ENABLE_DEV_ROUTES resolved to: {config.ENABLE_DEV_ROUTES}")
