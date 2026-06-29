@@ -36,9 +36,10 @@ from utils.lifecycle_utils import (
     record_program_shutdown,
     was_last_program_shutdown_abnormal,
     sync_open_positions_to_app_state,
+    safe_close_trading_client,
+    safe_send_startup_alert,
 )
 from utils.logging_utils import configure_logging, handle_asyncio_exception
-from utils.alerts_utils import send_email_alert
 from utils.telegram_bot_utils import start_telegram_bot
 
 from utils import config_utils as config
@@ -90,29 +91,8 @@ from app_config_init import (
 
 from portfolio_reconciler import run_portfolio_reconciler
 
+
 load_dotenv()
-
-
-async def safe_close_trading_client(client) -> None:
-    """Close the trading client safely whether close() is sync or async."""
-    close_fn = getattr(client, "close", None)
-    if not callable(close_fn):
-        return
-
-    try:
-        result = close_fn()
-        if asyncio.iscoroutine(result):
-            await result
-    except Exception as e:
-        logging.warning(f"Error closing trading client: {e}")
-
-
-async def _safe_send_startup_alert(subject: str, body: str) -> None:
-    """Run blocking email send off the event loop and never block startup."""
-    try:
-        await asyncio.to_thread(send_email_alert, subject, body)
-    except Exception:
-        logging.warning("Failed sending startup alert (ignored).", exc_info=True)
 
 
 async def _background_startup_after_bind() -> None:
@@ -129,7 +109,7 @@ async def _background_startup_after_bind() -> None:
 
         abnormal, reason = was_last_program_shutdown_abnormal()
         if abnormal:
-            await _safe_send_startup_alert(
+            await safe_send_startup_alert(
                 "⚠️ Abnormal Program Shutdown Detected",
                 f"Previous shutdown was not clean: {reason}",
             )

@@ -1,6 +1,7 @@
 import os
 import time
 import logging
+import asyncio
 import pathlib
 from datetime import datetime, timedelta, timezone
 from state import app_state
@@ -9,6 +10,7 @@ from config import PROGRAM_STARTUP_FILE, PROGRAM_SHUTDOWN_FILE, PROGRAM_SHUTDOWN
 from utils.threading_utils import safe_thread
 from utils.alerts_utils import send_email_alert
 
+
 def record_program_startup():
     try:
         with open(app_state["paths"]["PROGRAM_STARTUP_FILE"], "w") as f:
@@ -16,6 +18,7 @@ def record_program_startup():
         logging.info("✅ Program startup time recorded.")
     except Exception as e:
         logging.error(f"Failed to record program startup: {e}")
+
 
 def record_program_shutdown(reason="clean"):
     try:
@@ -26,6 +29,7 @@ def record_program_shutdown(reason="clean"):
         logging.info(f"🛑 Program shutdown recorded. Reason: {reason}")
     except Exception as e:
         logging.error(f"Failed to record program shutdown: {e}")
+
 
 def auto_restart_if_abnormal_shutdown():
     abnormal, reason = was_last_program_shutdown_abnormal()
@@ -40,6 +44,7 @@ def auto_restart_if_abnormal_shutdown():
     else:
         logging.info(f"🟢 Last shutdown was clean ({reason}). No restart needed.")
 
+
 def was_last_program_shutdown_abnormal():
     try:
         reason_path = app_state["paths"]["PROGRAM_SHUTDOWN_REASON_FILE"]
@@ -53,6 +58,7 @@ def was_last_program_shutdown_abnormal():
     except Exception as e:
         logging.error(f"Failed to check last shutdown status: {e}")
         return True, "Unknown error"
+
 
 def sync_open_positions_to_app_state(app_state):
     """
@@ -139,6 +145,7 @@ def sync_open_positions_to_app_state(app_state):
     except Exception as e:
         logging.error(f"❌ Failed to sync open positions: {e}")
 
+
 def should_send_startup_alert():
     try:
         path = pathlib.Path(app_state["paths"]["PROGRAM_STARTUP_FILE"])
@@ -150,3 +157,28 @@ def should_send_startup_alert():
     except Exception as e:
         logging.warning(f"Startup alert timing check failed: {e}")
     return True
+
+
+async def safe_close_trading_client(client) -> None:
+    """Close the trading client safely whether close() is sync or async."""
+    close_fn = getattr(client, "close", None)
+
+    if not callable(close_fn):
+        return
+
+    try:
+        result = close_fn()
+
+        if asyncio.iscoroutine(result):
+            await result
+
+    except Exception as e:
+        logging.warning(f"Error closing trading client: {e}")
+
+
+async def safe_send_startup_alert(subject: str, body: str) -> None:
+    """Run blocking email send off the event loop and never block startup."""
+    try:
+        await asyncio.to_thread(send_email_alert, subject, body)
+    except Exception:
+        logging.warning("Failed sending startup alert (ignored).", exc_info=True)
