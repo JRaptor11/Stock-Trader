@@ -99,10 +99,10 @@ async def run_layer_monitor(interval_seconds: int = 900) -> None:
                     bars_by_symbol = fetch_recent_bars_with_min_count(
                         app_state.get("stock_data_client"),
                         symbols,
-                        min_bars=60,
-                        timeframe_minutes=15,
-                        initial_lookback_hours=48,
-                        max_lookback_hours=240,
+                        min_bars=180,
+                        timeframe_minutes=5,
+                        initial_lookback_hours=96,
+                        max_lookback_hours=336,
                     )
 
                     logging.info(
@@ -116,23 +116,23 @@ async def run_layer_monitor(interval_seconds: int = 900) -> None:
                     }
                     logging.info("[Layers] Bar counts: %s", bar_counts)
 
-                    symbols_with_20_bars = [
-                        symbol
-                        for symbol, count in bar_counts.items()
-                        if count >= 20
-                    ]
-
                     symbols_with_60_bars = [
                         symbol
                         for symbol, count in bar_counts.items()
                         if count >= 60
                     ]
 
+                    symbols_with_180_bars = [
+                        symbol
+                        for symbol, count in bar_counts.items()
+                        if count >= 180
+                    ]
+
                     logging.info(
-                        "[Layers] Bar readiness | >=20 bars=%s/%s >=60 bars=%s/%s",
-                        len(symbols_with_20_bars),
-                        len(symbols),
+                        "[Layers] Bar readiness | >=60 bars=%s/%s >=180 bars=%s/%s",
                         len(symbols_with_60_bars),
+                        len(symbols),
+                        len(symbols_with_180_bars),
                         len(symbols),
                     )
 

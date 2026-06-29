@@ -394,7 +394,7 @@ async def _background_startup_after_bind() -> None:
         layer_execution.setdefault("last_result", None)
 
         layer_task = asyncio.create_task(
-            run_layer_monitor(interval_seconds=1200),
+            run_layer_monitor(interval_seconds=600),
             name="layer-monitor-task",
         )
         app_state["main"]["async_tasks"].add(layer_task)

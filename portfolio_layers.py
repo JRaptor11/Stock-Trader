@@ -77,7 +77,10 @@ class Layer1StockRanker:
         scores = []
 
         for symbol, bars in bars_by_symbol.items():
-            if len(bars) < 20:
+            # With 5-minute bars:
+            # 60 bars ≈ 5 trading hours.
+            # Require 61 so ret_60 can compare current close to 60 bars ago.
+            if len(bars) < 61:
                 continue
 
             closes = [b["close"] for b in bars]
@@ -86,18 +89,23 @@ class Layer1StockRanker:
 
             last_price = closes[-1]
 
-            ret_20 = self._pct_return(closes, 20) or 0.0
-            ret_10 = self._pct_return(closes, 10) or 0.0
+            # 5-minute equivalents of the old 15-minute windows:
+            # old ret_20 on 15m bars ≈ 300 minutes ≈ new ret_60 on 5m bars
+            # old ret_10 on 15m bars ≈ 150 minutes ≈ new ret_30 on 5m bars
+            ret_60 = self._pct_return(closes, 60) or 0.0
+            ret_30 = self._pct_return(closes, 30) or 0.0
 
-            ema_10 = self._ema(closes, 10)
-            ema_20 = self._ema(closes, 20)
+            ema_30 = self._ema(closes, 30)
+            ema_60 = self._ema(closes, 60)
 
             trend_score = 0.0
-            if ema_10 and ema_20:
-                trend_score = (ema_10 - ema_20) / ema_20
+            if ema_30 and ema_60:
+                trend_score = (ema_30 - ema_60) / ema_60
 
-            recent_vol = sum(volumes[-4:]) / 4
-            base_vol = sum(volumes[-20:]) / 20
+            # Old recent 4 bars on 15m ≈ 60 minutes.
+            # New recent 12 bars on 5m ≈ 60 minutes.
+            recent_vol = sum(volumes[-12:]) / 12
+            base_vol = sum(volumes[-60:]) / 60
             volume_ratio = 0.0 if base_vol <= 0 else recent_vol / base_vol
             volume_score = (
                 0.0
@@ -105,8 +113,8 @@ class Layer1StockRanker:
                 else max(-0.25, min(0.25, math.log(volume_ratio) / 3.0))
             )
 
-            recent_trades = sum(trade_counts[-4:]) / 4
-            base_trades = sum(trade_counts[-20:]) / 20
+            recent_trades = sum(trade_counts[-12:]) / 12
+            base_trades = sum(trade_counts[-60:]) / 60
             trade_count_ratio = 0.0 if base_trades <= 0 else recent_trades / base_trades
             trade_count_score = (
                 0.0
@@ -114,11 +122,11 @@ class Layer1StockRanker:
                 else max(-0.25, min(0.25, math.log(trade_count_ratio) / 3.0))
             )
 
-            volatility = self._volatility_penalty(closes, lookback=20)
+            volatility = self._volatility_penalty(closes, lookback=60)
 
             direction_score = (
-                0.50 * ret_20
-                + 0.30 * ret_10
+                0.50 * ret_60
+                + 0.30 * ret_30
                 + 0.20 * trend_score
             )
 
@@ -129,17 +137,14 @@ class Layer1StockRanker:
 
             activity_multiplier = 1.0 + max(-0.25, min(0.25, activity_score))
 
-            volume_ratio = 0.0 if base_vol <= 0 else recent_vol / base_vol
-            trade_count_ratio = 0.0 if base_trades <= 0 else recent_trades / base_trades
-
             score = (
                 direction_score * activity_multiplier
                 - 0.10 * volatility
             )
 
             reason = (
-                f"ret_20={ret_20:.4f}, "
-                f"ret_10={ret_10:.4f}, "
+                f"ret_60={ret_60:.4f}, "
+                f"ret_30={ret_30:.4f}, "
                 f"trend={trend_score:.4f}, "
                 f"direction={direction_score:.4f}, "
                 f"volume_ratio={volume_ratio:.4f}, "
@@ -228,6 +233,17 @@ class Layer2PortfolioBuilder:
         min_position_pct: float = 0.05,
         max_position_pct: float = 0.30,
         score_epsilon: float = 0.001,
+
+        # Adaptive target smoothing.
+        target_smoothing_enabled: bool = True,
+        normal_alpha: float = 0.30,
+        normal_max_step: float = 0.05,
+        shock_alpha: float = 0.60,
+        shock_max_step: float = 0.15,
+        risk_off_alpha: float = 0.80,
+        risk_off_max_step: float = 0.25,
+        shock_threshold: float = 0.10,
+        min_smoothed_position_pct: float = 0.005,
     ):
         self.top_n = top_n
         self.min_cash_pct = min_cash_pct
@@ -236,9 +252,50 @@ class Layer2PortfolioBuilder:
         self.max_position_pct = max_position_pct
         self.score_epsilon = score_epsilon
 
+        self.target_smoothing_enabled = target_smoothing_enabled
+        self.normal_alpha = normal_alpha
+        self.normal_max_step = normal_max_step
+        self.shock_alpha = shock_alpha
+        self.shock_max_step = shock_max_step
+        self.risk_off_alpha = risk_off_alpha
+        self.risk_off_max_step = risk_off_max_step
+        self.shock_threshold = shock_threshold
+        self.min_smoothed_position_pct = min_smoothed_position_pct
+
+        self.previous_target_portfolio: Dict[str, float] | None = None
+
     @staticmethod
     def _clamp(value: float, low: float, high: float) -> float:
         return max(low, min(high, value))
+
+    @staticmethod
+    def _tradable_weights(target: Dict[str, float]) -> Dict[str, float]:
+        if not isinstance(target, dict):
+            return {}
+
+        out = {}
+
+        for symbol, weight in target.items():
+            symbol_str = str(symbol or "").upper().strip()
+
+            if not symbol_str:
+                continue
+
+            if symbol_str.startswith("_"):
+                continue
+
+            if symbol_str in {"CASH", "USD"}:
+                continue
+
+            try:
+                weight_float = float(weight or 0.0)
+            except Exception:
+                weight_float = 0.0
+
+            if weight_float > 0:
+                out[symbol_str] = weight_float
+
+        return out
 
     def _market_strength_label(self, avg_score: float) -> str:
         if avg_score >= 0.04:
@@ -251,9 +308,9 @@ class Layer2PortfolioBuilder:
             return "weak"
         return "very_weak"
 
-    def _cash_allocation(self, selected: List[StockScore]) -> tuple[float, str]:
+    def _cash_allocation(self, selected: List[StockScore]) -> tuple[float, str, float | None]:
         if not selected:
-            return 1.0, "no_candidates"
+            return 1.0, "no_candidates", None
 
         avg_score = sum(s.score for s in selected) / len(selected)
         market_strength = self._market_strength_label(avg_score)
@@ -332,7 +389,7 @@ class Layer2PortfolioBuilder:
 
         return final_weights
 
-    def build_target_portfolio(self, ranked_scores: List[StockScore]) -> Dict[str, float]:
+    def _build_raw_target_portfolio(self, ranked_scores: List[StockScore]) -> Dict[str, float]:
         selected = ranked_scores[: self.top_n]
 
         if not selected:
@@ -383,7 +440,7 @@ class Layer2PortfolioBuilder:
 
         target["_meta"] = {
             "market_strength": market_strength,
-            "strength_factor": round(strength_factor, 4),
+            "strength_factor": round(strength_factor, 4) if strength_factor is not None else None,
             "avg_top_score": round(avg_score, 4),
             "top_score": round(top_score, 4),
             "score_spread": round(score_spread, 4),
@@ -393,6 +450,145 @@ class Layer2PortfolioBuilder:
         }
 
         return target
+
+    def _select_smoothing_profile(
+        self,
+        raw_target: Dict[str, float],
+        previous_target: Dict[str, float],
+    ) -> tuple[float, float, str, float]:
+        raw_weights = self._tradable_weights(raw_target)
+        previous_weights = self._tradable_weights(previous_target)
+
+        symbols = set(raw_weights.keys()) | set(previous_weights.keys()) | {"CASH"}
+
+        max_raw_change = 0.0
+        for symbol in symbols:
+            raw_weight = float(raw_target.get(symbol, 0.0) or 0.0)
+            previous_weight = float(previous_target.get(symbol, 0.0) or 0.0)
+            max_raw_change = max(max_raw_change, abs(raw_weight - previous_weight))
+
+        market_strength = (
+            raw_target.get("_meta", {}).get("market_strength")
+            if isinstance(raw_target.get("_meta"), dict)
+            else None
+        )
+
+        if market_strength in {"weak", "very_weak", "no_candidates"}:
+            return (
+                self.risk_off_alpha,
+                self.risk_off_max_step,
+                "risk_off_fast",
+                max_raw_change,
+            )
+
+        if max_raw_change >= self.shock_threshold:
+            return (
+                self.shock_alpha,
+                self.shock_max_step,
+                "large_change_fast",
+                max_raw_change,
+            )
+
+        return (
+            self.normal_alpha,
+            self.normal_max_step,
+            "normal_smooth",
+            max_raw_change,
+        )
+
+    def _apply_adaptive_smoothing(self, raw_target: Dict[str, float]) -> Dict[str, float]:
+        if not self.target_smoothing_enabled:
+            raw_target["_meta"]["smoothing_applied"] = False
+            raw_target["_meta"]["smoothing_mode"] = "disabled"
+            self.previous_target_portfolio = dict(raw_target)
+            return raw_target
+
+        previous_target = self.previous_target_portfolio
+
+        if not previous_target:
+            raw_target["_meta"]["smoothing_applied"] = False
+            raw_target["_meta"]["smoothing_mode"] = "first_target"
+            self.previous_target_portfolio = dict(raw_target)
+            return raw_target
+
+        alpha, max_step, smoothing_mode, max_raw_change = self._select_smoothing_profile(
+            raw_target=raw_target,
+            previous_target=previous_target,
+        )
+
+        raw_weights = self._tradable_weights(raw_target)
+        previous_weights = self._tradable_weights(previous_target)
+
+        symbols = sorted(set(raw_weights.keys()) | set(previous_weights.keys()))
+
+        smoothed_weights = {}
+
+        for symbol in symbols:
+            previous_weight = previous_weights.get(symbol, 0.0)
+            raw_weight = raw_weights.get(symbol, 0.0)
+
+            desired_weight = previous_weight + alpha * (raw_weight - previous_weight)
+
+            lower_bound = max(0.0, previous_weight - max_step)
+            upper_bound = previous_weight + max_step
+
+            smoothed_weight = self._clamp(
+                desired_weight,
+                lower_bound,
+                upper_bound,
+            )
+
+            if smoothed_weight >= self.min_smoothed_position_pct:
+                smoothed_weights[symbol] = smoothed_weight
+
+        position_total = sum(smoothed_weights.values())
+        max_investable = 1.0 - self.min_cash_pct
+
+        if position_total > max_investable and position_total > 0:
+            scale = max_investable / position_total
+            smoothed_weights = {
+                symbol: weight * scale
+                for symbol, weight in smoothed_weights.items()
+            }
+            position_total = sum(smoothed_weights.values())
+
+        cash_pct = max(0.0, 1.0 - position_total)
+
+        final_target = {
+            symbol: round(weight, 4)
+            for symbol, weight in smoothed_weights.items()
+        }
+        final_target["CASH"] = round(cash_pct, 4)
+
+        raw_meta = raw_target.get("_meta", {})
+        if not isinstance(raw_meta, dict):
+            raw_meta = {}
+
+        raw_symbol_weights = {
+            symbol: round(weight, 4)
+            for symbol, weight in raw_weights.items()
+        }
+
+        final_target["_meta"] = {
+            **raw_meta,
+            "smoothing_applied": True,
+            "smoothing_mode": smoothing_mode,
+            "smoothing_alpha": round(alpha, 4),
+            "smoothing_max_step": round(max_step, 4),
+            "max_raw_weight_change": round(max_raw_change, 4),
+            "raw_cash_pct": round(float(raw_target.get("CASH", 0.0) or 0.0), 4),
+            "smoothed_cash_pct": round(cash_pct, 4),
+            "raw_symbol_weights": raw_symbol_weights,
+            "smoothed_symbol_count": len(smoothed_weights),
+        }
+
+        self.previous_target_portfolio = dict(final_target)
+
+        return final_target
+
+    def build_target_portfolio(self, ranked_scores: List[StockScore]) -> Dict[str, float]:
+        raw_target = self._build_raw_target_portfolio(ranked_scores)
+        return self._apply_adaptive_smoothing(raw_target)
 
 
 class LayeredPortfolioEngine:
@@ -407,11 +603,6 @@ class LayeredPortfolioEngine:
             ranked = self.ranker.rank(symbols)
 
         target = self.portfolio_builder.build_target_portfolio(ranked)
-
-        return {
-            "ranked": ranked,
-            "target_portfolio": target,
-        }
 
         return {
             "ranked": ranked,

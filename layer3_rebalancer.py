@@ -431,6 +431,21 @@ def _whole_share_qty(notional: float, price: float) -> float:
     return abs(notional) / price
 
 
+def _target_qty_from_value(target_value: float, price: float) -> float:
+    """
+    Convert a target dollar value into a target share quantity.
+    """
+    if price <= 0:
+        return 0.0
+
+    raw_qty = target_value / price
+
+    if L3_WHOLE_SHARES_ONLY:
+        return float(int(raw_qty))
+
+    return raw_qty
+
+
 def _build_row(
     *,
     cycle_id,
@@ -448,6 +463,8 @@ def _build_row(
     live_price,
     price_source,
     current_qty,
+    target_qty,
+    qty_delta,
     planned_qty,
     planned_notional,
     target_seen_count,
@@ -471,6 +488,9 @@ def _build_row(
         "price_source": price_source,
 
         "current_qty": round(current_qty, 6),
+        "target_qty": round(target_qty, 6),
+        "qty_delta": round(qty_delta, 6),
+
         "current_value": round(current_value, 2),
         "current_weight": round(current_weight, 6),
 
@@ -845,6 +865,8 @@ def run_layer3_dry_run() -> dict:
                 live_price=0.0,
                 price_source=price_source,
                 current_qty=current_qty,
+                target_qty=0.0,
+                qty_delta=0.0,
                 planned_qty=0.0,
                 planned_notional=0.0,
                 target_seen_count=seen_counts.get(symbol, 0),
@@ -864,7 +886,14 @@ def run_layer3_dry_run() -> dict:
         delta_value = target_value - current_value
         delta_weight = target_weight - current_weight
 
-        relative_drift = abs(delta_value) / max(abs(target_value), abs(current_value), 1.0)
+        target_qty = _target_qty_from_value(target_value, live_price)
+        qty_delta = target_qty - current_qty
+
+        relative_drift = abs(delta_value) / max(
+            abs(target_value),
+            abs(current_value),
+            1.0,
+        )
 
         target_seen_count = int(seen_counts.get(symbol, 0) or 0)
         target_absent_count = int(absent_counts.get(symbol, 0) or 0)
@@ -978,6 +1007,8 @@ def run_layer3_dry_run() -> dict:
             live_price=live_price,
             price_source=price_source,
             current_qty=current_qty,
+            target_qty=target_qty,
+            qty_delta=qty_delta,
             planned_qty=planned_qty,
             planned_notional=planned_notional,
             target_seen_count=target_seen_count,
@@ -1035,6 +1066,27 @@ def run_layer3_dry_run() -> dict:
         decision = row.get("decision", "UNKNOWN")
         decision_counts[decision] = decision_counts.get(decision, 0) + 1
 
+    planned_exposure = []
+
+    for row in plan:
+        if row.get("decision") not in {"BUY", "SELL"}:
+            continue
+
+        planned_exposure.append(
+            {
+                "symbol": row.get("symbol"),
+                "decision": row.get("decision"),
+                "current_qty": row.get("current_qty"),
+                "target_qty": row.get("target_qty"),
+                "qty_delta": row.get("qty_delta"),
+                "planned_qty": row.get("planned_qty"),
+                "planned_notional": row.get("planned_notional"),
+                "current_weight": row.get("current_weight"),
+                "target_weight": row.get("target_weight"),
+                "reason": row.get("reason"),
+            }
+        )
+
     summary = {
         "status": "ok",
         "dry_run": True,
@@ -1070,6 +1122,7 @@ def run_layer3_dry_run() -> dict:
 
         "plan_count": len(plan),
         "decision_counts": decision_counts,
+        "planned_exposure": planned_exposure,
         "fail_safe_active": fail_safe_active,
 
         "cycle_trade_limits": {
@@ -1097,13 +1150,18 @@ def run_layer3_dry_run() -> dict:
     for row in plan:
         logging.info(
             "[Layer3Plan] cycle=%s %s decision=%s reason=%s "
-            "current=%.2f%% target=%.2f%% delta=$%.2f qty=%s notional=$%.2f price=$%.2f",
+            "current=%.2f%% target=%.2f%% "
+            "current_qty=%s target_qty=%s qty_delta=%s "
+            "delta=$%.2f planned_qty=%s notional=$%.2f price=$%.2f",
             row["cycle_id"],
             row["symbol"],
             row["decision"],
             row["reason"],
             row["current_weight"] * 100,
             row["target_weight"] * 100,
+            row.get("current_qty"),
+            row.get("target_qty"),
+            row.get("qty_delta"),
             row["delta_value"],
             row["planned_qty"],
             row["planned_notional"],
