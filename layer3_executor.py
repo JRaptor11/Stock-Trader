@@ -23,6 +23,52 @@ def _safe_float(value, default: float = 0.0) -> float:
         return default
 
 
+def _extract_layer3_order_values(row: dict) -> dict:
+    """
+    Normalize Layer 3 plan row fields for execution.
+
+    Layer 3 planner rows currently use:
+    - planned_qty
+    - planned_notional
+    - live_price
+
+    Older/simple executor logic may expect:
+    - qty
+    - notional
+    - price
+
+    This function supports both.
+    """
+    symbol = str(row.get("symbol", "") or "").upper().strip()
+    decision = str(row.get("decision", "") or "").upper().strip()
+
+    qty = _safe_float(
+        row.get("planned_qty", row.get("qty", 0.0)),
+        0.0,
+    )
+
+    price = _safe_float(
+        row.get("live_price", row.get("price", 0.0)),
+        0.0,
+    )
+
+    notional = _safe_float(
+        row.get("planned_notional", row.get("notional", 0.0)),
+        0.0,
+    )
+
+    if notional <= 0 and qty > 0 and price > 0:
+        notional = qty * price
+
+    return {
+        "symbol": symbol,
+        "decision": decision,
+        "qty": qty,
+        "price": price,
+        "notional": notional,
+    }
+
+
 def _normalize_decision(value: Any) -> str:
     return str(value or "").upper().strip()
 
@@ -106,22 +152,30 @@ def _executable_rows(plan: Any) -> list[dict]:
     executable = []
 
     for row in rows:
-        decision = _normalize_decision(row.get("decision"))
-        symbol = _normalize_symbol(row.get("symbol"))
-        qty = _safe_float(row.get("qty"), 0.0)
-        notional = _safe_float(row.get("notional"), 0.0)
-        price = _safe_float(row.get("price"), 0.0)
+        values = _extract_layer3_order_values(row)
+
+        decision = values["decision"]
+        symbol = values["symbol"]
+        qty = values["qty"]
+        price = values["price"]
+        notional = values["notional"]
 
         if decision not in {"BUY", "SELL"}:
             continue
 
-        if not symbol:
-            continue
-
-        if qty <= 0:
-            continue
-
-        if price <= 0:
+        if not symbol or qty <= 0 or price <= 0 or notional <= 0:
+            logging.warning(
+                "[Layer3Exec] Skipping non-executable row | "
+                "symbol=%s decision=%s qty=%s price=%s notional=%s "
+                "reason=%s row_keys=%s",
+                symbol,
+                decision,
+                qty,
+                price,
+                notional,
+                row.get("reason"),
+                sorted(row.keys()),
+            )
             continue
 
         executable.append(
@@ -246,6 +300,24 @@ def execute_layer3_plan(plan: Any, summary: dict | None = None) -> dict:
         return result
 
     executable = _executable_rows(plan)
+
+    logging.info(
+        "[Layer3Exec] Executable rows found | cycle_id=%s count=%s rows=%s",
+        cycle_id,
+        len(executable),
+        [
+            {
+                "symbol": row.get("symbol"),
+                "decision": row.get("decision"),
+                "qty": row.get("qty"),
+                "price": row.get("price"),
+                "notional": row.get("notional"),
+                "reason": row.get("reason"),
+            }
+            for row in executable
+        ],
+    )
+
     if not executable:
         logging.info("[Layer3Exec] No executable BUY/SELL rows. cycle_id=%s", cycle_id)
         result["blocked_reason"] = "no_executable_rows"
