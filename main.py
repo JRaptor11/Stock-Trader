@@ -77,8 +77,8 @@ from alpaca.trading.client import TradingClient
 from alpaca.data.historical import StockHistoricalDataClient
 
 from layer_monitor import run_layer_monitor
-from portfolio_layers import LayeredPortfolioEngine
-from paper_portfolio import PaperPortfolio
+
+from state_init import initialize_layer_state
 
 from portfolio_reconciler import run_portfolio_reconciler
 
@@ -149,11 +149,10 @@ def ensure_app_state_structure() -> None:
     layers.setdefault("engine", None)
     layers.setdefault("latest", {})
     layers.setdefault("rebalance", {})
-
-    layer_execution = layers.setdefault("execution", {})
-    layer_execution.setdefault("last_cycle_id", None)
-    layer_execution.setdefault("last_attempted_at", None)
-    layer_execution.setdefault("last_result", None)
+    layers.setdefault("layer4", {})
+    layers.setdefault("layer4_execution", {})
+    layers.setdefault("active_execution_plan", None)
+    layers.setdefault("execution_plan_history", [])
 
     stream = app_state.setdefault("stream", {})
     stream.setdefault("manager", None)
@@ -375,28 +374,14 @@ async def _background_startup_after_bind() -> None:
 
         # ─────────────────────────────────────────────
         # Layered portfolio architecture
-        # observation-only / no live orders
         # ─────────────────────────────────────────────
-        layers = app_state.setdefault("layers", {})
-
-        layers["paper_portfolio"] = PaperPortfolio()
-        layers["engine"] = LayeredPortfolioEngine(
-            app_state["market_data"]["buffer"],
-            top_n=5,
-        )
-
-        layers.setdefault("latest", {})
-        layers.setdefault("rebalance", {})
-
-        layer_execution = layers.setdefault("execution", {})
-        layer_execution.setdefault("last_cycle_id", None)
-        layer_execution.setdefault("last_attempted_at", None)
-        layer_execution.setdefault("last_result", None)
+        initialize_layer_state(top_n=5)
 
         layer_task = asyncio.create_task(
             run_layer_monitor(interval_seconds=600),
             name="layer-monitor-task",
         )
+
         app_state["main"]["async_tasks"].add(layer_task)
 
         logging.info("[Layers] Layer engine initialized and monitor task scheduled.")
