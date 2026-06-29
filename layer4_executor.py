@@ -1,8 +1,8 @@
-# layer3_executor.py
+# layer4_executor.py
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, List
 
 from alpaca.trading.enums import OrderSide, QueryOrderStatus
 from alpaca.trading.requests import GetOrdersRequest
@@ -23,27 +23,58 @@ def _safe_float(value, default: float = 0.0) -> float:
         return default
 
 
-def _extract_layer3_order_values(row: dict) -> dict:
-    """
-    Normalize Layer 3 plan row fields for execution.
+def _normalize_decision(value: Any) -> str:
+    return str(value or "").upper().strip()
 
-    Layer 3 planner rows currently use:
-    - planned_qty
-    - planned_notional
+
+def _normalize_symbol(value: Any) -> str:
+    return str(value or "").upper().strip()
+
+
+def _get_plan_rows(plan: Any) -> List[Dict[str, Any]]:
+    """
+    Accept either:
+    - a list of row dicts
+    - a dict containing {"plan": [...]}
+    - a dict containing {"rows": [...]}
+    - a full active_execution_plan containing {"rows": [...]}
+    """
+    if isinstance(plan, list):
+        return [row for row in plan if isinstance(row, dict)]
+
+    if isinstance(plan, dict):
+        for key in ("rows", "plan", "decisions"):
+            rows = plan.get(key)
+            if isinstance(rows, list):
+                return [row for row in rows if isinstance(row, dict)]
+
+    return []
+
+
+def _extract_layer4_order_values(row: dict) -> dict:
+    """
+    Normalize plan-row fields for Layer 4 execution.
+
+    Layer 3 now produces Layer-4-ready fields:
+    - max_authorized_qty
+    - max_authorized_notional
+    - remaining_authorized_qty
+    - remaining_authorized_notional
     - live_price
 
-    Older/simple executor logic may expect:
-    - qty
-    - notional
-    - price
-
-    This function supports both.
+    This also supports older Layer 3 fields:
+    - planned_qty
+    - planned_notional
+    - qty / notional / price
     """
-    symbol = str(row.get("symbol", "") or "").upper().strip()
-    decision = str(row.get("decision", "") or "").upper().strip()
+    symbol = _normalize_symbol(row.get("symbol"))
+    decision = _normalize_decision(row.get("decision"))
 
     qty = _safe_float(
-        row.get("planned_qty", row.get("qty", 0.0)),
+        row.get(
+            "remaining_authorized_qty",
+            row.get("max_authorized_qty", row.get("planned_qty", row.get("qty", 0.0))),
+        ),
         0.0,
     )
 
@@ -53,7 +84,10 @@ def _extract_layer3_order_values(row: dict) -> dict:
     )
 
     notional = _safe_float(
-        row.get("planned_notional", row.get("notional", 0.0)),
+        row.get(
+            "remaining_authorized_notional",
+            row.get("max_authorized_notional", row.get("planned_notional", row.get("notional", 0.0))),
+        ),
         0.0,
     )
 
@@ -69,36 +103,24 @@ def _extract_layer3_order_values(row: dict) -> dict:
     }
 
 
-def _normalize_decision(value: Any) -> str:
-    return str(value or "").upper().strip()
-
-
-def _normalize_symbol(value: Any) -> str:
-    return str(value or "").upper().strip()
-
-
-def _get_plan_rows(plan: Any) -> List[Dict[str, Any]]:
-    """
-    Accept either:
-    - a list of row dicts
-    - a dict containing {"plan": [...]}
-    - a dict containing {"rows": [...]}
-    """
-    if isinstance(plan, list):
-        return [row for row in plan if isinstance(row, dict)]
-
-    if isinstance(plan, dict):
-        for key in ("plan", "rows", "decisions"):
-            rows = plan.get(key)
-            if isinstance(rows, list):
-                return [row for row in rows if isinstance(row, dict)]
-
-    return []
-
-
 def _execution_enabled() -> bool:
+    """
+    During the transition, Layer 4 uses the existing Layer 3 execution flag by default.
+
+    Optional future override:
+    - app_state["execution"]["layer4_execution_enabled"]
+    - config.LAYER4_EXECUTION_ENABLED
+    """
+    execution_state = app_state.get("execution", {})
+
+    if "layer4_execution_enabled" in execution_state:
+        return bool(execution_state.get("layer4_execution_enabled"))
+
+    if hasattr(config, "LAYER4_EXECUTION_ENABLED"):
+        return bool(getattr(config, "LAYER4_EXECUTION_ENABLED"))
+
     return bool(
-        app_state.get("execution", {}).get(
+        execution_state.get(
             "layer3_execution_enabled",
             getattr(config, "LAYER3_EXECUTION_ENABLED", False),
         )
@@ -106,8 +128,16 @@ def _execution_enabled() -> bool:
 
 
 def _market_hours_only() -> bool:
+    execution_state = app_state.get("execution", {})
+
+    if "layer4_market_hours_only" in execution_state:
+        return bool(execution_state.get("layer4_market_hours_only"))
+
+    if hasattr(config, "LAYER4_MARKET_HOURS_ONLY"):
+        return bool(getattr(config, "LAYER4_MARKET_HOURS_ONLY"))
+
     return bool(
-        app_state.get("execution", {}).get(
+        execution_state.get(
             "layer3_market_hours_only",
             getattr(config, "LAYER3_MARKET_HOURS_ONLY", True),
         )
@@ -125,7 +155,7 @@ def _position_qty_by_symbol(client) -> dict[str, float]:
     try:
         positions = client.get_all_positions()
     except Exception:
-        logging.warning("[Layer3Exec] Could not fetch broker positions.", exc_info=True)
+        logging.warning("[Layer4Exec] Could not fetch broker positions.", exc_info=True)
         return out
 
     for pos in positions:
@@ -143,7 +173,7 @@ def _available_cash(client) -> float:
         account = client.get_account()
         return _safe_float(getattr(account, "cash", 0), 0.0)
     except Exception:
-        logging.warning("[Layer3Exec] Could not fetch account cash.", exc_info=True)
+        logging.warning("[Layer4Exec] Could not fetch account cash.", exc_info=True)
         return 0.0
 
 
@@ -152,30 +182,23 @@ def _executable_rows(plan: Any) -> list[dict]:
     executable = []
 
     for row in rows:
-        values = _extract_layer3_order_values(row)
-
+        values = _extract_layer4_order_values(row)
         decision = values["decision"]
         symbol = values["symbol"]
         qty = values["qty"]
-        price = values["price"]
         notional = values["notional"]
+        price = values["price"]
 
         if decision not in {"BUY", "SELL"}:
             continue
 
-        if not symbol or qty <= 0 or price <= 0 or notional <= 0:
-            logging.warning(
-                "[Layer3Exec] Skipping non-executable row | "
-                "symbol=%s decision=%s qty=%s price=%s notional=%s "
-                "reason=%s row_keys=%s",
-                symbol,
-                decision,
-                qty,
-                price,
-                notional,
-                row.get("reason"),
-                sorted(row.keys()),
-            )
+        if not symbol:
+            continue
+
+        if qty <= 0:
+            continue
+
+        if price <= 0:
             continue
 
         executable.append(
@@ -189,8 +212,7 @@ def _executable_rows(plan: Any) -> list[dict]:
             }
         )
 
-    # Sells first, then buys.
-    # Within each side, larger notional first.
+    # Sells first, then buys. Within each side, larger notional first.
     executable.sort(
         key=lambda r: (
             0 if r["decision"] == "SELL" else 1,
@@ -201,28 +223,31 @@ def _executable_rows(plan: Any) -> list[dict]:
     return executable
 
 
-def execute_layer3_plan(plan: Any, summary: dict | None = None) -> dict:
+def execute_layer4_plan(plan: Any, summary: dict | None = None) -> dict:
     """
-    Submit Alpaca paper orders from Layer 3 plan rows.
+    Execute the latest Layer 3 plan using Layer 4.
 
-    Layer 3 planner decides:
-    - symbol
-    - BUY/SELL
-    - qty
-    - notional
-    - reason
+    Current compatibility behavior:
+    - submits orders immediately, just like the old Layer 3 executor did
+    - does not yet slice orders throughout the cycle
+    - does not yet time entries based on ticks/pullbacks
 
-    This executor only decides:
-    - whether execution is enabled
-    - whether final safety checks pass
-    - whether to submit and track orders
+    Future behavior:
+    - work the authorized plan over its TTL window
+    - track partial fills
+    - time orders intracycle
+    - expire/reconcile stale plans at the next Layer 3 cycle
     """
 
     summary = summary or {}
     cycle_id = summary.get("cycle_id")
+    plan_id = summary.get("plan_id")
 
     result = {
+        "layer": "layer4",
+        "mode": "direct_compat",
         "cycle_id": cycle_id,
+        "plan_id": plan_id,
         "enabled": _execution_enabled(),
         "attempted": 0,
         "submitted": 0,
@@ -232,97 +257,106 @@ def execute_layer3_plan(plan: Any, summary: dict | None = None) -> dict:
         "orders": [],
     }
 
-    app_state.setdefault("layers", {}).setdefault("execution", {})[
-        "last_attempted_at"
-    ] = datetime.now(timezone.utc).isoformat()
+    layers = app_state.setdefault("layers", {})
+    layer4_state = layers.setdefault("layer4_execution", {})
+    layer4_state["last_attempted_at"] = datetime.now(timezone.utc).isoformat()
+    layer4_state["last_plan_id"] = plan_id
 
     if not _execution_enabled():
         logging.info(
-            "[Layer3Exec] Execution disabled; dry-run only. cycle_id=%s",
+            "[Layer4Exec] Execution disabled; dry-run only. cycle_id=%s plan_id=%s",
             cycle_id,
+            plan_id,
         )
         result["blocked_reason"] = "execution_disabled"
-        app_state["layers"]["execution"]["last_result"] = result
+        layer4_state["last_result"] = result
         return result
 
     if fail_safe_event.is_set() or app_state.get("fail_safes", {}).get("state"):
         logging.warning(
-            "[Layer3Exec] Blocked because fail-safe is active. cycle_id=%s",
+            "[Layer4Exec] Blocked because fail-safe is active. cycle_id=%s plan_id=%s",
             cycle_id,
+            plan_id,
         )
         result["blocked_reason"] = "fail_safe_active"
-        app_state["layers"]["execution"]["last_result"] = result
+        layer4_state["last_result"] = result
         return result
 
     client = app_state.get("trading_client")
     if client is None:
-        logging.warning("[Layer3Exec] No trading_client available.")
+        logging.warning("[Layer4Exec] No trading_client available.")
         result["blocked_reason"] = "missing_trading_client"
-        app_state["layers"]["execution"]["last_result"] = result
+        layer4_state["last_result"] = result
         return result
 
     try:
         clock = client.get_clock()
         market_is_open = bool(getattr(clock, "is_open", False))
     except Exception:
-        logging.warning("[Layer3Exec] Could not fetch market clock.", exc_info=True)
+        logging.warning("[Layer4Exec] Could not fetch market clock.", exc_info=True)
         result["blocked_reason"] = "clock_fetch_failed"
-        app_state["layers"]["execution"]["last_result"] = result
+        layer4_state["last_result"] = result
         return result
 
     if _market_hours_only() and not market_is_open:
         logging.info(
-            "[Layer3Exec] Market is closed and LAYER3_MARKET_HOURS_ONLY=true. "
-            "Skipping execution. cycle_id=%s",
+            "[Layer4Exec] Market is closed and market-hours-only execution is enabled. "
+            "Skipping execution. cycle_id=%s plan_id=%s",
             cycle_id,
+            plan_id,
         )
         result["blocked_reason"] = "market_closed"
-        app_state["layers"]["execution"]["last_result"] = result
+        layer4_state["last_result"] = result
         return result
 
     try:
         open_orders = _broker_open_orders(client)
     except Exception:
-        logging.warning("[Layer3Exec] Could not fetch open orders.", exc_info=True)
+        logging.warning("[Layer4Exec] Could not fetch open orders.", exc_info=True)
         result["blocked_reason"] = "open_order_fetch_failed"
-        app_state["layers"]["execution"]["last_result"] = result
+        layer4_state["last_result"] = result
         return result
 
     if open_orders:
         logging.warning(
-            "[Layer3Exec] Existing broker open orders detected; skipping Layer 3 "
-            "execution this cycle. open_order_count=%s cycle_id=%s",
+            "[Layer4Exec] Existing broker open orders detected; skipping Layer 4 "
+            "execution this cycle. open_order_count=%s cycle_id=%s plan_id=%s",
             len(open_orders),
             cycle_id,
+            plan_id,
         )
         result["blocked_reason"] = "broker_open_orders_exist"
-        app_state["layers"]["execution"]["last_result"] = result
+        layer4_state["last_result"] = result
         return result
 
     executable = _executable_rows(plan)
+    if not executable:
+        logging.info(
+            "[Layer4Exec] No executable BUY/SELL rows. cycle_id=%s plan_id=%s",
+            cycle_id,
+            plan_id,
+        )
+        result["blocked_reason"] = "no_executable_rows"
+        layer4_state["last_result"] = result
+        return result
 
     logging.info(
-        "[Layer3Exec] Executable rows found | cycle_id=%s count=%s rows=%s",
+        "[Layer4Exec] Executable rows found | cycle_id=%s plan_id=%s count=%s rows=%s",
         cycle_id,
+        plan_id,
         len(executable),
         [
             {
-                "symbol": row.get("symbol"),
-                "decision": row.get("decision"),
-                "qty": row.get("qty"),
-                "price": row.get("price"),
-                "notional": row.get("notional"),
-                "reason": row.get("reason"),
+                "symbol": r.get("symbol"),
+                "decision": r.get("decision"),
+                "qty": r.get("qty"),
+                "price": r.get("price"),
+                "notional": r.get("notional"),
+                "reason": r.get("reason"),
             }
-            for row in executable
+            for r in executable
         ],
     )
-
-    if not executable:
-        logging.info("[Layer3Exec] No executable BUY/SELL rows. cycle_id=%s", cycle_id)
-        result["blocked_reason"] = "no_executable_rows"
-        app_state["layers"]["execution"]["last_result"] = result
-        return result
 
     position_qty = _position_qty_by_symbol(client)
 
@@ -333,6 +367,7 @@ def execute_layer3_plan(plan: Any, summary: dict | None = None) -> dict:
         price = _safe_float(row["price"], 0.0)
         notional = _safe_float(row.get("notional"), qty * price)
         reason = str(row.get("reason", ""))
+        row_id = row.get("row_id")
 
         result["attempted"] += 1
 
@@ -340,7 +375,7 @@ def execute_layer3_plan(plan: Any, summary: dict | None = None) -> dict:
             held_qty = position_qty.get(symbol, 0.0)
             if held_qty <= 0:
                 logging.info(
-                    "[Layer3Exec] SELL skipped for %s; broker shows no shares held.",
+                    "[Layer4Exec] SELL skipped for %s; broker shows no shares held.",
                     symbol,
                 )
                 result["skipped"] += 1
@@ -350,6 +385,8 @@ def execute_layer3_plan(plan: Any, summary: dict | None = None) -> dict:
                         "side": "sell",
                         "status": "skipped",
                         "reason": "no_broker_position",
+                        "plan_id": plan_id,
+                        "row_id": row_id,
                     }
                 )
                 continue
@@ -361,7 +398,7 @@ def execute_layer3_plan(plan: Any, summary: dict | None = None) -> dict:
             cash = _available_cash(client)
             if notional > cash:
                 logging.info(
-                    "[Layer3Exec] BUY skipped for %s; notional %.2f exceeds cash %.2f.",
+                    "[Layer4Exec] BUY skipped for %s; notional %.2f exceeds cash %.2f.",
                     symbol,
                     notional,
                     cash,
@@ -375,6 +412,8 @@ def execute_layer3_plan(plan: Any, summary: dict | None = None) -> dict:
                         "reason": "insufficient_cash",
                         "notional": notional,
                         "cash": cash,
+                        "plan_id": plan_id,
+                        "row_id": row_id,
                     }
                 )
                 continue
@@ -416,9 +455,11 @@ def execute_layer3_plan(plan: Any, summary: dict | None = None) -> dict:
                     "quantity": qty,
                     "buy_price": price,
                     "buy_time": datetime.now(timezone.utc),
-                    "source": "layer3",
-                    "layer3_reason": reason,
+                    "source": "layer4",
+                    "layer4_reason": reason,
                     "cycle_id": cycle_id,
+                    "plan_id": plan_id,
+                    "row_id": row_id,
                 }
 
             elif normalize_side(side) == "sell":
@@ -429,13 +470,15 @@ def execute_layer3_plan(plan: Any, summary: dict | None = None) -> dict:
                 existing["status"] = "pending_sell"
                 existing["sell_order_id"] = str(order_id)
                 existing["sell_quantity"] = qty
-                existing["source"] = "layer3"
-                existing["layer3_reason"] = reason
+                existing["source"] = "layer4"
+                existing["layer4_reason"] = reason
                 existing["cycle_id"] = cycle_id
+                existing["plan_id"] = plan_id
+                existing["row_id"] = row_id
 
             logging.warning(
-                "[Layer3Exec] Submitted %s %s qty=%s notional=$%.2f "
-                "price=$%.2f reason=%s order_id=%s cycle_id=%s",
+                "[Layer4Exec] Submitted %s %s qty=%s notional=$%.2f "
+                "price=$%.2f reason=%s order_id=%s cycle_id=%s plan_id=%s",
                 decision,
                 symbol,
                 qty,
@@ -444,6 +487,7 @@ def execute_layer3_plan(plan: Any, summary: dict | None = None) -> dict:
                 reason,
                 order_id,
                 cycle_id,
+                plan_id,
             )
 
             result["submitted"] += 1
@@ -457,15 +501,18 @@ def execute_layer3_plan(plan: Any, summary: dict | None = None) -> dict:
                     "notional": notional,
                     "price": price,
                     "reason": reason,
+                    "plan_id": plan_id,
+                    "row_id": row_id,
                 }
             )
 
         except Exception as exc:
             logging.exception(
-                "[Layer3Exec] Failed submitting %s for %s. cycle_id=%s",
+                "[Layer4Exec] Failed submitting %s for %s. cycle_id=%s plan_id=%s",
                 decision,
                 symbol,
                 cycle_id,
+                plan_id,
             )
             result["errors"] += 1
             result["orders"].append(
@@ -478,16 +525,20 @@ def execute_layer3_plan(plan: Any, summary: dict | None = None) -> dict:
                     "notional": notional,
                     "price": price,
                     "reason": reason,
+                    "plan_id": plan_id,
+                    "row_id": row_id,
                 }
             )
 
-    app_state["layers"]["execution"]["last_cycle_id"] = cycle_id
-    app_state["layers"]["execution"]["last_result"] = result
+    layer4_state["last_cycle_id"] = cycle_id
+    layer4_state["last_plan_id"] = plan_id
+    layer4_state["last_result"] = result
 
     logging.warning(
-        "[Layer3Exec] Complete | cycle_id=%s attempted=%s submitted=%s "
+        "[Layer4Exec] Complete | cycle_id=%s plan_id=%s attempted=%s submitted=%s "
         "skipped=%s errors=%s",
         cycle_id,
+        plan_id,
         result["attempted"],
         result["submitted"],
         result["skipped"],

@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from state import app_state
 from utils import config_utils as config
@@ -34,6 +34,7 @@ L3_MIN_RELATIVE_DRIFT = 0.25             # 25% relative drift from target/curren
 L3_REQUIRE_TARGET_CONFIRMATION_CYCLES = 2
 L3_REQUIRE_EXIT_CONFIRMATION_CYCLES = 2
 L3_WHOLE_SHARES_ONLY = True
+L3_PLAN_TTL_SECONDS = 600
 
 
 def _safe_float(value, default=0.0) -> float:
@@ -433,6 +434,86 @@ def _whole_share_qty(notional: float, price: float) -> float:
 
 def _target_qty_from_value(target_value: float, price: float) -> float:
     """
+    Convert target dollar value into an ideal target quantity.
+
+    This is the full desired position size, not just the quantity authorized
+    for the current execution window.
+    """
+    if price <= 0:
+        return 0.0
+
+    if L3_WHOLE_SHARES_ONLY:
+        return float(int(abs(target_value) // price))
+
+    return abs(target_value) / price
+
+
+def _build_plan_ids(cycle_id: int, created_at_dt: datetime | None = None) -> tuple[str, str, str, int]:
+    created_at_dt = created_at_dt or datetime.now(timezone.utc)
+    expires_at_dt = created_at_dt + timedelta(seconds=L3_PLAN_TTL_SECONDS)
+
+    created_at = created_at_dt.isoformat()
+    expires_at = expires_at_dt.isoformat()
+    safe_created = created_at.replace(":", "").replace("+", "Z")
+    plan_id = f"L3-{cycle_id}-{safe_created}"
+
+    return plan_id, created_at, expires_at, L3_PLAN_TTL_SECONDS
+
+
+def _mark_previous_active_execution_plan_replaced(
+    layers: dict,
+    *,
+    new_plan_id: str,
+    cycle_id: int,
+    timestamp: str,
+) -> None:
+    previous_active = layers.get("active_execution_plan")
+
+    if not isinstance(previous_active, dict):
+        return
+
+    if previous_active.get("status") not in {"active", "working"}:
+        return
+
+    previous_active["status"] = "replaced"
+    previous_active["replaced_at"] = timestamp
+    previous_active["replaced_by_plan_id"] = new_plan_id
+    previous_active["replaced_by_cycle_id"] = cycle_id
+
+    history = layers.setdefault("execution_plan_history", [])
+    history.append(previous_active)
+    del history[:-10]
+
+
+def _store_active_execution_plan(
+    layers: dict,
+    *,
+    plan_id: str,
+    created_at: str,
+    expires_at: str,
+    ttl_seconds: int,
+    summary: dict,
+    plan: list[dict],
+) -> dict:
+    active_plan = {
+        "plan_id": plan_id,
+        "status": "active",
+        "created_at": created_at,
+        "expires_at": expires_at,
+        "ttl_seconds": ttl_seconds,
+        "summary": summary,
+        "rows": plan,
+    }
+
+    layers["active_execution_plan"] = active_plan
+    layers.setdefault("layer4", {})["active_plan_id"] = plan_id
+    layers["layer4"]["active_plan_expires_at"] = expires_at
+
+    return active_plan
+
+
+def _target_qty_from_value(target_value: float, price: float) -> float:
+    """
     Convert a target dollar value into a target share quantity.
     """
     if price <= 0:
@@ -448,6 +529,11 @@ def _target_qty_from_value(target_value: float, price: float) -> float:
 
 def _build_row(
     *,
+    plan_id,
+    row_id,
+    plan_created_at,
+    plan_expires_at,
+    plan_ttl_seconds,
     cycle_id,
     timestamp,
     symbol,
@@ -470,11 +556,22 @@ def _build_row(
     target_seen_count,
     target_absent_count,
     open_order_exists,
+    open_order_detail,
     blocked_by,
     account,
     target_meta,
 ):
+    planned_qty = round(planned_qty, 6)
+    planned_notional = round(planned_notional, 2)
+
     return {
+        "plan_id": plan_id,
+        "row_id": row_id,
+        "plan_created_at": plan_created_at,
+        "plan_expires_at": plan_expires_at,
+        "plan_ttl_seconds": int(plan_ttl_seconds),
+        "execution_layer": "layer4",
+
         "cycle_id": cycle_id,
         "timestamp": timestamp,
         "dry_run": True,
@@ -501,12 +598,24 @@ def _build_row(
         "delta_weight": round(delta_weight, 6),
         "relative_drift": round(relative_drift, 6),
 
-        "planned_qty": round(planned_qty, 6),
-        "planned_notional": round(planned_notional, 2),
+        # Backward-compatible fields used by the old immediate executor.
+        "planned_qty": planned_qty,
+        "planned_notional": planned_notional,
+
+        # Layer-4-ready aliases. These mean: maximum amount authorized
+        # for this plan window, not necessarily amount filled immediately.
+        "max_authorized_qty": planned_qty,
+        "max_authorized_notional": planned_notional,
+        "remaining_authorized_qty": planned_qty,
+        "remaining_authorized_notional": planned_notional,
+        "filled_qty_so_far": 0.0,
+        "filled_notional_so_far": 0.0,
 
         "target_seen_count": int(target_seen_count or 0),
         "target_absent_count": int(target_absent_count or 0),
         "open_order_exists": bool(open_order_exists),
+        "open_order_detail": open_order_detail,
+        "open_order_policy": "layer4_reconcile_before_execution",
 
         "equity": round(account.get("equity", 0.0), 2),
         "cash": round(account.get("cash", 0.0), 2),
@@ -540,13 +649,24 @@ def _plan_priority(row):
     return (3, symbol)
 
 
+def _sync_layer4_authorized_aliases(row: dict) -> dict:
+    planned_qty = _safe_float(row.get("planned_qty"), 0.0)
+    planned_notional = _safe_float(row.get("planned_notional"), 0.0)
+
+    row["max_authorized_qty"] = planned_qty
+    row["max_authorized_notional"] = planned_notional
+    row["remaining_authorized_qty"] = planned_qty
+    row["remaining_authorized_notional"] = planned_notional
+    return row
+
+
 def _defer_trade(row: dict, reason: str, blocked_by_reason: str) -> dict:
     row["decision"] = "SKIP"
     row["reason"] = reason
     row["planned_qty"] = 0.0
     row["planned_notional"] = 0.0
     row["blocked_by"] = list(row.get("blocked_by", [])) + [blocked_by_reason]
-    return row
+    return _sync_layer4_authorized_aliases(row)
 
 
 def _apply_cycle_trade_limits(plan: list[dict]) -> list[dict]:
@@ -764,13 +884,18 @@ def run_layer3_dry_run() -> dict:
             "reason": "Layer 3 rebalance is disabled",
         }
         rebalance["last_summary"] = summary
-        return summary
+        return {"plan": [], "summary": summary}
 
     target = latest.get("target_portfolio", {})
     target_weights, target_cash_pct, target_meta = clean_target_portfolio(target)
 
     cycle_id = int(rebalance.get("last_cycle_id", 0) or 0) + 1
-    timestamp = datetime.now(timezone.utc).isoformat()
+    plan_created_dt = datetime.now(timezone.utc)
+    plan_id, plan_created_at, plan_expires_at, plan_ttl_seconds = _build_plan_ids(
+        cycle_id,
+        plan_created_dt,
+    )
+    timestamp = plan_created_at
 
     account = _get_account_snapshot()
     equity = _safe_float(account.get("equity"), 0.0)
@@ -781,7 +906,9 @@ def run_layer3_dry_run() -> dict:
             "status": "error",
             "dry_run": True,
             "cycle_id": cycle_id,
+            "plan_id": plan_id,
             "timestamp": timestamp,
+            "plan_expires_at": plan_expires_at,
             "reason": "missing_or_invalid_equity",
             "equity": equity,
         }
@@ -792,7 +919,7 @@ def run_layer3_dry_run() -> dict:
         rebalance["last_error"] = "missing_or_invalid_equity"
 
         logging.warning("[Layer3] Cannot build rebalance plan because equity is invalid: %s", equity)
-        return summary
+        return {"plan": [], "summary": summary}
 
     ranked_prices = _ranked_price_map(latest)
     positions = _get_positions_snapshot()
@@ -849,7 +976,15 @@ def run_layer3_dry_run() -> dict:
             delta_value = target_value - current_value
             delta_weight = target_weight - current_weight
 
+            target_qty = 0.0
+            qty_delta = 0.0
+
             row = _build_row(
+                plan_id=plan_id,
+                row_id=f"{plan_id}:{symbol}",
+                plan_created_at=plan_created_at,
+                plan_expires_at=plan_expires_at,
+                plan_ttl_seconds=plan_ttl_seconds,
                 cycle_id=cycle_id,
                 timestamp=timestamp,
                 symbol=symbol,
@@ -865,13 +1000,14 @@ def run_layer3_dry_run() -> dict:
                 live_price=0.0,
                 price_source=price_source,
                 current_qty=current_qty,
-                target_qty=0.0,
-                qty_delta=0.0,
+                target_qty=target_qty,
+                qty_delta=qty_delta,
                 planned_qty=0.0,
                 planned_notional=0.0,
                 target_seen_count=seen_counts.get(symbol, 0),
                 target_absent_count=absent_counts.get(symbol, 0),
                 open_order_exists=open_order_exists,
+                open_order_detail=open_order_details.get(symbol),
                 blocked_by=blocked_by,
                 account=account,
                 target_meta=target_meta,
@@ -889,11 +1025,7 @@ def run_layer3_dry_run() -> dict:
         target_qty = _target_qty_from_value(target_value, live_price)
         qty_delta = target_qty - current_qty
 
-        relative_drift = abs(delta_value) / max(
-            abs(target_value),
-            abs(current_value),
-            1.0,
-        )
+        relative_drift = abs(delta_value) / max(abs(target_value), abs(current_value), 1.0)
 
         target_seen_count = int(seen_counts.get(symbol, 0) or 0)
         target_absent_count = int(absent_counts.get(symbol, 0) or 0)
@@ -992,6 +1124,11 @@ def run_layer3_dry_run() -> dict:
                     reason = "planned_sell_qty_zero"
 
         row = _build_row(
+            plan_id=plan_id,
+            row_id=f"{plan_id}:{symbol}",
+            plan_created_at=plan_created_at,
+            plan_expires_at=plan_expires_at,
+            plan_ttl_seconds=plan_ttl_seconds,
             cycle_id=cycle_id,
             timestamp=timestamp,
             symbol=symbol,
@@ -1014,13 +1151,11 @@ def run_layer3_dry_run() -> dict:
             target_seen_count=target_seen_count,
             target_absent_count=target_absent_count,
             open_order_exists=open_order_exists,
+            open_order_detail=open_order_details.get(symbol),
             blocked_by=blocked_by,
             account=account,
             target_meta=target_meta,
         )
-
-        if open_order_exists:
-            row["open_order_detail"] = open_order_details.get(symbol)
 
         plan.append(row)
 
@@ -1051,10 +1186,12 @@ def run_layer3_dry_run() -> dict:
                     row["planned_qty"] = 0.0
                     row["planned_notional"] = 0.0
                     row["blocked_by"] = list(row.get("blocked_by", [])) + ["insufficient_cash"]
+                    _sync_layer4_authorized_aliases(row)
                 else:
                     row["reason"] = "underweight_vs_target_cash_adjusted"
                     row["planned_qty"] = round(adjusted_qty, 6)
                     row["planned_notional"] = round(adjusted_notional, 2)
+                    _sync_layer4_authorized_aliases(row)
                     estimated_cash -= adjusted_notional
             else:
                 estimated_cash -= planned_notional
@@ -1066,32 +1203,17 @@ def run_layer3_dry_run() -> dict:
         decision = row.get("decision", "UNKNOWN")
         decision_counts[decision] = decision_counts.get(decision, 0) + 1
 
-    planned_exposure = []
-
-    for row in plan:
-        if row.get("decision") not in {"BUY", "SELL"}:
-            continue
-
-        planned_exposure.append(
-            {
-                "symbol": row.get("symbol"),
-                "decision": row.get("decision"),
-                "current_qty": row.get("current_qty"),
-                "target_qty": row.get("target_qty"),
-                "qty_delta": row.get("qty_delta"),
-                "planned_qty": row.get("planned_qty"),
-                "planned_notional": row.get("planned_notional"),
-                "current_weight": row.get("current_weight"),
-                "target_weight": row.get("target_weight"),
-                "reason": row.get("reason"),
-            }
-        )
-
     summary = {
         "status": "ok",
         "dry_run": True,
         "cycle_id": cycle_id,
+        "plan_id": plan_id,
         "timestamp": timestamp,
+        "plan_created_at": plan_created_at,
+        "plan_expires_at": plan_expires_at,
+        "plan_ttl_seconds": plan_ttl_seconds,
+        "execution_layer": "layer4",
+        "execution_mode": "layer4_direct_compat",
 
         "market_is_open": market_is_open,
         "confirmation_updates_allowed": confirmation_updates_allowed,
@@ -1122,7 +1244,6 @@ def run_layer3_dry_run() -> dict:
 
         "plan_count": len(plan),
         "decision_counts": decision_counts,
-        "planned_exposure": planned_exposure,
         "fail_safe_active": fail_safe_active,
 
         "cycle_trade_limits": {
@@ -1133,11 +1254,29 @@ def run_layer3_dry_run() -> dict:
         },
     }
 
+    _mark_previous_active_execution_plan_replaced(
+        layers,
+        new_plan_id=plan_id,
+        cycle_id=cycle_id,
+        timestamp=timestamp,
+    )
+
+    active_execution_plan = _store_active_execution_plan(
+        layers,
+        plan_id=plan_id,
+        created_at=plan_created_at,
+        expires_at=plan_expires_at,
+        ttl_seconds=plan_ttl_seconds,
+        summary=summary,
+        plan=plan,
+    )
+
     rebalance["last_cycle_id"] = cycle_id
     rebalance["last_run_at"] = timestamp
     rebalance["last_plan"] = plan
     rebalance["last_summary"] = summary
     rebalance["last_error"] = None
+    rebalance["active_plan_id"] = plan_id
 
     logging.info(
         "[Layer3] Dry-run drift plan complete | cycle_id=%s decisions=%s equity=$%.2f cash=$%.2f",
@@ -1149,11 +1288,11 @@ def run_layer3_dry_run() -> dict:
 
     for row in plan:
         logging.info(
-            "[Layer3Plan] cycle=%s %s decision=%s reason=%s "
-            "current=%.2f%% target=%.2f%% "
-            "current_qty=%s target_qty=%s qty_delta=%s "
-            "delta=$%.2f planned_qty=%s notional=$%.2f price=$%.2f",
+            "[Layer3Plan] cycle=%s plan_id=%s %s decision=%s reason=%s "
+            "current=%.2f%% target=%.2f%% current_qty=%s target_qty=%s "
+            "qty_delta=%s delta=$%.2f auth_qty=%s auth_notional=$%.2f price=$%.2f",
             row["cycle_id"],
+            row.get("plan_id"),
             row["symbol"],
             row["decision"],
             row["reason"],
@@ -1168,4 +1307,8 @@ def run_layer3_dry_run() -> dict:
             row["live_price"],
         )
 
-    return summary
+    return {
+        "plan": plan,
+        "summary": summary,
+        "active_execution_plan": active_execution_plan,
+    }

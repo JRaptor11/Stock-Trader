@@ -5,7 +5,7 @@ from bar_data import fetch_recent_bars_with_min_count
 
 from state import app_state
 from layer3_rebalancer import run_layer3_dry_run
-from layer3_executor import execute_layer3_plan
+from layer4_executor import execute_layer4_plan
 
 
 def store_latest_layer_result(symbols, bar_counts, ranked, target):
@@ -180,14 +180,14 @@ async def run_layer_monitor(interval_seconds: int = 900) -> None:
 
                     logging.info("[Layer3] Plan summary: %s", layer3_summary)
 
-                    layer3_execution_result = execute_layer3_plan(
+                    layer4_execution_result = execute_layer4_plan(
                         layer3_plan,
                         layer3_summary,
                     )
 
                     logging.info(
-                        "[Layer3Exec] Execution result: %s",
-                        layer3_execution_result,
+                        "[Layer4Exec] Execution result: %s",
+                        layer4_execution_result,
                     )
 
                     if not ranked:
