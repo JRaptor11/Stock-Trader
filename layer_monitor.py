@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime, timezone
-from bar_data import fetch_recent_bars
+from bar_data import fetch_recent_bars_with_min_count
 
 from state import app_state
 from layer3_rebalancer import run_layer3_dry_run
@@ -96,11 +96,13 @@ async def run_layer_monitor(interval_seconds: int = 900) -> None:
                         }
                         logging.info("[Layers] Tick counts: %s", tick_counts)
 
-                    bars_by_symbol = fetch_recent_bars(
+                    bars_by_symbol = fetch_recent_bars_with_min_count(
                         app_state.get("stock_data_client"),
                         symbols,
-                        lookback_hours=48,
+                        min_bars=60,
                         timeframe_minutes=15,
+                        initial_lookback_hours=48,
+                        max_lookback_hours=240,
                     )
 
                     logging.info(
@@ -114,6 +116,26 @@ async def run_layer_monitor(interval_seconds: int = 900) -> None:
                     }
                     logging.info("[Layers] Bar counts: %s", bar_counts)
 
+                    symbols_with_20_bars = [
+                        symbol
+                        for symbol, count in bar_counts.items()
+                        if count >= 20
+                    ]
+
+                    symbols_with_60_bars = [
+                        symbol
+                        for symbol, count in bar_counts.items()
+                        if count >= 60
+                    ]
+
+                    logging.info(
+                        "[Layers] Bar readiness | >=20 bars=%s/%s >=60 bars=%s/%s",
+                        len(symbols_with_20_bars),
+                        len(symbols),
+                        len(symbols_with_60_bars),
+                        len(symbols),
+                    )
+
                     result = layer_engine.evaluate(
                         symbols,
                         bars_by_symbol=bars_by_symbol,
@@ -123,6 +145,12 @@ async def run_layer_monitor(interval_seconds: int = 900) -> None:
 
                     ranked = result.get("ranked", [])
                     target = result.get("target_portfolio", {})
+
+                    logging.info(
+                        "[Layers] Ranked count=%s Target=%s",
+                        len(ranked),
+                        target,
+                    )
 
                     store_latest_layer_result(
                         symbols=symbols,

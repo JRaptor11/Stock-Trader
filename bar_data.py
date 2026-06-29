@@ -97,3 +97,70 @@ def fetch_recent_bars(data_client, symbols, lookback_hours=24, timeframe_minutes
     logging.info("[Bars] Latest bar ages minutes: %s", latest_bar_ages_minutes)
 
     return result
+
+def fetch_recent_bars_with_min_count(
+    data_client,
+    symbols,
+    *,
+    min_bars: int = 60,
+    timeframe_minutes: int = 15,
+    initial_lookback_hours: int = 48,
+    max_lookback_hours: int = 240,
+):
+    """
+    Fetch recent bars, expanding the calendar lookback until most symbols
+    have enough actual market bars.
+
+    This avoids Monday/holiday problems where 48 calendar hours may contain
+    very few trading bars.
+    """
+    if not symbols:
+        return {}
+
+    lookback_hours = initial_lookback_hours
+    latest_result = {}
+
+    while lookback_hours <= max_lookback_hours:
+        latest_result = fetch_recent_bars(
+            data_client,
+            symbols,
+            lookback_hours=lookback_hours,
+            timeframe_minutes=timeframe_minutes,
+        )
+
+        bar_counts = {
+            symbol: len(latest_result.get(symbol, []))
+            for symbol in symbols
+        }
+
+        symbols_with_enough_bars = [
+            symbol
+            for symbol, count in bar_counts.items()
+            if count >= min_bars
+        ]
+
+        logging.info(
+            "[Bars] Min-count check | lookback_hours=%s min_bars=%s "
+            "symbols_ready=%s/%s bar_counts=%s",
+            lookback_hours,
+            min_bars,
+            len(symbols_with_enough_bars),
+            len(symbols),
+            bar_counts,
+        )
+
+        # Good enough if at least one symbol can be ranked.
+        # Better if most symbols are ready.
+        if symbols_with_enough_bars:
+            return latest_result
+
+        lookback_hours *= 2
+
+    logging.warning(
+        "[Bars] Could not reach min_bars=%s within max_lookback_hours=%s. "
+        "Returning latest result anyway.",
+        min_bars,
+        max_lookback_hours,
+    )
+
+    return latest_result
