@@ -1,10 +1,95 @@
 # state_init.py
 
 import logging
+import threading
+from collections import deque
 
 from state import app_state
 from paper_portfolio import PaperPortfolio
 from layer2_portfolio import Layer2PortfolioEngine
+
+
+def ensure_app_state_structure() -> None:
+    """Ensure expected nested dicts/containers exist to prevent KeyErrors."""
+
+    main = app_state.setdefault("main", {})
+    main.setdefault("symbol", [])
+    main.setdefault("async_tasks", set())
+    main.setdefault("services", {})
+    main.setdefault("starting_equity", None)
+    main.setdefault("threads", [])
+    main.setdefault("startup_background_task", None)
+
+    app_state.setdefault("paths", {})
+    app_state.setdefault("secrets", {})
+    app_state.setdefault("log_level", {})
+
+    execution = app_state.setdefault("execution", {})
+    execution.setdefault("old_stream_strategy_enabled", False)
+    execution.setdefault("layer3_execution_enabled", False)
+    execution.setdefault("layer3_market_hours_only", True)
+    execution.setdefault("layer3_bootstrap_confirmation_enabled", True)
+    execution.setdefault("layer3_bootstrap_min_bar_count", 8)
+
+    layers = app_state.setdefault("layers", {})
+    layers.setdefault("paper_portfolio", None)
+    layers.setdefault("engine", None)
+    layers.setdefault("latest", {})
+    layers.setdefault("rebalance", {})
+    layers.setdefault("layer4", {})
+    layers.setdefault("layer4_execution", {})
+    layers.setdefault("active_execution_plan", None)
+    layers.setdefault("execution_plan_history", [])
+
+    stream = app_state.setdefault("stream", {})
+    stream.setdefault("manager", None)
+    stream.setdefault("instance", None)
+    stream.setdefault("shutdown_event", threading.Event())
+    stream.setdefault("running", False)
+    stream.setdefault("stopping", False)
+    stream.setdefault("state", "stopped")
+    stream.setdefault("loop", None)
+    stream.setdefault("thread", None)
+    stream.setdefault("lock", threading.Lock())
+
+    debug = stream.setdefault("debug", {})
+    debug.setdefault("status", "init")
+    debug.setdefault("last_restart", None)
+    debug.setdefault("last_trade", None)
+
+    services = app_state.setdefault("services", {})
+    services.setdefault("position_tracker", {})
+    services.setdefault("balance_tracker", {})
+    services.setdefault("order_executor", {})
+
+    fail_safes = app_state.setdefault("fail_safes", {})
+    fail_safes.setdefault("state", False)
+    fail_safes.setdefault("position_lock", None)
+    fail_safes.setdefault("invalid_price_cache", {})
+    fail_safes.setdefault("liquidation_in_progress", set())
+    fail_safes.setdefault("symbols", set())
+
+    strategy = app_state.setdefault("strategy", {})
+    strategy.setdefault("sells_in_progress", set())
+    strategy.setdefault("recent_prices", deque(maxlen=100))
+    strategy.setdefault("atr_filter", None)
+    strategy.setdefault("volatility_scorer", None)
+
+    app_state.setdefault("open_trades", {})
+
+    portfolio_reconcile = app_state.setdefault("portfolio_reconcile", {})
+    portfolio_reconcile.setdefault("running", False)
+    portfolio_reconcile.setdefault("broker_snapshot", {})
+    portfolio_reconcile.setdefault("last_summary", {})
+    portfolio_reconcile.setdefault("last_mismatches", [])
+    portfolio_reconcile.setdefault("last_repairs", [])
+    portfolio_reconcile.setdefault("last_error", None)
+
+    telegram = app_state.setdefault("telegram", {})
+    telegram.setdefault("bot_started", False)
+    telegram.setdefault("bot_app", None)
+    telegram.setdefault("task", None)
+    telegram.setdefault("handle", None)
 
 
 def initialize_layer_state(top_n: int = 5, force_recreate_engine: bool = False) -> None:
