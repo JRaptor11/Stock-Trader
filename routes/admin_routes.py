@@ -10,10 +10,10 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from core.state import app_state
 from market.stream import ThreadedAlpacaStream
-from utils import config_utils as config
+from config import runtime_config as config
 from integrations.alerts import send_email_alert
 from integrations.auth import verify_credentials
-from utils.config_utils import get_config, reset_config, set_config
+from config.runtime_config import get_config, reset_config, set_config
 from utils.misc_utils import with_retries
 
 # ================================================================

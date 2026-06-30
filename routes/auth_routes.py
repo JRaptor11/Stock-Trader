@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from core.state import app_state
-from utils import config_utils as config
+from config import runtime_config as config
 
 auth_routes = APIRouter()
 security = HTTPBasic()

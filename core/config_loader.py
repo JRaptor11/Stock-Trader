@@ -1,12 +1,12 @@
-# app_config_init.py
+# config_loader.py
 
 import logging
 import os
 
 from core.state import app_state
-from utils import config_utils as config
+from config import runtime_config as config
 
-from constants import (
+from config.constants import (
     TRADE_WINDOW,
     TRADE_LIMIT,
     TRADE_COOLDOWN,
@@ -30,7 +30,7 @@ from constants import (
     TRADE_HISTORY_FILE,
 )
 
-from config import (
+from config.app_config import (
     PROGRAM_STARTUP_FILE,
     PROGRAM_SHUTDOWN_FILE,
     PROGRAM_SHUTDOWN_REASON_FILE,

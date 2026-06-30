@@ -11,7 +11,7 @@ from utils.logging_utils import configure_logging, handle_asyncio_exception
 
 from core.app_state_init import ensure_app_state_structure
 
-from core.app_config_init import (
+from core.config_loader import (
     load_environment_config,
     apply_runtime_config_to_app_state,
     log_runtime_config_status,

@@ -5,7 +5,7 @@ import logging
 from core.state import app_state, app_state_lock, fail_safe_event
 from integrations.alerts import send_email_alert
 from utils.trade_utils import log_trade_to_csv
-from utils.config_utils import get_config
+from config.runtime_config import get_config
 
 # === Fail-Safe Actions ===
 async def send_fail_safe_alert_async(subject: str, body: str) -> None:

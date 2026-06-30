@@ -10,8 +10,8 @@ from routes.admin_routes import admin_routes
 from routes.dev_routes import dev_routes
 from routes.public_routes import public_routes
 
-from core.app_config_init import get_bool_env
-from utils import config_utils as config
+from core.config_loader import get_bool_env
+from config import runtime_config as config
 
 
 def configure_fastapi_app(app) -> None:

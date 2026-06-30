@@ -8,7 +8,7 @@ from alpaca.trading.enums import OrderSide, QueryOrderStatus
 from alpaca.trading.requests import GetOrdersRequest
 
 from core.state import app_state, fail_safe_event
-from utils import config_utils as config
+from config import runtime_config as config
 from utils.orders_utils import (
     create_order_request,
     normalize_side,

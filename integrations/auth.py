@@ -1,4 +1,6 @@
-from utils import config_utils as config
+# integrations/auth.py
+
+from config import runtime_config as config
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 

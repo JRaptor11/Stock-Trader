@@ -1,3 +1,5 @@
+# market/bar_data.py
+
 import logging
 from datetime import datetime, timedelta, timezone
 

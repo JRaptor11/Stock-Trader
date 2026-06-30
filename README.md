@@ -190,7 +190,7 @@ Risk limits and configuration defaults
 utils/
 alerts.py
 auth.py
-config_utils.py
+runtime_config.py
 logging_utils.py
 misc_utils.py
 threading_utils.py

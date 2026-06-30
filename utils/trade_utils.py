@@ -5,7 +5,7 @@ import logging
 import time
 from datetime import datetime, timezone, timedelta
 from integrations.alerts import send_email_alert
-from utils.config_utils import get_config
+from config.runtime_config import get_config
 from core.state import app_state
 import asyncio
 from collections import deque

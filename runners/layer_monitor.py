@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime, timezone
-from bar_data import fetch_recent_bars_with_min_count
+from market.bar_data import fetch_recent_bars_with_min_count
 
 from core.state import app_state
 from layers.layer3_rebalancer import run_layer3_dry_run

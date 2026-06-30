@@ -5,7 +5,7 @@ import asyncio
 import pathlib
 from datetime import datetime, timedelta, timezone
 from core.state import app_state
-from config import PROGRAM_STARTUP_FILE, PROGRAM_SHUTDOWN_FILE, PROGRAM_SHUTDOWN_REASON_FILE
+from config.app_config import PROGRAM_STARTUP_FILE, PROGRAM_SHUTDOWN_FILE, PROGRAM_SHUTDOWN_REASON_FILE
 
 from utils.threading_utils import safe_thread
 from integrations.alerts import send_email_alert

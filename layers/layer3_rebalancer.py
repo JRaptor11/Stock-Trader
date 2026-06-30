@@ -2,7 +2,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 
 from core.state import app_state
-from utils import config_utils as config
+from config import runtime_config as config
 
 try:
     from alpaca.trading.enums import QueryOrderStatus

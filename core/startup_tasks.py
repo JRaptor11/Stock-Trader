@@ -24,7 +24,7 @@ from runners.layer_monitor import run_layer_monitor
 from core.app_state_init import initialize_layer_state
 from trading.portfolio_reconciler import run_portfolio_reconciler
 
-from utils import config_utils as config
+from config import runtime_config as config
 from utils.threading_utils import safe_thread
 from utils.system_utils import monitor_system_resources
 from utils.trade_utils import ensure_trade_logs_exist

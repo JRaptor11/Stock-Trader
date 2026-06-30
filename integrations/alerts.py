@@ -1,3 +1,5 @@
+#integrations/alerts.py
+
 import smtplib
 import requests
 from email.mime.text import MIMEText
@@ -6,7 +8,7 @@ from email.utils import formataddr
 import logging
 from datetime import datetime, timedelta
 from core.state import app_state
-import utils.config_utils as config
+from config import runtime_config as config
 
 def send_telegram_alert(message: str):
     if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_CHAT_ID:

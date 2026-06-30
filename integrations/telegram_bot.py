@@ -1,3 +1,5 @@
+# integrations/telegram_bot.py
+
 import asyncio
 import json
 import logging
@@ -31,7 +33,7 @@ from routes.dev_routes import (
     view_trade_log,
 )
 
-from . import config_utils as config
+from . import runtime_config as config
 from core.state import app_state
 
 
