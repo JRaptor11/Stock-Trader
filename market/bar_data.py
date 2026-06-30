@@ -251,31 +251,35 @@ def fetch_recent_bars_with_min_count(
     min_ready_symbols: int | None = None,
 ):
     """
-    Fetch recent bars, expanding the calendar lookback until most symbols
+    Fetch recent bars, expanding the calendar lookback until enough symbols
     have enough actual market bars.
 
-    This avoids Monday/holiday problems where 48 calendar hours may contain
-    very few trading bars.
+    This avoids Monday/holiday/off-hours problems where a short calendar
+    lookback may contain too few trading bars.
     """
     if not symbols:
         return {}
 
-    required_ready_symbols = (
-        min_ready_symbols
-        if min_ready_symbols is not None
-        else len(symbols)
-    )
+    symbols = list(symbols)
+
+    try:
+        required_ready_symbols = (
+            len(symbols)
+            if min_ready_symbols is None
+            else int(min_ready_symbols)
+        )
+    except Exception:
+        required_ready_symbols = len(symbols)
 
     required_ready_symbols = max(
         1,
-        min(len(symbols), int(required_ready_symbols)),
+        min(len(symbols), required_ready_symbols),
     )
-
-    if len(symbols_with_enough_bars) >= required_ready_symbols:
-        return latest_result
 
     lookback_hours = initial_lookback_hours
     latest_result = {}
+    latest_bar_counts = {}
+    latest_symbols_with_enough_bars = []
 
     while lookback_hours <= max_lookback_hours:
         latest_result = fetch_recent_bars(
@@ -285,39 +289,43 @@ def fetch_recent_bars_with_min_count(
             timeframe_minutes=timeframe_minutes,
         )
 
-        bar_counts = {
+        latest_bar_counts = {
             symbol: len(latest_result.get(symbol, []))
             for symbol in symbols
         }
 
-        symbols_with_enough_bars = [
+        latest_symbols_with_enough_bars = [
             symbol
-            for symbol, count in bar_counts.items()
+            for symbol, count in latest_bar_counts.items()
             if count >= min_bars
         ]
 
         logging.info(
             "[Bars] Min-count check | lookback_hours=%s min_bars=%s "
-            "symbols_ready=%s/%s bar_counts=%s",
+            "symbols_ready=%s/%s required_ready_symbols=%s bar_counts=%s",
             lookback_hours,
             min_bars,
-            len(symbols_with_enough_bars),
+            len(latest_symbols_with_enough_bars),
             len(symbols),
-            bar_counts,
+            required_ready_symbols,
+            latest_bar_counts,
         )
 
-        # Good enough if at least one symbol can be ranked.
-        # Better if most symbols are ready.
-        if len(symbols_with_enough_bars) >= min_ready_symbols:
+        if len(latest_symbols_with_enough_bars) >= required_ready_symbols:
             return latest_result
 
         lookback_hours *= 2
 
     logging.warning(
-        "[Bars] Could not reach min_bars=%s within max_lookback_hours=%s. "
-        "Returning latest result anyway.",
+        "[Bars] Could not reach min_bars=%s for required_ready_symbols=%s "
+        "within max_lookback_hours=%s. Returning latest result anyway. "
+        "symbols_ready=%s/%s bar_counts=%s",
         min_bars,
+        required_ready_symbols,
         max_lookback_hours,
+        len(latest_symbols_with_enough_bars),
+        len(symbols),
+        latest_bar_counts,
     )
 
     return latest_result
