@@ -3,7 +3,38 @@
 import logging
 import os
 
+from state import app_state
 from utils import config_utils as config
+
+from constants import (
+    TRADE_WINDOW,
+    TRADE_LIMIT,
+    TRADE_COOLDOWN,
+    EQUITY_THRESHOLD,
+    EQUITY_FAILSAFE_COOLDOWN,
+    MAX_POSITION_LOSS_PERCENT,
+    MAX_EQUITY_LOSS,
+    MAX_POSITION_LOSS,
+    MAX_CONNECTION_ERRORS,
+    CONNECTION_COOLDOWN,
+    BUY_ORDER_THROTTLE_SECONDS,
+    MIN_ORDER_AGE_SECONDS,
+    TRADE_RATE_RESPONSE,
+    MIN_REENTRY_CHANGE_PCT,
+    BUY_CONFIDENCE_THRESHOLD,
+    SELL_CONFIDENCE_THRESHOLD,
+    CONFIDENCE_CONFLICT_MARGIN,
+    MEMORY_ALERT_MB,
+    CPU_ALERT_PERCENT,
+    TRADE_SUMMARY_FILE,
+    TRADE_HISTORY_FILE,
+)
+
+from config import (
+    PROGRAM_STARTUP_FILE,
+    PROGRAM_SHUTDOWN_FILE,
+    PROGRAM_SHUTDOWN_REASON_FILE,
+)
 
 
 def get_int_env(name: str, default: int) -> int:
@@ -106,8 +137,8 @@ def load_environment_config() -> None:
         False,
     )
 
-    config.LAYER3_EXECUTION_ENABLED = get_bool_env(
-        "LAYER3_EXECUTION_ENABLED",
+    config.LAYER4_EXECUTION_ENABLED = get_bool_env(
+        "LAYER4_EXECUTION_ENABLED",
         False,
     )
 
@@ -125,3 +156,117 @@ def load_environment_config() -> None:
         "LAYER3_BOOTSTRAP_MIN_BAR_COUNT",
         8,
     )
+
+
+def apply_runtime_config_to_app_state() -> None:
+    """
+    Apply loaded environment/config values into app_state.
+
+    This should run during lifespan startup after load_environment_config().
+    """
+
+    # Keep the legacy tick strategy observation-only by default.
+    # Market-data collection and signal calculation remain active.
+    app_state["execution"]["old_stream_strategy_enabled"] = (
+        config.OLD_STREAM_STRATEGY_ENABLED
+    )
+
+    app_state["execution"]["layer4_execution_enabled"] = (
+        config.LAYER4_EXECUTION_ENABLED
+    )
+
+    app_state["execution"]["layer3_market_hours_only"] = (
+        config.LAYER3_MARKET_HOURS_ONLY
+    )
+
+    app_state["execution"]["layer3_bootstrap_confirmation_enabled"] = (
+        config.LAYER3_BOOTSTRAP_CONFIRMATION_ENABLED
+    )
+
+    app_state["execution"]["layer3_bootstrap_min_bar_count"] = (
+        config.LAYER3_BOOTSTRAP_MIN_BAR_COUNT
+    )
+
+    symbol_raw = os.environ.get("SYMBOL", "AAPL").strip()
+    symbols = [s.strip() for s in symbol_raw.split(",") if s.strip()]
+    app_state["main"]["symbol"] = symbols
+
+    if not app_state["main"]["symbol"]:
+        raise RuntimeError("Symbol is not configured. Bot cannot proceed.")
+
+    app_state["paths"] = {
+        "TRADE_SUMMARY_FILE": TRADE_SUMMARY_FILE,
+        "TRADE_HISTORY_FILE": TRADE_HISTORY_FILE,
+        "PROGRAM_STARTUP_FILE": PROGRAM_STARTUP_FILE,
+        "PROGRAM_SHUTDOWN_FILE": PROGRAM_SHUTDOWN_FILE,
+        "PROGRAM_SHUTDOWN_REASON_FILE": PROGRAM_SHUTDOWN_REASON_FILE,
+    }
+
+    app_state["config_defaults"] = {
+        "TRADE_WINDOW": TRADE_WINDOW,
+        "TRADE_LIMIT": TRADE_LIMIT,
+        "TRADE_COOLDOWN": TRADE_COOLDOWN,
+        "BUY_ORDER_THROTTLE_SECONDS": BUY_ORDER_THROTTLE_SECONDS,
+        "MIN_ORDER_AGE_SECONDS": MIN_ORDER_AGE_SECONDS,
+        "TRADE_RATE_RESPONSE": TRADE_RATE_RESPONSE,
+        "MIN_REENTRY_CHANGE_PCT": MIN_REENTRY_CHANGE_PCT,
+        "BUY_CONFIDENCE_THRESHOLD": BUY_CONFIDENCE_THRESHOLD,
+        "SELL_CONFIDENCE_THRESHOLD": SELL_CONFIDENCE_THRESHOLD,
+        "CONFIDENCE_CONFLICT_MARGIN": CONFIDENCE_CONFLICT_MARGIN,
+        "EQUITY_THRESHOLD": EQUITY_THRESHOLD,
+        "EQUITY_FAILSAFE_COOLDOWN": EQUITY_FAILSAFE_COOLDOWN,
+        "MAX_POSITION_LOSS_PERCENT": MAX_POSITION_LOSS_PERCENT,
+        "MAX_EQUITY_LOSS": MAX_EQUITY_LOSS,
+        "MAX_POSITION_LOSS": MAX_POSITION_LOSS,
+        "MAX_CONNECTION_ERRORS": MAX_CONNECTION_ERRORS,
+        "CONNECTION_COOLDOWN": CONNECTION_COOLDOWN,
+        "MEMORY_ALERT_MB": MEMORY_ALERT_MB,
+        "CPU_ALERT_PERCENT": CPU_ALERT_PERCENT,
+        "HEALTH_USERNAME": config.HEALTH_USERNAME,
+        "HEALTH_PASSWORD": config.HEALTH_PASSWORD,
+    }
+
+    app_state["fail_safes"]["state"] = False
+
+    app_state["main"]["services"] = {
+        "EMAIL_RECIPIENTS": config.EMAIL_RECIPIENTS,
+        "ALPACA_URL": config.ALPACA_URL,
+        "TELEGRAM_BOT_TOKEN": config.TELEGRAM_BOT_TOKEN,
+        "TELEGRAM_CHAT_ID": config.TELEGRAM_CHAT_ID,
+    }
+
+
+def log_runtime_config_status() -> None:
+    """
+    Log startup execution/config status.
+    """
+
+    logging.info(
+        "[Layer4Execution] execution_enabled=%s market_hours_only=%s "
+        "bootstrap_confirmation_enabled=%s bootstrap_min_bar_count=%s",
+        config.LAYER4_EXECUTION_ENABLED,
+        config.LAYER3_MARKET_HOURS_ONLY,
+        config.LAYER3_BOOTSTRAP_CONFIRMATION_ENABLED,
+        config.LAYER3_BOOTSTRAP_MIN_BAR_COUNT,
+    )
+
+    if config.OLD_STREAM_STRATEGY_ENABLED:
+        logging.warning(
+            "[ExecutionMode] Legacy tick-by-tick stream execution is ENABLED."
+        )
+    else:
+        logging.info(
+            "[ExecutionMode] Legacy tick-by-tick stream execution is disabled; "
+            "tick tracking remains active."
+        )
+
+    if config.LAYER4_EXECUTION_ENABLED:
+        logging.warning(
+            "[Layer4Execution] Layer 4 paper order execution is ENABLED."
+        )
+    else:
+        logging.info(
+            "[Layer4Execution] Layer 4 execution is disabled; dry-run planning only."
+        )
+
+    logging.info("ENABLE_DEV_ROUTES resolved to: %s", config.ENABLE_DEV_ROUTES)
