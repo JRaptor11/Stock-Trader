@@ -8,14 +8,10 @@ import logging
 import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 from app_instance import app
-from routes.auth_routes import auth_routes
-from routes.admin_routes import admin_routes
-from routes.dev_routes import dev_routes
-from routes.public_routes import public_routes
+
 from state import app_state
 
 from utils.logging_utils import configure_logging, handle_asyncio_exception
@@ -24,8 +20,9 @@ from utils import config_utils as config
 
 from app_state_init import ensure_app_state_structure
 
+from app_setup import configure_fastapi_app
+
 from app_config_init import (
-    get_bool_env,
     load_environment_config,
     apply_runtime_config_to_app_state,
     log_runtime_config_status,
@@ -78,25 +75,7 @@ async def lifespan(app_fastapi):
 
 app.router.lifespan_context = lifespan
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Evaluate this BEFORE router mounting so dev routes are included correctly.
-config.ENABLE_DEV_ROUTES = get_bool_env("ENABLE_DEV_ROUTES", False)
-
-app.include_router(public_routes, prefix="/api/public", tags=["public"])
-app.include_router(auth_routes, prefix="/api/auth", tags=["auth"])
-app.include_router(admin_routes, prefix="/api/admin", tags=["admin"])
-
-if config.ENABLE_DEV_ROUTES:
-    app.include_router(dev_routes, prefix="/api/dev", tags=["dev"])
-
-logging.info(f"🔧 ENV is: {os.getenv('ENV', 'development')}")
+configure_fastapi_app(app)
 
 if __name__ == "__main__":
     import uvicorn
