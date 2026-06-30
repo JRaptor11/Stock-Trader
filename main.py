@@ -21,12 +21,8 @@ from routes.public_routes import public_routes
 from state import app_state
 
 from utils.lifecycle_utils import (
-    record_program_startup,
     record_program_shutdown,
-    was_last_program_shutdown_abnormal,
-    sync_open_positions_to_app_state,
     safe_close_trading_client,
-    safe_send_startup_alert,
 )
 from utils.logging_utils import configure_logging, handle_asyncio_exception
 
@@ -61,10 +57,7 @@ from config import (
     PROGRAM_SHUTDOWN_REASON_FILE,
 )
 
-from state_init import (
-    ensure_app_state_structure,
-    initialize_layer_state,
-)
+from state_init import ensure_app_state_structure
 
 from app_config_init import (
     get_bool_env,
@@ -99,8 +92,8 @@ async def lifespan(app_fastapi):
         app_state["execution"]["old_stream_strategy_enabled"] = (
             config.OLD_STREAM_STRATEGY_ENABLED
         )
-        app_state["execution"]["layer3_execution_enabled"] = (
-            config.LAYER3_EXECUTION_ENABLED
+        app_state["execution"]["layer4_execution_enabled"] = (
+            config.LAYER4_EXECUTION_ENABLED
         )
         app_state["execution"]["layer3_market_hours_only"] = (
             config.LAYER3_MARKET_HOURS_ONLY
@@ -113,9 +106,9 @@ async def lifespan(app_fastapi):
         )
 
         logging.info(
-            "[Layer3Execution] execution_enabled=%s market_hours_only=%s "
+            "[Layer4Execution] execution_enabled=%s market_hours_only=%s "
             "bootstrap_confirmation_enabled=%s bootstrap_min_bar_count=%s",
-            config.LAYER3_EXECUTION_ENABLED,
+            config.LAYER4_EXECUTION_ENABLED,
             config.LAYER3_MARKET_HOURS_ONLY,
             config.LAYER3_BOOTSTRAP_CONFIRMATION_ENABLED,
             config.LAYER3_BOOTSTRAP_MIN_BAR_COUNT,
@@ -131,7 +124,7 @@ async def lifespan(app_fastapi):
                 "tick tracking remains active."
             )
 
-        if config.LAYER3_EXECUTION_ENABLED:
+        if config.LAYER4_EXECUTION_ENABLED:
             logging.warning(
                 "[Layer3Execution] Layer 3 paper order execution is ENABLED."
             )
