@@ -21,7 +21,7 @@ from stream import ThreadedAlpacaStream
 from strategy import AtrNoiseFilter, VolatilityScorer
 
 from layer_monitor import run_layer_monitor
-from app_state_init import initialize_layer_state
+from state_init import initialize_layer_state
 from portfolio_reconciler import run_portfolio_reconciler
 
 from utils import config_utils as config

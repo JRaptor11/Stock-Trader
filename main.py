@@ -6,8 +6,6 @@ import os
 import time
 import logging
 import asyncio
-import inspect
-import threading
 from contextlib import asynccontextmanager
 
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,10 +18,6 @@ from routes.dev_routes import dev_routes
 from routes.public_routes import public_routes
 from state import app_state
 
-from utils.lifecycle_utils import (
-    record_program_shutdown,
-    safe_close_trading_client,
-)
 from utils.logging_utils import configure_logging, handle_asyncio_exception
 
 from utils import config_utils as config
@@ -65,6 +59,9 @@ from app_config_init import (
 )
 
 from startup_tasks import background_startup_after_bind
+
+from shutdown_tasks import shutdown_trading_bot
+
 
 load_dotenv()
 
@@ -196,144 +193,7 @@ async def lifespan(app_fastapi):
         yield
 
     finally:
-        try:
-            app_state["stream"]["shutdown_event"].set()
-        except Exception:
-            pass
-
-        try:
-            tasks = list(app_state["main"]["async_tasks"])
-            for task in tasks:
-                task.cancel()
-
-            if tasks:
-                try:
-                    await asyncio.wait_for(
-                        asyncio.gather(*tasks, return_exceptions=True),
-                        timeout=10,
-                    )
-                except asyncio.TimeoutError:
-                    logging.warning("⚠️ Timed out waiting for background async tasks to cancel.")
-
-            app_state["main"]["async_tasks"].clear()
-        except Exception as e:
-            logging.warning(f"⚠️ Error cancelling async tasks: {e}")
-
-        logging.info("⏹ Attempting to stop data stream...")
-        stream = app_state["stream"].get("manager")
-
-        if stream:
-            try:
-                if inspect.iscoroutinefunction(getattr(stream, "stop", None)):
-                    await asyncio.wait_for(stream.stop(), timeout=15)
-                else:
-                    await asyncio.wait_for(asyncio.to_thread(stream.stop), timeout=15)
-            except asyncio.TimeoutError:
-                logging.warning("⚠️ Stream stop timed out.")
-            except Exception as e:
-                logging.error(f"❌ Error stopping stream: {e}")
-            finally:
-                app_state["stream"]["running"] = False
-
-                stream_thread = app_state["stream"].get("thread")
-                if not stream_thread or not stream_thread.is_alive():
-                    app_state["stream"]["thread"] = None
-                    app_state["stream"]["loop"] = None
-                    app_state["stream"]["instance"] = None
-                    app_state["stream"]["manager"] = None
-                    app_state["stream"]["state"] = "stopped"
-
-        try:
-            if app_state["services"].get("position_tracker", {}).get("instance"):
-                app_state["services"]["position_tracker"]["instance"].stop()
-            if app_state["services"].get("balance_tracker", {}).get("instance"):
-                app_state["services"]["balance_tracker"]["instance"].stop_periodic_updates()
-        except Exception:
-            pass
-
-        if app_state.get("trading_client"):
-            await safe_close_trading_client(app_state["trading_client"])
-
-        try:
-            telegram_state = app_state.get("telegram", {})
-            tg_app = telegram_state.get("bot_app")
-            tg_task = telegram_state.get("task")
-
-            if tg_app:
-                try:
-                    if getattr(tg_app, "updater", None):
-                        await asyncio.wait_for(tg_app.updater.stop(), timeout=5)
-                except Exception:
-                    logging.warning("[TelegramBot] updater.stop() failed (ignored).", exc_info=True)
-
-                try:
-                    await asyncio.wait_for(tg_app.stop(), timeout=5)
-                except Exception:
-                    logging.warning("[TelegramBot] app.stop() failed (ignored).", exc_info=True)
-
-                try:
-                    await asyncio.wait_for(tg_app.shutdown(), timeout=5)
-                except Exception:
-                    logging.warning("[TelegramBot] app.shutdown() failed (ignored).", exc_info=True)
-
-            if tg_task:
-                tg_task.cancel()
-                try:
-                    await asyncio.wait_for(tg_task, timeout=5)
-                except asyncio.CancelledError:
-                    pass
-                except Exception:
-                    logging.warning("[TelegramBot] telegram task cancel/wait failed (ignored).", exc_info=True)
-
-        except Exception:
-            logging.warning("Telegram shutdown failed (ignored).", exc_info=True)
-        finally:
-            app_state["stream"]["running"] = False
-
-            stream_thread = app_state["stream"].get("thread")
-            if not stream_thread or not stream_thread.is_alive():
-                app_state["stream"]["instance"] = None
-                app_state["stream"]["thread"] = None
-                app_state["stream"]["loop"] = None
-                app_state["stream"]["state"] = "stopped"
-
-        try:
-            threads = list(app_state["main"].get("threads", []))
-            for t in threads:
-                if t and getattr(t, "is_alive", lambda: False)():
-                    t.join(timeout=2)
-        except Exception:
-            logging.warning("⚠️ Error joining background threads (ignored).", exc_info=True)
-
-        app_state["main"]["threads"].clear()
-
-        record_program_shutdown(reason="clean")
-
-        try:
-            logging.info("🧵 Threads still alive: " + ", ".join(t.name for t in threading.enumerate()))
-        except Exception:
-            pass
-
-        try:
-            loop = asyncio.get_running_loop()
-            pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
-            pretty = []
-            for t in pending:
-                try:
-                    name = t.get_name()
-                except Exception:
-                    name = str(t)
-                try:
-                    coro = t.get_coro()
-                    coro_name = getattr(coro, "__qualname__", repr(coro))
-                except Exception:
-                    coro_name = "unknown_coro"
-                pretty.append(f"{name}->{coro_name}")
-            logging.info(f"🌀 Pending asyncio tasks ({len(pending)}): " + " | ".join(pretty[:12]))
-        except Exception:
-            pass
-
-        logging.info("👋 Shutdown complete")
+        await shutdown_trading_bot()
 
 
 app.router.lifespan_context = lifespan
