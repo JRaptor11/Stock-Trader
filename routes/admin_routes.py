@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from core.state import app_state
-from stream import ThreadedAlpacaStream
+from market.stream import ThreadedAlpacaStream
 from utils import config_utils as config
 from utils.alerts_utils import send_email_alert
 from utils.auth_utils import verify_credentials

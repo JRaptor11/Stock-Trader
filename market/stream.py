@@ -32,7 +32,7 @@ from utils.orders_utils import (
     _finalize_filled_sell,
     should_block_extended_order_near_open
 )
-from utils import config_utils
+
 from patched_stream import PatchedStockDataStream
 
 import concurrent.futures

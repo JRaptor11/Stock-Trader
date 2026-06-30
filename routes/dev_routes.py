@@ -16,7 +16,7 @@ from utils.alerts_utils import send_email_alert, send_telegram_alert
 from utils.trade_utils import TRADE_REASON_LOG
 from utils.auth_utils import verify_credentials
 from utils.misc_utils import with_retries
-from stream import FakeTrade
+from market.stream import FakeTrade
 
 # ================================================================
 # dev_routes.py

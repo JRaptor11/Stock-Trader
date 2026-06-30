@@ -8,7 +8,7 @@ from collections import deque
 from smart_deque import SmartDeque
 from types import MappingProxyType
 
-from utils.market_data import MarketDataBuffer
+from market.market_data import MarketDataBuffer
 
 """
 # === Locks for Synchronization ===
