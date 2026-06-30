@@ -31,6 +31,13 @@ def ensure_app_state_structure() -> None:
     execution.setdefault("layer3_bootstrap_confirmation_enabled", True)
     execution.setdefault("layer3_bootstrap_min_bar_count", 8)
 
+    execution.setdefault("layer_monitor_run_24_7", True)
+
+    execution.setdefault("bar_freshness_market_hours_only", True)
+    execution.setdefault("bar_freshness_max_age_minutes", 35.0)
+    execution.setdefault("bar_freshness_min_fresh_symbols", 5)
+    execution.setdefault("bar_freshness_min_fresh_ratio", 0.70)
+
     layers = app_state.setdefault("layers", {})
     layers.setdefault("paper_portfolio", None)
     layers.setdefault("engine", None)
@@ -154,5 +161,8 @@ def initialize_layer_state(top_n: int = 5, force_recreate_engine: bool = False) 
 
     # Small history of replaced/expired execution plans.
     layers.setdefault("execution_plan_history", [])
+
+    layers.setdefault("bar_freshness", {})
+    layers.setdefault("last_skipped_evaluation", None)
 
     logging.info("[Startup] Layer state initialized.")

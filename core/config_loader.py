@@ -58,6 +58,27 @@ def get_int_env(name: str, default: int) -> int:
         return default
 
 
+def get_float_env(name: str, default: float) -> float:
+    """
+    Parse float environment variables safely.
+    """
+    raw = os.getenv(name)
+
+    if raw is None:
+        return default
+
+    try:
+        return float(raw.strip())
+    except ValueError:
+        logging.warning(
+            "Invalid float env var %s=%r. Using default=%s.",
+            name,
+            raw,
+            default,
+        )
+        return default
+
+
 def get_bool_env(name: str, default: bool = False) -> bool:
     """
     Parse boolean environment variables safely.
@@ -157,6 +178,31 @@ def load_environment_config() -> None:
         8,
     )
 
+    config.LAYER_MONITOR_RUN_24_7 = get_bool_env(
+        "LAYER_MONITOR_RUN_24_7",
+        True,
+    )
+
+    config.BAR_FRESHNESS_MARKET_HOURS_ONLY = get_bool_env(
+        "BAR_FRESHNESS_MARKET_HOURS_ONLY",
+        True,
+    )
+
+    config.BAR_FRESHNESS_MAX_AGE_MINUTES = get_float_env(
+        "BAR_FRESHNESS_MAX_AGE_MINUTES",
+        35.0,
+    )
+
+    config.BAR_FRESHNESS_MIN_FRESH_SYMBOLS = get_int_env(
+        "BAR_FRESHNESS_MIN_FRESH_SYMBOLS",
+        5,
+    )
+
+    config.BAR_FRESHNESS_MIN_FRESH_RATIO = get_float_env(
+        "BAR_FRESHNESS_MIN_FRESH_RATIO",
+        0.70,
+    )
+
 
 def apply_runtime_config_to_app_state() -> None:
     """
@@ -242,10 +288,18 @@ def log_runtime_config_status() -> None:
     """
 
     logging.info(
-        "[Layer4Execution] execution_enabled=%s market_hours_only=%s "
-        "bootstrap_confirmation_enabled=%s bootstrap_min_bar_count=%s",
+        "[LayerConfig] layer4_execution_enabled=%s layer3_market_hours_only=%s "
+        "layer_monitor_run_24_7=%s bar_freshness_market_hours_only=%s "
+        "bar_freshness_max_age_minutes=%s bar_freshness_min_fresh_symbols=%s "
+        "bar_freshness_min_fresh_ratio=%s bootstrap_confirmation_enabled=%s "
+        "bootstrap_min_bar_count=%s",
         config.LAYER4_EXECUTION_ENABLED,
         config.LAYER3_MARKET_HOURS_ONLY,
+        config.LAYER_MONITOR_RUN_24_7,
+        config.BAR_FRESHNESS_MARKET_HOURS_ONLY,
+        config.BAR_FRESHNESS_MAX_AGE_MINUTES,
+        config.BAR_FRESHNESS_MIN_FRESH_SYMBOLS,
+        config.BAR_FRESHNESS_MIN_FRESH_RATIO,
         config.LAYER3_BOOTSTRAP_CONFIRMATION_ENABLED,
         config.LAYER3_BOOTSTRAP_MIN_BAR_COUNT,
     )
@@ -268,5 +322,25 @@ def log_runtime_config_status() -> None:
         logging.info(
             "[Layer4Execution] Layer 4 execution is disabled; dry-run planning only."
         )
+
+    app_state["execution"]["layer_monitor_run_24_7"] = (
+        config.LAYER_MONITOR_RUN_24_7
+    )
+
+    app_state["execution"]["bar_freshness_market_hours_only"] = (
+        config.BAR_FRESHNESS_MARKET_HOURS_ONLY
+    )
+
+    app_state["execution"]["bar_freshness_max_age_minutes"] = (
+        config.BAR_FRESHNESS_MAX_AGE_MINUTES
+    )
+
+    app_state["execution"]["bar_freshness_min_fresh_symbols"] = (
+        config.BAR_FRESHNESS_MIN_FRESH_SYMBOLS
+    )
+
+    app_state["execution"]["bar_freshness_min_fresh_ratio"] = (
+        config.BAR_FRESHNESS_MIN_FRESH_RATIO
+    )
 
     logging.info("ENABLE_DEV_ROUTES resolved to: %s", config.ENABLE_DEV_ROUTES)

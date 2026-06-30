@@ -1,6 +1,7 @@
 # layer4_executor.py
 
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
@@ -223,6 +224,57 @@ def _executable_rows(plan: Any) -> list[dict]:
     return executable
 
 
+def _finish_layer4_result(
+    *,
+    result: dict,
+    layer4_state: dict,
+    started_monotonic: float,
+    log_level: int = logging.INFO,
+) -> dict:
+    """
+    Store and log the final Layer 4 execution result from every return path.
+
+    This makes cycles like 67 diagnosable because every execution attempt ends with:
+    - Complete
+    - Execution result
+    - duration
+    - count integrity check
+    """
+    result["finished_at"] = datetime.now(timezone.utc).isoformat()
+    result["duration_seconds"] = round(time.monotonic() - started_monotonic, 3)
+
+    attempted = int(result.get("attempted", 0) or 0)
+    submitted = int(result.get("submitted", 0) or 0)
+    skipped = int(result.get("skipped", 0) or 0)
+    errors = int(result.get("errors", 0) or 0)
+
+    result["count_integrity_ok"] = attempted == submitted + skipped + errors
+
+    layer4_state["last_cycle_id"] = result.get("cycle_id")
+    layer4_state["last_plan_id"] = result.get("plan_id")
+    layer4_state["last_result"] = result
+
+    logging.log(
+        log_level,
+        "[Layer4Exec] Complete | cycle_id=%s plan_id=%s attempted=%s "
+        "submitted=%s skipped=%s errors=%s blocked_reason=%s "
+        "duration=%.3fs count_integrity_ok=%s",
+        result.get("cycle_id"),
+        result.get("plan_id"),
+        attempted,
+        submitted,
+        skipped,
+        errors,
+        result.get("blocked_reason"),
+        result.get("duration_seconds"),
+        result.get("count_integrity_ok"),
+    )
+
+    logging.info("[Layer4Exec] Execution result: %s", result)
+
+    return result
+
+
 def execute_layer4_plan(plan: Any, summary: dict | None = None) -> dict:
     """
     Execute the latest Layer 3 plan using Layer 4.
@@ -238,22 +290,31 @@ def execute_layer4_plan(plan: Any, summary: dict | None = None) -> dict:
     - time orders intracycle
     - expire/reconcile stale plans at the next Layer 3 cycle
     """
+    started_monotonic = time.monotonic()
+
+    started_at = datetime.now(timezone.utc).isoformat()
 
     summary = summary or {}
     cycle_id = summary.get("cycle_id")
     plan_id = summary.get("plan_id")
+
+    execution_enabled = _execution_enabled()
 
     result = {
         "layer": "layer4",
         "mode": "direct_compat",
         "cycle_id": cycle_id,
         "plan_id": plan_id,
-        "enabled": _execution_enabled(),
+        "enabled": execution_enabled,
+        "started_at": started_at,
+        "finished_at": None,
+        "duration_seconds": None,
         "attempted": 0,
         "submitted": 0,
         "skipped": 0,
         "errors": 0,
         "blocked_reason": None,
+        "count_integrity_ok": None,
         "orders": [],
     }
 
@@ -262,15 +323,18 @@ def execute_layer4_plan(plan: Any, summary: dict | None = None) -> dict:
     layer4_state["last_attempted_at"] = datetime.now(timezone.utc).isoformat()
     layer4_state["last_plan_id"] = plan_id
 
-    if not _execution_enabled():
+    if not execution_enabled:
         logging.info(
             "[Layer4Exec] Execution disabled; dry-run only. cycle_id=%s plan_id=%s",
             cycle_id,
             plan_id,
         )
         result["blocked_reason"] = "execution_disabled"
-        layer4_state["last_result"] = result
-        return result
+        return _finish_layer4_result(
+            result=result,
+            layer4_state=layer4_state,
+            started_monotonic=started_monotonic,
+        )
 
     if fail_safe_event.is_set() or app_state.get("fail_safes", {}).get("state"):
         logging.warning(
@@ -279,15 +343,23 @@ def execute_layer4_plan(plan: Any, summary: dict | None = None) -> dict:
             plan_id,
         )
         result["blocked_reason"] = "fail_safe_active"
-        layer4_state["last_result"] = result
-        return result
+        return _finish_layer4_result(
+            result=result,
+            layer4_state=layer4_state,
+            started_monotonic=started_monotonic,
+            log_level=logging.WARNING,
+        )
 
     client = app_state.get("trading_client")
     if client is None:
         logging.warning("[Layer4Exec] No trading_client available.")
         result["blocked_reason"] = "missing_trading_client"
-        layer4_state["last_result"] = result
-        return result
+        return _finish_layer4_result(
+            result=result,
+            layer4_state=layer4_state,
+            started_monotonic=started_monotonic,
+            log_level=logging.WARNING,
+        )
 
     try:
         clock = client.get_clock()
@@ -295,8 +367,12 @@ def execute_layer4_plan(plan: Any, summary: dict | None = None) -> dict:
     except Exception:
         logging.warning("[Layer4Exec] Could not fetch market clock.", exc_info=True)
         result["blocked_reason"] = "clock_fetch_failed"
-        layer4_state["last_result"] = result
-        return result
+        return _finish_layer4_result(
+            result=result,
+            layer4_state=layer4_state,
+            started_monotonic=started_monotonic,
+            log_level=logging.WARNING,
+        )
 
     if _market_hours_only() and not market_is_open:
         logging.info(
@@ -306,16 +382,23 @@ def execute_layer4_plan(plan: Any, summary: dict | None = None) -> dict:
             plan_id,
         )
         result["blocked_reason"] = "market_closed"
-        layer4_state["last_result"] = result
-        return result
+        return _finish_layer4_result(
+            result=result,
+            layer4_state=layer4_state,
+            started_monotonic=started_monotonic,
+        )
 
     try:
         open_orders = _broker_open_orders(client)
     except Exception:
         logging.warning("[Layer4Exec] Could not fetch open orders.", exc_info=True)
         result["blocked_reason"] = "open_order_fetch_failed"
-        layer4_state["last_result"] = result
-        return result
+        return _finish_layer4_result(
+            result=result,
+            layer4_state=layer4_state,
+            started_monotonic=started_monotonic,
+            log_level=logging.WARNING,
+        )
 
     if open_orders:
         logging.warning(
@@ -326,8 +409,12 @@ def execute_layer4_plan(plan: Any, summary: dict | None = None) -> dict:
             plan_id,
         )
         result["blocked_reason"] = "broker_open_orders_exist"
-        layer4_state["last_result"] = result
-        return result
+        return _finish_layer4_result(
+            result=result,
+            layer4_state=layer4_state,
+            started_monotonic=started_monotonic,
+            log_level=logging.WARNING,
+        )
 
     executable = _executable_rows(plan)
     if not executable:
@@ -337,8 +424,11 @@ def execute_layer4_plan(plan: Any, summary: dict | None = None) -> dict:
             plan_id,
         )
         result["blocked_reason"] = "no_executable_rows"
-        layer4_state["last_result"] = result
-        return result
+        return _finish_layer4_result(
+            result=result,
+            layer4_state=layer4_state,
+            started_monotonic=started_monotonic,
+        )
 
     logging.info(
         "[Layer4Exec] Executable rows found | cycle_id=%s plan_id=%s count=%s rows=%s",
@@ -367,9 +457,23 @@ def execute_layer4_plan(plan: Any, summary: dict | None = None) -> dict:
         price = _safe_float(row["price"], 0.0)
         notional = _safe_float(row.get("notional"), qty * price)
         reason = str(row.get("reason", ""))
-        row_id = row.get("row_id")
+        row_id = row.get("row_id") or f"{plan_id}:{symbol}"
 
         result["attempted"] += 1
+
+        logging.info(
+            "[Layer4Exec] Row start | cycle_id=%s plan_id=%s row_id=%s "
+            "symbol=%s decision=%s qty=%s notional=$%.2f price=$%.2f reason=%s",
+            cycle_id,
+            plan_id,
+            row_id,
+            symbol,
+            decision,
+            qty,
+            notional,
+            price,
+            reason,
+        )
 
         if decision == "SELL":
             held_qty = position_qty.get(symbol, 0.0)
@@ -392,6 +496,7 @@ def execute_layer4_plan(plan: Any, summary: dict | None = None) -> dict:
                 continue
 
             qty = min(qty, held_qty)
+            notional = qty * price
             side = OrderSide.SELL
 
         elif decision == "BUY":
@@ -530,19 +635,9 @@ def execute_layer4_plan(plan: Any, summary: dict | None = None) -> dict:
                 }
             )
 
-    layer4_state["last_cycle_id"] = cycle_id
-    layer4_state["last_plan_id"] = plan_id
-    layer4_state["last_result"] = result
-
-    logging.warning(
-        "[Layer4Exec] Complete | cycle_id=%s plan_id=%s attempted=%s submitted=%s "
-        "skipped=%s errors=%s",
-        cycle_id,
-        plan_id,
-        result["attempted"],
-        result["submitted"],
-        result["skipped"],
-        result["errors"],
+    return _finish_layer4_result(
+        result=result,
+        layer4_state=layer4_state,
+        started_monotonic=started_monotonic,
+        log_level=logging.WARNING if result["errors"] else logging.INFO,
     )
-
-    return result

@@ -100,6 +100,119 @@ def fetch_recent_bars(data_client, symbols, lookback_hours=24, timeframe_minutes
 
     return result
 
+
+def _to_aware_utc(dt):
+    if dt is None:
+        return None
+
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+
+    return dt.astimezone(timezone.utc)
+
+
+def latest_bar_age_minutes(symbol_bars: list, now_utc: datetime | None = None) -> float | None:
+    """
+    Return the age in minutes of the latest bar in a symbol's bar list.
+    """
+    if not symbol_bars:
+        return None
+
+    latest_ts = symbol_bars[-1].get("timestamp")
+    latest_ts = _to_aware_utc(latest_ts)
+
+    if latest_ts is None:
+        return None
+
+    now_utc = now_utc or datetime.now(timezone.utc)
+    return round((now_utc - latest_ts).total_seconds() / 60, 1)
+
+
+def build_bar_freshness_report(
+    bars_by_symbol: dict,
+    symbols: list,
+    *,
+    max_age_minutes: float,
+    now_utc: datetime | None = None,
+) -> dict:
+    """
+    Build freshness diagnostics for the latest bars.
+
+    A symbol is fresh only if:
+    - it has bars
+    - latest bar timestamp exists
+    - latest bar age is <= max_age_minutes
+    """
+    now_utc = now_utc or datetime.now(timezone.utc)
+
+    latest_bar_times = {}
+    latest_bar_ages_minutes = {}
+    fresh_symbols = []
+    stale_symbols = []
+    missing_symbols = []
+
+    for symbol in symbols:
+        symbol_bars = bars_by_symbol.get(symbol, []) or []
+
+        if not symbol_bars:
+            latest_bar_times[symbol] = None
+            latest_bar_ages_minutes[symbol] = None
+            missing_symbols.append(symbol)
+            stale_symbols.append(symbol)
+            continue
+
+        latest_ts = _to_aware_utc(symbol_bars[-1].get("timestamp"))
+        latest_bar_times[symbol] = latest_ts
+
+        age_minutes = latest_bar_age_minutes(symbol_bars, now_utc=now_utc)
+        latest_bar_ages_minutes[symbol] = age_minutes
+
+        if age_minutes is not None and age_minutes <= max_age_minutes:
+            fresh_symbols.append(symbol)
+        else:
+            stale_symbols.append(symbol)
+
+    return {
+        "max_age_minutes": float(max_age_minutes),
+        "fresh_symbols": fresh_symbols,
+        "stale_symbols": stale_symbols,
+        "missing_symbols": missing_symbols,
+        "fresh_count": len(fresh_symbols),
+        "stale_count": len(stale_symbols),
+        "total_symbols": len(symbols),
+        "latest_bar_times": latest_bar_times,
+        "latest_bar_ages_minutes": latest_bar_ages_minutes,
+    }
+
+
+def filter_fresh_bars(
+    bars_by_symbol: dict,
+    symbols: list,
+    *,
+    max_age_minutes: float,
+) -> tuple[dict, dict]:
+    """
+    Return:
+    - bars only for fresh symbols
+    - freshness report
+    """
+    report = build_bar_freshness_report(
+        bars_by_symbol,
+        symbols,
+        max_age_minutes=max_age_minutes,
+    )
+
+    fresh_set = set(report["fresh_symbols"])
+
+    fresh_bars = {
+        symbol: bars
+        for symbol, bars in bars_by_symbol.items()
+        if symbol in fresh_set
+    }
+
+    return fresh_bars, report
+
+
 def fetch_recent_bars_with_min_count(
     data_client,
     symbols,
@@ -108,6 +221,7 @@ def fetch_recent_bars_with_min_count(
     timeframe_minutes: int = 15,
     initial_lookback_hours: int = 48,
     max_lookback_hours: int = 240,
+    min_ready_symbols: int | None = None,
 ):
     """
     Fetch recent bars, expanding the calendar lookback until most symbols
@@ -118,6 +232,11 @@ def fetch_recent_bars_with_min_count(
     """
     if not symbols:
         return {}
+
+    if min_ready_symbols is None:
+        min_ready_symbols = 1
+
+    min_ready_symbols = max(1, min(int(min_ready_symbols), len(symbols)))
 
     lookback_hours = initial_lookback_hours
     latest_result = {}
@@ -153,7 +272,7 @@ def fetch_recent_bars_with_min_count(
 
         # Good enough if at least one symbol can be ranked.
         # Better if most symbols are ready.
-        if symbols_with_enough_bars:
+        if len(symbols_with_enough_bars) >= min_ready_symbols:
             return latest_result
 
         lookback_hours *= 2
