@@ -22,7 +22,7 @@ from utils.logging_utils import configure_logging, handle_asyncio_exception
 
 from utils import config_utils as config
 
-from state_init import ensure_app_state_structure
+from app_state_init import ensure_app_state_structure
 
 from app_config_init import (
     get_bool_env,

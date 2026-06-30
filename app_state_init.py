@@ -1,4 +1,4 @@
-# app_state_init.py
+# state_init.py
 
 import logging
 import threading
