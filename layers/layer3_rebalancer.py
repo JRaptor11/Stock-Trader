@@ -1,6 +1,10 @@
 import logging
 from datetime import datetime, timezone, timedelta
 
+from core.market_clock import get_market_is_open
+from utils.numeric import safe_float, safe_int, safe_round
+from utils.symbols import normalize_symbol
+
 from core.state import app_state
 from config import runtime_config as config
 
@@ -37,22 +41,8 @@ L3_WHOLE_SHARES_ONLY = True
 L3_PLAN_TTL_SECONDS = 600
 
 
-def _safe_float(value, default=0.0) -> float:
-    try:
-        return float(value)
-    except Exception:
-        return default
-
-
 def _norm_symbol(symbol) -> str:
     return str(symbol or "").upper().strip()
-
-
-def _safe_int(value, default: int = 0) -> int:
-    try:
-        return int(value)
-    except Exception:
-        return default
 
 
 def _layer3_bool_setting(name: str, default: bool) -> bool:
@@ -65,61 +55,13 @@ def _layer3_bool_setting(name: str, default: bool) -> bool:
 
 
 def _layer3_int_setting(name: str, default: int) -> int:
-    return _safe_int(
+    return safe_int(
         app_state.get("execution", {}).get(
             name,
             getattr(config, name.upper(), default),
         ),
         default,
     )
-
-
-def _get_market_is_open() -> bool:
-    client = app_state.get("trading_client")
-
-    if client is None:
-        return False
-
-    try:
-        clock = client.get_clock()
-        return bool(getattr(clock, "is_open", False))
-    except Exception:
-        logging.warning(
-            "[Layer3] Could not fetch market clock for confirmation logic.",
-            exc_info=True,
-        )
-        return False
-
-
-def _target_symbols_from_portfolio(target_portfolio: dict) -> set[str]:
-    symbols = set()
-
-    if not isinstance(target_portfolio, dict):
-        return symbols
-
-    for symbol, weight in target_portfolio.items():
-        symbol_str = str(symbol or "").upper().strip()
-
-        if not symbol_str:
-            continue
-
-        if symbol_str.startswith("_"):
-            continue
-
-        if symbol_str in {"CASH", "USD"}:
-            continue
-
-        try:
-            weight_float = float(weight or 0.0)
-        except Exception:
-            weight_float = 0.0
-
-        if weight_float <= 0:
-            continue
-
-        symbols.add(symbol_str)
-
-    return symbols
 
 
 def clean_target_portfolio(target: dict) -> tuple[dict, float, dict]:
@@ -142,14 +84,14 @@ def clean_target_portfolio(target: dict) -> tuple[dict, float, dict]:
         if symbol in IGNORED_TARGET_KEYS:
             continue
 
-        weight = _safe_float(raw_weight, 0.0)
+        weight = safe_float(raw_weight, 0.0)
 
         if weight <= 0:
             continue
 
         target_weights[symbol] = weight
 
-    target_cash_pct = _safe_float(target.get("CASH", 0.0), 0.0)
+    target_cash_pct = safe_float(target.get("CASH", 0.0), 0.0)
 
     target_meta = target.get("_meta", {})
     if not isinstance(target_meta, dict):
@@ -172,7 +114,7 @@ def _ranked_price_map(latest: dict) -> dict:
             continue
 
         symbol = _norm_symbol(row.get("symbol"))
-        price = _safe_float(row.get("last_price"), 0.0)
+        price = safe_float(row.get("last_price"), 0.0)
 
         if symbol and price > 0:
             prices[symbol] = price
@@ -195,9 +137,9 @@ def _get_account_snapshot() -> dict:
 
             return {
                 "source": "alpaca_account",
-                "equity": _safe_float(getattr(account, "equity", 0.0), 0.0),
-                "cash": _safe_float(getattr(account, "cash", 0.0), 0.0),
-                "buying_power": _safe_float(getattr(account, "buying_power", 0.0), 0.0),
+                "equity": safe_float(getattr(account, "equity", 0.0), 0.0),
+                "cash": safe_float(getattr(account, "cash", 0.0), 0.0),
+                "buying_power": safe_float(getattr(account, "buying_power", 0.0), 0.0),
             }
 
         except Exception:
@@ -209,9 +151,9 @@ def _get_account_snapshot() -> dict:
             balance = tracker.get_balance()
             return {
                 "source": "balance_tracker",
-                "equity": _safe_float(balance.get("equity"), 0.0),
-                "cash": _safe_float(balance.get("balance"), 0.0),
-                "buying_power": _safe_float(balance.get("balance"), 0.0),
+                "equity": safe_float(balance.get("equity"), 0.0),
+                "cash": safe_float(balance.get("balance"), 0.0),
+                "buying_power": safe_float(balance.get("balance"), 0.0),
             }
     except Exception:
         logging.warning("[Layer3] Failed to use balance tracker fallback.", exc_info=True)
@@ -219,9 +161,9 @@ def _get_account_snapshot() -> dict:
     balance_state = app_state.get("services", {}).get("balance_tracker", {})
     return {
         "source": "app_state_balance_tracker",
-        "equity": _safe_float(balance_state.get("equity"), 0.0),
-        "cash": _safe_float(balance_state.get("balance"), 0.0),
-        "buying_power": _safe_float(balance_state.get("balance"), 0.0),
+        "equity": safe_float(balance_state.get("equity"), 0.0),
+        "cash": safe_float(balance_state.get("balance"), 0.0),
+        "buying_power": safe_float(balance_state.get("balance"), 0.0),
     }
 
 
@@ -246,15 +188,15 @@ def _get_positions_snapshot() -> dict:
 
     for pos in positions:
         symbol = _norm_symbol(getattr(pos, "symbol", ""))
-        qty = _safe_float(getattr(pos, "qty", 0.0), 0.0)
+        qty = safe_float(getattr(pos, "qty", 0.0), 0.0)
 
         if not symbol or qty <= 0:
             continue
 
-        avg_entry_price = _safe_float(getattr(pos, "avg_entry_price", 0.0), 0.0)
-        current_price = _safe_float(getattr(pos, "current_price", 0.0), 0.0)
-        market_value = _safe_float(getattr(pos, "market_value", 0.0), 0.0)
-        unrealized_plpc = _safe_float(getattr(pos, "unrealized_plpc", 0.0), 0.0)
+        avg_entry_price = safe_float(getattr(pos, "avg_entry_price", 0.0), 0.0)
+        current_price = safe_float(getattr(pos, "current_price", 0.0), 0.0)
+        market_value = safe_float(getattr(pos, "market_value", 0.0), 0.0)
+        unrealized_plpc = safe_float(getattr(pos, "unrealized_plpc", 0.0), 0.0)
 
         if current_price <= 0 and qty > 0 and market_value > 0:
             current_price = market_value / qty
@@ -341,7 +283,7 @@ def _update_target_stability(
     target_symbols = set(target_weights.keys())
     all_symbols = set(target_symbols) | set(positions.keys())
 
-    market_is_open = _get_market_is_open()
+    market_is_open = get_market_is_open(app_state)
     market_hours_only = _layer3_bool_setting(
         "layer3_market_hours_only",
         True,
@@ -366,10 +308,10 @@ def _update_target_stability(
 
     for symbol in all_symbols:
         if symbol in target_symbols:
-            seen_counts[symbol] = _safe_int(seen_counts.get(symbol, 0), 0) + 1
+            seen_counts[symbol] = safe_int(seen_counts.get(symbol, 0), 0) + 1
             absent_counts[symbol] = 0
         else:
-            absent_counts[symbol] = _safe_int(absent_counts.get(symbol, 0), 0) + 1
+            absent_counts[symbol] = safe_int(absent_counts.get(symbol, 0), 0) + 1
             seen_counts[symbol] = 0
 
     rebalance["last_confirmation_update_at"] = datetime.now(
@@ -380,11 +322,11 @@ def _update_target_stability(
     keep_symbols = all_symbols
 
     for symbol in list(seen_counts.keys()):
-        if symbol not in keep_symbols and _safe_int(seen_counts.get(symbol, 0), 0) <= 0:
+        if symbol not in keep_symbols and safe_int(seen_counts.get(symbol, 0), 0) <= 0:
             seen_counts.pop(symbol, None)
 
     for symbol in list(absent_counts.keys()):
-        if symbol not in keep_symbols and _safe_int(absent_counts.get(symbol, 0), 0) <= 0:
+        if symbol not in keep_symbols and safe_int(absent_counts.get(symbol, 0), 0) <= 0:
             absent_counts.pop(symbol, None)
 
     return seen_counts, absent_counts
@@ -402,20 +344,20 @@ def _get_price_for_symbol(symbol: str, ranked_prices: dict, position: dict | Non
     """
     symbol = _norm_symbol(symbol)
 
-    price = _safe_float(ranked_prices.get(symbol), 0.0)
+    price = safe_float(ranked_prices.get(symbol), 0.0)
     if price > 0:
         return price, "ranked_last_price"
 
-    price = _safe_float(app_state.get("last_trade_price_by_symbol", {}).get(symbol), 0.0)
+    price = safe_float(app_state.get("last_trade_price_by_symbol", {}).get(symbol), 0.0)
     if price > 0:
         return price, "last_trade_price_by_symbol"
 
     if isinstance(position, dict):
-        price = _safe_float(position.get("current_price"), 0.0)
+        price = safe_float(position.get("current_price"), 0.0)
         if price > 0:
             return price, "position_current_price"
 
-        price = _safe_float(position.get("avg_entry_price"), 0.0)
+        price = safe_float(position.get("avg_entry_price"), 0.0)
         if price > 0:
             return price, "position_avg_entry_price"
 
@@ -632,14 +574,14 @@ def _plan_priority(row):
     if decision == "SELL":
         return (
             0,
-            -abs(_safe_float(row.get("delta_value"), 0.0)),
+            -abs(safe_float(row.get("delta_value"), 0.0)),
             symbol,
         )
 
     if decision == "BUY":
         return (
             1,
-            -_safe_float(row.get("delta_value"), 0.0),
+            -safe_float(row.get("delta_value"), 0.0),
             symbol,
         )
 
@@ -650,8 +592,8 @@ def _plan_priority(row):
 
 
 def _sync_layer4_authorized_aliases(row: dict) -> dict:
-    planned_qty = _safe_float(row.get("planned_qty"), 0.0)
-    planned_notional = _safe_float(row.get("planned_notional"), 0.0)
+    planned_qty = safe_float(row.get("planned_qty"), 0.0)
+    planned_notional = safe_float(row.get("planned_notional"), 0.0)
 
     row["max_authorized_qty"] = planned_qty
     row["max_authorized_notional"] = planned_notional
@@ -684,7 +626,7 @@ def _apply_cycle_trade_limits(plan: list[dict]) -> list[dict]:
             limited_plan.append(row)
             continue
 
-        planned_notional = _safe_float(row.get("planned_notional"), 0.0)
+        planned_notional = safe_float(row.get("planned_notional"), 0.0)
 
         if planned_notional <= 0:
             limited_plan.append(row)
@@ -828,7 +770,7 @@ def _maybe_bootstrap_layer3_confirmation(
     bootstrapped_symbols = []
 
     for symbol in sorted(target_symbols):
-        bars_available = _safe_int(bar_counts.get(symbol, 0), 0)
+        bars_available = safe_int(bar_counts.get(symbol, 0), 0)
 
         if bars_available < min_bar_count:
             logging.info(
@@ -840,7 +782,7 @@ def _maybe_bootstrap_layer3_confirmation(
             )
             continue
 
-        current_seen = _safe_int(target_seen_counts.get(symbol, 0), 0)
+        current_seen = safe_int(target_seen_counts.get(symbol, 0), 0)
         target_seen_counts[symbol] = max(
             current_seen,
             required_seen_count,
@@ -898,8 +840,8 @@ def run_layer3_dry_run() -> dict:
     timestamp = plan_created_at
 
     account = _get_account_snapshot()
-    equity = _safe_float(account.get("equity"), 0.0)
-    cash = _safe_float(account.get("cash"), 0.0)
+    equity = safe_float(account.get("equity"), 0.0)
+    cash = safe_float(account.get("cash"), 0.0)
 
     if equity <= 0:
         summary = {
@@ -954,11 +896,11 @@ def run_layer3_dry_run() -> dict:
 
     for symbol in symbol_universe:
         position = positions.get(symbol, {})
-        current_qty = _safe_float(position.get("qty"), 0.0)
+        current_qty = safe_float(position.get("qty"), 0.0)
 
         live_price, price_source = _get_price_for_symbol(symbol, ranked_prices, position)
 
-        target_weight = _safe_float(target_weights.get(symbol), 0.0)
+        target_weight = safe_float(target_weights.get(symbol), 0.0)
 
         blocked_by = []
         open_order_exists = symbol in open_order_symbols
@@ -970,7 +912,7 @@ def run_layer3_dry_run() -> dict:
             blocked_by.append("fail_safe_active")
 
         if live_price <= 0:
-            current_value = _safe_float(position.get("market_value"), 0.0)
+            current_value = safe_float(position.get("market_value"), 0.0)
             current_weight = current_value / equity if equity > 0 else 0.0
             target_value = target_weight * equity
             delta_value = target_value - current_value
@@ -1170,11 +1112,11 @@ def run_layer3_dry_run() -> dict:
         row["cash_before_estimate"] = round(estimated_cash, 2)
 
         if row["decision"] == "SELL":
-            estimated_cash += _safe_float(row.get("planned_notional"), 0.0)
+            estimated_cash += safe_float(row.get("planned_notional"), 0.0)
 
         elif row["decision"] == "BUY":
-            planned_notional = _safe_float(row.get("planned_notional"), 0.0)
-            live_price = _safe_float(row.get("live_price"), 0.0)
+            planned_notional = safe_float(row.get("planned_notional"), 0.0)
+            live_price = safe_float(row.get("live_price"), 0.0)
 
             if planned_notional > estimated_cash:
                 adjusted_qty = _whole_share_qty(estimated_cash, live_price)

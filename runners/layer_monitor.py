@@ -3,6 +3,14 @@ import logging
 import math
 from datetime import datetime, timezone, timedelta
 
+from core.market_clock import get_market_is_open
+from layers.layer_logging import target_summary_for_log
+from layers.layer_schedule import (
+    normalize_layer_interval_seconds,
+    sleep_until_next_layer_boundary,
+)
+from utils.numeric import safe_float, safe_int
+
 from config import runtime_config as config
 from market.bar_data import (
     fetch_recent_bars_with_min_count,
@@ -14,171 +22,11 @@ from layers.layer3_rebalancer import run_layer3_dry_run
 from layers.layer4_executor import execute_layer4_plan
 
 
-def _safe_float(value, default: float) -> float:
-    try:
-        return float(value)
-    except Exception:
-        return default
-
-
-def _safe_int(value, default: int) -> int:
-    try:
-        return int(value)
-    except Exception:
-        return default
-
-
 def _execution_setting(name: str, default):
     return app_state.get("execution", {}).get(
         name,
         getattr(config, name.upper(), default),
     )
-
-def _normalize_layer_interval_seconds(interval_seconds: int) -> int:
-    try:
-        interval_seconds = int(interval_seconds)
-    except Exception:
-        interval_seconds = 600
-
-    if interval_seconds <= 0:
-        return 600
-
-    # For wall-clock alignment, the interval should divide evenly into 1 hour.
-    # 600 = every 10 minutes: :00, :10, :20, :30, :40, :50.
-    if 3600 % interval_seconds != 0:
-        logging.warning(
-            "[Layers] interval_seconds=%s does not divide evenly into 1 hour. "
-            "Defaulting to 600 seconds for wall-clock alignment.",
-            interval_seconds,
-        )
-        return 600
-
-    return interval_seconds
-
-
-def _next_wall_clock_run_time(
-    interval_seconds: int,
-    now: datetime | None = None,
-) -> datetime:
-    interval_seconds = _normalize_layer_interval_seconds(interval_seconds)
-
-    now = now or datetime.now(timezone.utc)
-
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=timezone.utc)
-    else:
-        now = now.astimezone(timezone.utc)
-
-    hour_start = now.replace(minute=0, second=0, microsecond=0)
-
-    seconds_since_hour = (
-        now.minute * 60
-        + now.second
-        + now.microsecond / 1_000_000
-    )
-
-    next_slot_seconds = (
-        math.floor(seconds_since_hour / interval_seconds) + 1
-    ) * interval_seconds
-
-    if next_slot_seconds >= 3600:
-        return hour_start + timedelta(hours=1)
-
-    return hour_start + timedelta(seconds=next_slot_seconds)
-
-
-async def _sleep_until_next_layer_boundary(interval_seconds: int) -> None:
-    shutdown_event = app_state["stream"]["shutdown_event"]
-
-    interval_seconds = _normalize_layer_interval_seconds(interval_seconds)
-    min_spacing_seconds = 180.0
-
-    next_run_at = _next_wall_clock_run_time(interval_seconds)
-    now = datetime.now(timezone.utc)
-    sleep_seconds = max(0.0, (next_run_at - now).total_seconds())
-
-    if sleep_seconds <= min_spacing_seconds:
-        skipped_run_at = next_run_at
-        next_run_at = next_run_at + timedelta(seconds=interval_seconds)
-        sleep_seconds = max(0.0, (next_run_at - now).total_seconds())
-
-        logging.info(
-            "[Layers] Next wall-clock cycle is too close; skipping one boundary | "
-            "skipped_run_at=%s next_run_at=%s sleep_seconds=%.1f "
-            "min_spacing_seconds=%.1f interval_seconds=%s",
-            skipped_run_at.isoformat(),
-            next_run_at.isoformat(),
-            sleep_seconds,
-            min_spacing_seconds,
-            interval_seconds,
-        )
-
-    logging.info(
-        "[Layers] Sleeping until next wall-clock cycle | next_run_at=%s "
-        "sleep_seconds=%.1f interval_seconds=%s",
-        next_run_at.isoformat(),
-        sleep_seconds,
-        interval_seconds,
-    )
-
-    try:
-        await asyncio.wait_for(
-            asyncio.to_thread(shutdown_event.wait, sleep_seconds),
-            timeout=sleep_seconds + 5,
-        )
-    except asyncio.TimeoutError:
-        pass
-
-
-def _target_summary_for_log(target: dict) -> dict:
-    if not isinstance(target, dict):
-        return {}
-
-    meta = target.get("_meta", {}) if isinstance(target.get("_meta"), dict) else {}
-
-    weights = {}
-    for key, value in target.items():
-        if key == "_meta":
-            continue
-        try:
-            weights[key] = round(float(value), 4)
-        except Exception:
-            weights[key] = value
-
-    return {
-        "weights": weights,
-        "market_strength": meta.get("market_strength"),
-        "cash_pct": meta.get("cash_pct", weights.get("CASH")),
-        "investable_pct": meta.get("investable_pct"),
-        "top_score": meta.get("top_score"),
-        "avg_top_score": meta.get("avg_top_score"),
-        "smoothing_applied": meta.get("smoothing_applied"),
-        "smoothing_mode": meta.get("smoothing_mode"),
-    }
-
-
-def _get_market_is_open() -> bool:
-    """
-    Prefer the broker clock. Fall back to market_monitor state if needed.
-    """
-    client = app_state.get("trading_client")
-
-    if client is not None:
-        try:
-            clock = client.get_clock()
-            return bool(getattr(clock, "is_open", False))
-        except Exception:
-            logging.warning("[Layers] Could not fetch market clock.", exc_info=True)
-
-    try:
-        return bool(
-            app_state
-            .get("services", {})
-            .get("market_monitor", {})
-            .get("market_open", False)
-        )
-    except Exception:
-        return False
 
 
 def _expire_active_plan_for_market_close() -> None:
@@ -208,12 +56,12 @@ def _expire_active_plan_for_market_close() -> None:
 
 
 def _fresh_symbol_requirement(symbol_count: int) -> int:
-    min_symbols = _safe_int(
+    min_symbols = safe_int(
         _execution_setting("bar_freshness_min_fresh_symbols", 5),
         5,
     )
 
-    min_ratio = _safe_float(
+    min_ratio = safe_float(
         _execution_setting("bar_freshness_min_fresh_ratio", 0.70),
         0.70,
     )
@@ -273,7 +121,7 @@ def store_latest_layer_result(symbols, bar_counts, ranked, target):
     logging.info(
         "[Layers] Stored latest Layer 1/2 result for Layer 3 | ranked_count=%s target_summary=%s",
         len(ranked_snapshot),
-        _target_summary_for_log(target),
+        target_summary_for_log(target),
     )
 
 
@@ -289,7 +137,7 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
     """
     logging.info(
         "[Layers] Layer monitor started | interval_seconds=%s wall_clock_aligned=True",
-        _normalize_layer_interval_seconds(interval_seconds),
+        normalize_layer_interval_seconds(interval_seconds),
     )
 
     while not app_state["stream"]["shutdown_event"].is_set():
@@ -306,7 +154,7 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
                 else:
                     logging.info("[Layers] Starting scheduled evaluation.")
 
-                    market_is_open = _get_market_is_open()
+                    market_is_open = get_market_is_open(app_state)
 
                     run_24_7 = bool(
                         _execution_setting("layer_monitor_run_24_7", True)
@@ -384,7 +232,7 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
                         market_is_open or not freshness_market_hours_only
                     )
 
-                    max_age_minutes = _safe_float(
+                    max_age_minutes = safe_float(
                         _execution_setting("bar_freshness_max_age_minutes", 35.0),
                         35.0,
                     )
@@ -495,7 +343,7 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
                     logging.info(
                         "[Layers] Ranked count=%s target_summary=%s",
                         len(ranked),
-                        _target_summary_for_log(target),
+                        target_summary_for_log(target),
                     )
 
                     fresh_bar_counts = {
@@ -583,7 +431,7 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
 
                         logging.info(
                             "[Layers] Target summary: %s",
-                            _target_summary_for_log(target),
+                            target_summary_for_log(target),
                         )
 
         except asyncio.CancelledError:
@@ -595,6 +443,10 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
 
         finally:
             if not app_state["stream"]["shutdown_event"].is_set():
-                await _sleep_until_next_layer_boundary(interval_seconds)
+                await sleep_until_next_layer_boundary(
+                    shutdown_event=app_state["stream"]["shutdown_event"],
+                    interval_seconds=interval_seconds,
+                    min_spacing_seconds=180.0,
+                )
 
     logging.info("[Layers] Layer monitor exited cleanly.")

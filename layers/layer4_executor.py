@@ -8,6 +8,13 @@ from typing import Any, Dict, List
 from alpaca.trading.enums import OrderSide, QueryOrderStatus
 from alpaca.trading.requests import GetOrdersRequest
 
+from layers.layer_logging import (
+    compact_executable_row_for_log,
+    compact_orders_for_log,
+)
+from utils.numeric import safe_float, safe_round
+from utils.symbols import normalize_symbol
+
 from core.state import app_state, fail_safe_event
 from config import runtime_config as config
 from trading.orders import (
@@ -17,110 +24,7 @@ from trading.orders import (
 )
 
 
-def _safe_float(value, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except Exception:
-        return default
-
-
-def _safe_round(value, digits: int = 2):
-    try:
-        return round(float(value), digits)
-    except Exception:
-        return value
-
-
-def _safe_round(value, digits: int = 2):
-    try:
-        return round(float(value), digits)
-    except Exception:
-        return value
-
-
-def _compact_order_for_log(order: dict) -> dict:
-    compact = {
-        "symbol": order.get("symbol"),
-        "side": order.get("side"),
-        "status": order.get("status"),
-        "qty": _safe_round(order.get("qty"), 4),
-        "notional": _safe_round(order.get("notional"), 2),
-        "price": _safe_round(order.get("price"), 4),
-        "order_id": order.get("order_id"),
-        "reason": order.get("reason"),
-        "row_id": order.get("row_id"),
-    }
-
-    if order.get("error"):
-        compact["error"] = order.get("error")
-
-    if order.get("cash") is not None:
-        compact["cash"] = _safe_round(order.get("cash"), 2)
-
-    return {k: v for k, v in compact.items() if v is not None}
-
-
-def _compact_orders_for_log(orders) -> list[dict]:
-    return [
-        _compact_order_for_log(order)
-        for order in orders or []
-        if isinstance(order, dict)
-    ]
-
-
-def _compact_executable_row_for_log(row: dict) -> dict:
-    return {
-        "symbol": row.get("symbol"),
-        "decision": row.get("decision"),
-        "qty": _safe_round(row.get("qty"), 4),
-        "notional": _safe_round(row.get("notional"), 2),
-        "price": _safe_round(row.get("price"), 4),
-        "reason": row.get("reason"),
-    }
-
-
-def _compact_order_for_log(order: dict) -> dict:
-    compact = {
-        "symbol": order.get("symbol"),
-        "side": order.get("side"),
-        "status": order.get("status"),
-        "qty": _safe_round(order.get("qty"), 4),
-        "notional": _safe_round(order.get("notional"), 2),
-        "price": _safe_round(order.get("price"), 4),
-        "order_id": order.get("order_id"),
-        "reason": order.get("reason"),
-    }
-
-    if order.get("error"):
-        compact["error"] = order.get("error")
-
-    return {k: v for k, v in compact.items() if v is not None}
-
-
-def _compact_orders_for_log(orders) -> list[dict]:
-    return [
-        _compact_order_for_log(order)
-        for order in orders or []
-        if isinstance(order, dict)
-    ]
-
-
-def _compact_executable_row_for_log(row: dict) -> dict:
-    return {
-        "symbol": row.get("symbol"),
-        "decision": row.get("decision"),
-        "qty": _safe_round(row.get("qty"), 4),
-        "notional": _safe_round(row.get("notional"), 2),
-        "price": _safe_round(row.get("price"), 4),
-        "reason": row.get("reason"),
-    }
-
-
 def _normalize_decision(value: Any) -> str:
-    return str(value or "").upper().strip()
-
-
-def _normalize_symbol(value: Any) -> str:
     return str(value or "").upper().strip()
 
 
@@ -160,10 +64,10 @@ def _extract_layer4_order_values(row: dict) -> dict:
     - planned_notional
     - qty / notional / price
     """
-    symbol = _normalize_symbol(row.get("symbol"))
+    symbol = normalize_symbol(row.get("symbol"))
     decision = _normalize_decision(row.get("decision"))
 
-    qty = _safe_float(
+    qty = safe_float(
         row.get(
             "remaining_authorized_qty",
             row.get("max_authorized_qty", row.get("planned_qty", row.get("qty", 0.0))),
@@ -171,12 +75,12 @@ def _extract_layer4_order_values(row: dict) -> dict:
         0.0,
     )
 
-    price = _safe_float(
+    price = safe_float(
         row.get("live_price", row.get("price", 0.0)),
         0.0,
     )
 
-    notional = _safe_float(
+    notional = safe_float(
         row.get(
             "remaining_authorized_notional",
             row.get("max_authorized_notional", row.get("planned_notional", row.get("notional", 0.0))),
@@ -252,8 +156,8 @@ def _position_qty_by_symbol(client) -> dict[str, float]:
         return out
 
     for pos in positions:
-        symbol = _normalize_symbol(getattr(pos, "symbol", ""))
-        qty = _safe_float(getattr(pos, "qty", 0), 0.0)
+        symbol = normalize_symbol(getattr(pos, "symbol", ""))
+        qty = safe_float(getattr(pos, "qty", 0), 0.0)
 
         if symbol and qty > 0:
             out[symbol] = qty
@@ -264,7 +168,7 @@ def _position_qty_by_symbol(client) -> dict[str, float]:
 def _available_cash(client) -> float:
     try:
         account = client.get_account()
-        return _safe_float(getattr(account, "cash", 0), 0.0)
+        return safe_float(getattr(account, "cash", 0), 0.0)
     except Exception:
         logging.warning("[Layer4Exec] Could not fetch account cash.", exc_info=True)
         return 0.0
@@ -309,7 +213,7 @@ def _executable_rows(plan: Any) -> list[dict]:
     executable.sort(
         key=lambda r: (
             0 if r["decision"] == "SELL" else 1,
-            -abs(_safe_float(r.get("notional"), 0.0)),
+            -abs(safe_float(r.get("notional"), 0.0)),
         )
     )
 
@@ -359,7 +263,7 @@ def _finish_layer4_result(
         result.get("count_integrity_ok"),
     )
 
-    compact_orders = _compact_orders_for_log(result.get("orders", []))
+    compact_orders = compact_orders_for_log(result.get("orders", []))
 
     if compact_orders:
         logging.warning(
@@ -532,7 +436,7 @@ def execute_layer4_plan(plan: Any, summary: dict | None = None) -> dict:
         cycle_id,
         plan_id,
         len(executable),
-        [_compact_executable_row_for_log(row) for row in executable],
+        [compact_executable_row_for_log(row) for row in executable],
     )
 
     position_qty = _position_qty_by_symbol(client)
@@ -540,9 +444,9 @@ def execute_layer4_plan(plan: Any, summary: dict | None = None) -> dict:
     for row in executable:
         symbol = row["symbol"]
         decision = row["decision"]
-        qty = _safe_float(row["qty"], 0.0)
-        price = _safe_float(row["price"], 0.0)
-        notional = _safe_float(row.get("notional"), qty * price)
+        qty = safe_float(row["qty"], 0.0)
+        price = safe_float(row["price"], 0.0)
+        notional = safe_float(row.get("notional"), qty * price)
         reason = str(row.get("reason", ""))
         row_id = row.get("row_id") or f"{plan_id}:{symbol}"
 
