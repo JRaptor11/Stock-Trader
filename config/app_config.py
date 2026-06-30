@@ -1,4 +1,4 @@
-# config.py
+# config/app_config.py
 
 import os
 import tempfile

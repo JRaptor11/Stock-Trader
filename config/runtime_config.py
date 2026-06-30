@@ -1,4 +1,4 @@
-# utils/config.py
+# config/runtime_config.py
 
 from core.state import app_state
 

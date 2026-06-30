@@ -1,3 +1,5 @@
+#config/constants.py
+
 # === File Paths ===
 TRADE_SUMMARY_FILE = "trade_summary.csv"
 TRADE_HISTORY_FILE = "trade_history.csv"
