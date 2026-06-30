@@ -5,7 +5,7 @@ import threading
 from collections import deque
 
 from core.state import app_state
-from paper_portfolio import PaperPortfolio
+from trading.paper_portfolio import PaperPortfolio
 from layers.layer2_portfolio import Layer2PortfolioEngine
 
 
