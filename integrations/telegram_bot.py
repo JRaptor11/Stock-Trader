@@ -33,7 +33,7 @@ from routes.dev_routes import (
     view_trade_log,
 )
 
-from . import runtime_config as config
+from config import runtime_config as config
 from core.state import app_state
 
 
