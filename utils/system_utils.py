@@ -4,7 +4,7 @@ import logging
 import psutil
 
 from core.state import app_state
-from utils.alerts_utils import send_email_alert
+from integrations.alerts import send_email_alert
 
 
 def monitor_system_resources(interval: int = 60) -> None:

@@ -2,7 +2,7 @@ import asyncio
 import threading
 import logging
 import inspect
-from .alerts_utils import send_email_alert
+from .alerts import send_email_alert
 
 def safe_thread(target, name=None, daemon=True):
     def wrapper():

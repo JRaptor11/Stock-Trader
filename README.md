@@ -188,8 +188,8 @@ constants.py
 Risk limits and configuration defaults
 
 utils/
-alerts_utils.py
-auth_utils.py
+alerts.py
+auth.py
 config_utils.py
 logging_utils.py
 misc_utils.py

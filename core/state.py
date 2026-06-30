@@ -289,7 +289,7 @@ app_state = {
     "utils": {
 
         # Alert Utilities
-        "alerts_utils": {
+        "alerts": {
             "email_suppressed": False,
             "email_suppression_reset": None,
             "use_telegram": True

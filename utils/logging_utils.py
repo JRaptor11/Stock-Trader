@@ -2,7 +2,7 @@ import os
 import logging
 import asyncio
 from logging.handlers import RotatingFileHandler
-from .alerts_utils import send_email_alert
+from .alerts import send_email_alert
 
 def configure_logging():
     log_level = os.getenv("LOG_LEVEL", "INFO").upper()

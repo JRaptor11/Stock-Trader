@@ -12,9 +12,9 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, JSONResponse
 
 from core.state import app_state
 from utils import config_utils as config
-from utils.alerts_utils import send_email_alert, send_telegram_alert
+from integrations.alerts import send_email_alert, send_telegram_alert
 from utils.trade_utils import TRADE_REASON_LOG
-from utils.auth_utils import verify_credentials
+from integrations.auth import verify_credentials
 from utils.misc_utils import with_retries
 from market.stream import FakeTrade
 

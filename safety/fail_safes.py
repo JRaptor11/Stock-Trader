@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import time
 import logging
 from core.state import app_state, app_state_lock, fail_safe_event
-from utils.alerts_utils import send_email_alert
+from integrations.alerts import send_email_alert
 from utils.trade_utils import log_trade_to_csv
 from utils.config_utils import get_config
 

@@ -11,7 +11,7 @@ from alpaca.trading.requests import GetOrdersRequest, LimitOrderRequest, MarketO
 from heartbeat import Heartbeat
 from core.state import app_state, active_handle_trade
 from strategies.strategy import strategy_manager
-from utils.alerts_utils import send_email_alert
+from integrations.alerts import send_email_alert
 from utils.trade_utils import handle_trade_update, log_trade_to_history
 from utils.threading_utils import safe_thread
 # from utils.lifecycle_utils import record_program_shutdown

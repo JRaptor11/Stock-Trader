@@ -8,7 +8,7 @@ from core.state import app_state
 from config import PROGRAM_STARTUP_FILE, PROGRAM_SHUTDOWN_FILE, PROGRAM_SHUTDOWN_REASON_FILE
 
 from utils.threading_utils import safe_thread
-from utils.alerts_utils import send_email_alert
+from integrations.alerts import send_email_alert
 
 
 def record_program_startup():

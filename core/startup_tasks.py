@@ -34,7 +34,7 @@ from utils.lifecycle_utils import (
     sync_open_positions_to_app_state,
     safe_send_startup_alert,
 )
-from utils.telegram_bot_utils import start_telegram_bot
+from integrations.telegram_bot import start_telegram_bot
 
 
 async def background_startup_after_bind() -> None:
