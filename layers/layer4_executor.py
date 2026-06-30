@@ -24,6 +24,50 @@ def _safe_float(value, default: float = 0.0) -> float:
         return default
 
 
+def _safe_round(value, digits: int = 2):
+    try:
+        return round(float(value), digits)
+    except Exception:
+        return value
+
+
+def _compact_order_for_log(order: dict) -> dict:
+    compact = {
+        "symbol": order.get("symbol"),
+        "side": order.get("side"),
+        "status": order.get("status"),
+        "qty": _safe_round(order.get("qty"), 4),
+        "notional": _safe_round(order.get("notional"), 2),
+        "price": _safe_round(order.get("price"), 4),
+        "order_id": order.get("order_id"),
+        "reason": order.get("reason"),
+    }
+
+    if order.get("error"):
+        compact["error"] = order.get("error")
+
+    return {k: v for k, v in compact.items() if v is not None}
+
+
+def _compact_orders_for_log(orders) -> list[dict]:
+    return [
+        _compact_order_for_log(order)
+        for order in orders or []
+        if isinstance(order, dict)
+    ]
+
+
+def _compact_executable_row_for_log(row: dict) -> dict:
+    return {
+        "symbol": row.get("symbol"),
+        "decision": row.get("decision"),
+        "qty": _safe_round(row.get("qty"), 4),
+        "notional": _safe_round(row.get("notional"), 2),
+        "price": _safe_round(row.get("price"), 4),
+        "reason": row.get("reason"),
+    }
+
+
 def _normalize_decision(value: Any) -> str:
     return str(value or "").upper().strip()
 
@@ -270,7 +314,15 @@ def _finish_layer4_result(
         result.get("count_integrity_ok"),
     )
 
-    logging.info("[Layer4Exec] Execution result: %s", result)
+    compact_orders = _compact_orders_for_log(result.get("orders", []))
+
+    if compact_orders:
+        logging.warning(
+            "[Layer4Exec] Orders summary | cycle_id=%s plan_id=%s orders=%s",
+            result.get("cycle_id"),
+            result.get("plan_id"),
+            compact_orders,
+        )
 
     return result
 
@@ -435,17 +487,7 @@ def execute_layer4_plan(plan: Any, summary: dict | None = None) -> dict:
         cycle_id,
         plan_id,
         len(executable),
-        [
-            {
-                "symbol": r.get("symbol"),
-                "decision": r.get("decision"),
-                "qty": r.get("qty"),
-                "price": r.get("price"),
-                "notional": r.get("notional"),
-                "reason": r.get("reason"),
-            }
-            for r in executable
-        ],
+        [_compact_executable_row_for_log(row) for row in executable],
     )
 
     position_qty = _position_qty_by_symbol(client)
@@ -634,6 +676,24 @@ def execute_layer4_plan(plan: Any, summary: dict | None = None) -> dict:
                     "row_id": row_id,
                 }
             )
+
+    submitted_orders = [
+        {
+            "symbol": o.get("symbol"),
+            "side": o.get("side"),
+            "qty": o.get("qty"),
+            "order_id": o.get("order_id"),
+        }
+        for o in result.get("orders", [])
+        if o.get("status") == "submitted"
+    ]
+
+    logging.warning(
+        "[Layer4Exec] Submitted orders summary | cycle_id=%s plan_id=%s orders=%s",
+        result.get("cycle_id"),
+        result.get("plan_id"),
+        submitted_orders,
+    )
 
     return _finish_layer4_result(
         result=result,

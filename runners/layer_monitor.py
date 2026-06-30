@@ -35,6 +35,33 @@ def _execution_setting(name: str, default):
     )
 
 
+def _target_summary_for_log(target: dict) -> dict:
+    if not isinstance(target, dict):
+        return {}
+
+    meta = target.get("_meta", {}) if isinstance(target.get("_meta"), dict) else {}
+
+    weights = {}
+    for key, value in target.items():
+        if key == "_meta":
+            continue
+        try:
+            weights[key] = round(float(value), 4)
+        except Exception:
+            weights[key] = value
+
+    return {
+        "weights": weights,
+        "market_strength": meta.get("market_strength"),
+        "cash_pct": meta.get("cash_pct", weights.get("CASH")),
+        "investable_pct": meta.get("investable_pct"),
+        "top_score": meta.get("top_score"),
+        "avg_top_score": meta.get("avg_top_score"),
+        "smoothing_applied": meta.get("smoothing_applied"),
+        "smoothing_mode": meta.get("smoothing_mode"),
+    }
+
+
 def _get_market_is_open() -> bool:
     """
     Prefer the broker clock. Fall back to market_monitor state if needed.
@@ -151,8 +178,21 @@ def store_latest_layer_result(symbols, bar_counts, ranked, target):
     logging.info(
         "[Layers] Stored latest Layer 1/2 result for Layer 3 | ranked_count=%s target=%s",
         len(ranked_snapshot),
-        target,
+        _target_summary_for_log(target),
     )
+
+
+async def _sleep_layer_monitor_interval(interval_seconds: int) -> None:
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(
+                app_state["stream"]["shutdown_event"].wait,
+                interval_seconds,
+            ),
+            timeout=interval_seconds + 5,
+        )
+    except asyncio.TimeoutError:
+        pass
 
 
 async def run_layer_monitor(interval_seconds: int = 900) -> None:
@@ -360,9 +400,9 @@ async def run_layer_monitor(interval_seconds: int = 900) -> None:
                     target = result.get("target_portfolio", {})
 
                     logging.info(
-                        "[Layers] Ranked count=%s Target=%s",
+                        "[Layers] Ranked count=%s target_summary=%s",
                         len(ranked),
-                        target,
+                        _target_summary_for_log(target),
                     )
 
                     fresh_bar_counts = {
@@ -396,7 +436,21 @@ async def run_layer_monitor(interval_seconds: int = 900) -> None:
                             else rebalance.get("last_summary", {})
                         )
 
-                    logging.info("[Layer3] Plan summary: %s", layer3_summary)
+                    logging.info(
+                        "[Layer3] Plan summary | cycle_id=%s plan_id=%s status=%s decisions=%s "
+                        "equity=$%s cash=$%s target_symbols=%s target_cash_pct=%s "
+                        "open_orders=%s fail_safe_active=%s",
+                        layer3_summary.get("cycle_id"),
+                        layer3_summary.get("plan_id"),
+                        layer3_summary.get("status"),
+                        layer3_summary.get("decision_counts"),
+                        layer3_summary.get("equity"),
+                        layer3_summary.get("cash"),
+                        layer3_summary.get("target_symbol_count"),
+                        layer3_summary.get("target_cash_pct"),
+                        layer3_summary.get("open_order_count"),
+                        layer3_summary.get("fail_safe_active"),
+                    )
 
                     layer4_execution_result = execute_layer4_plan(
                         layer3_plan,
@@ -404,8 +458,17 @@ async def run_layer_monitor(interval_seconds: int = 900) -> None:
                     )
 
                     logging.info(
-                        "[Layer4Exec] Execution result: %s",
-                        layer4_execution_result,
+                        "[Layers] Layer4 handoff complete | cycle_id=%s plan_id=%s attempted=%s "
+                        "submitted=%s skipped=%s errors=%s blocked_reason=%s count_integrity_ok=%s order_count=%s",
+                        layer4_execution_result.get("cycle_id"),
+                        layer4_execution_result.get("plan_id"),
+                        layer4_execution_result.get("attempted"),
+                        layer4_execution_result.get("submitted"),
+                        layer4_execution_result.get("skipped"),
+                        layer4_execution_result.get("errors"),
+                        layer4_execution_result.get("blocked_reason"),
+                        layer4_execution_result.get("count_integrity_ok"),
+                        len(layer4_execution_result.get("orders", []) or []),
                     )
 
                     if not ranked:
@@ -415,7 +478,7 @@ async def run_layer_monitor(interval_seconds: int = 900) -> None:
                         )
                     else:
                         top_symbols = [
-                            f"{r.symbol}:{r.score:.4f} ({r.reason})"
+                            f"{r.symbol}:{r.score:.4f}"
                             for r in ranked[:5]
                         ]
 
@@ -425,7 +488,10 @@ async def run_layer_monitor(interval_seconds: int = 900) -> None:
                             top_symbols,
                         )
 
-                        logging.info("[Layers] Target Portfolio: %s", target)
+                        logging.info(
+                            "[Layers] Target summary: %s",
+                            _target_summary_for_log(target),
+                        )
 
         except asyncio.CancelledError:
             logging.info("[Layers] Layer monitor cancelled.")
@@ -434,16 +500,8 @@ async def run_layer_monitor(interval_seconds: int = 900) -> None:
         except Exception:
             logging.exception("[Layers] Layer monitor evaluation failed.")
 
-        # Interruptible sleep so shutdown does not hang.
-        try:
-            await asyncio.wait_for(
-                asyncio.to_thread(
-                    app_state["stream"]["shutdown_event"].wait,
-                    interval_seconds,
-                ),
-                timeout=interval_seconds + 5,
-            )
-        except asyncio.TimeoutError:
-            pass
+        finally:
+            if not app_state["stream"]["shutdown_event"].is_set():
+                await _sleep_layer_monitor_interval(interval_seconds)
 
     logging.info("[Layers] Layer monitor exited cleanly.")
