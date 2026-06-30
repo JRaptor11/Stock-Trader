@@ -3,7 +3,7 @@ import time
 import logging
 import psutil
 
-from state import app_state
+from core.state import app_state
 from utils.alerts_utils import send_email_alert
 
 

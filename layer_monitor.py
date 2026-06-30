@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, timezone
 from bar_data import fetch_recent_bars_with_min_count
 
-from state import app_state
+from core.state import app_state
 from layer3_rebalancer import run_layer3_dry_run
 from layer4_executor import execute_layer4_plan
 

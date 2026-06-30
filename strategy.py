@@ -9,7 +9,7 @@ from typing import Any, List, Optional, Tuple
 
 import numpy as np
 
-from state import (
+from core.state import (
     app_state,
     app_state_lock,
     ensure_symbol_strategy_state,

@@ -32,7 +32,7 @@ from routes.dev_routes import (
 )
 
 from . import config_utils as config
-from state import app_state
+from core.state import app_state
 
 
 telegram_start_lock = asyncio.Lock()

@@ -3,7 +3,7 @@ import time
 import logging
 from datetime import datetime
 from heartbeat import Heartbeat
-from state import app_state
+from core.state import app_state
 
 
 async def _sleep_with_shutdown(seconds: float, step: float = 0.25) -> None:

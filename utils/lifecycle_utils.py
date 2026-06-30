@@ -4,7 +4,7 @@ import logging
 import asyncio
 import pathlib
 from datetime import datetime, timedelta, timezone
-from state import app_state
+from core.state import app_state
 from config import PROGRAM_STARTUP_FILE, PROGRAM_SHUTDOWN_FILE, PROGRAM_SHUTDOWN_REASON_FILE
 
 from utils.threading_utils import safe_thread

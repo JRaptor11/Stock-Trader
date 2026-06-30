@@ -1,6 +1,6 @@
 # utils/config.py
 
-from state import app_state
+from core.state import app_state
 
 # These get populated during lifespan() startup
 EMAIL_ADDRESS = None

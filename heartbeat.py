@@ -1,5 +1,5 @@
 import time
-from state import app_state
+from core.state import app_state
 
 
 class Heartbeat:

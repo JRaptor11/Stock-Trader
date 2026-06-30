@@ -9,7 +9,7 @@ import csv
 from alpaca.trading.enums import OrderSide, OrderType, TimeInForce, QueryOrderStatus
 from alpaca.trading.requests import GetOrdersRequest, LimitOrderRequest, MarketOrderRequest
 from heartbeat import Heartbeat
-from state import app_state, active_handle_trade
+from core.state import app_state, active_handle_trade
 from strategy import strategy_manager
 from utils.alerts_utils import send_email_alert
 from utils.trade_utils import handle_trade_update, log_trade_to_history

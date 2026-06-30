@@ -4,7 +4,7 @@ import logging
 import threading
 from collections import deque
 
-from state import app_state
+from core.state import app_state
 from paper_portfolio import PaperPortfolio
 from layer2_portfolio import Layer2PortfolioEngine
 

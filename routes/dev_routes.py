@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse, PlainTextResponse, JSONResponse
 
-from state import app_state
+from core.state import app_state
 from utils import config_utils as config
 from utils.alerts_utils import send_email_alert, send_telegram_alert
 from utils.trade_utils import TRADE_REASON_LOG

@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime, timezone, timedelta
 
-from state import app_state
+from core.state import app_state
 from utils import config_utils as config
 
 try:

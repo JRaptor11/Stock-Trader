@@ -6,7 +6,7 @@ from alpaca.trading.enums import TimeInForce, QueryOrderStatus, OrderSide
 from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest, GetOrdersRequest
 from utils.threading_utils import safe_thread
 from utils.trade_utils import log_trade_to_summary
-from state import app_state
+from core.state import app_state
 
 
 EXTENDED_LIMIT_ORDER_MAX_AGE_SECONDS = 15 * 60

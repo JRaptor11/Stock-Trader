@@ -8,8 +8,8 @@ import logging
 from dotenv import load_dotenv
 
 from app_instance import app
-from app_lifespan import lifespan
-from app_setup import configure_fastapi_app
+from core.app_lifespan import lifespan
+from core.app_setup import configure_fastapi_app
 
 
 load_dotenv()
@@ -26,8 +26,8 @@ if __name__ == "__main__":
     try:
         port = int(port_env)
     except ValueError:
-        logging.warning(f"Invalid PORT env var '{port_env}'. Using default port 8000.")
+        logging.warning("Invalid PORT env var %r. Using default port 8000.", port_env)
         port = 8000
 
-    logging.info(f"🚀 Starting FastAPI server on port {port}...")
+    logging.info(f"🚀 Starting FastAPI server on port %s...", port)
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)

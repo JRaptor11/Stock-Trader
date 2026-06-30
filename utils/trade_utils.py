@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timezone, timedelta
 from utils.alerts_utils import send_email_alert
 from utils.config_utils import get_config
-from state import app_state
+from core.state import app_state
 import asyncio
 from collections import deque
 

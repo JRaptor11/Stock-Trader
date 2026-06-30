@@ -5,7 +5,7 @@ import threading
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional
 
-from state import SmartDeque
+from core.state import SmartDeque
 
 
 @dataclass

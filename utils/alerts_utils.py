@@ -5,7 +5,7 @@ from email.header import Header
 from email.utils import formataddr
 import logging
 from datetime import datetime, timedelta
-from state import app_state
+from core.state import app_state
 import utils.config_utils as config
 
 def send_telegram_alert(message: str):
