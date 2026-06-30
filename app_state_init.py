@@ -6,7 +6,7 @@ from collections import deque
 
 from core.state import app_state
 from paper_portfolio import PaperPortfolio
-from layer2_portfolio import Layer2PortfolioEngine
+from layers.layer2_portfolio import Layer2PortfolioEngine
 
 
 def ensure_app_state_structure() -> None:
