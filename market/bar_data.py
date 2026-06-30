@@ -7,6 +7,33 @@ from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.enums import DataFeed
 
+
+def _latest_bar_metadata(result: dict) -> tuple[dict, dict]:
+    latest_bar_times = {}
+    latest_bar_ages_minutes = {}
+
+    now_utc = datetime.now(timezone.utc)
+
+    for symbol, symbol_bars in result.items():
+        if not symbol_bars:
+            latest_bar_times[symbol] = None
+            latest_bar_ages_minutes[symbol] = None
+            continue
+
+        latest_ts = symbol_bars[-1].get("timestamp")
+        latest_bar_times[symbol] = latest_ts
+
+        if latest_ts:
+            latest_bar_ages_minutes[symbol] = round(
+                (now_utc - latest_ts).total_seconds() / 60,
+                1,
+            )
+        else:
+            latest_bar_ages_minutes[symbol] = None
+
+    return latest_bar_times, latest_bar_ages_minutes
+
+
 def fetch_recent_bars(data_client, symbols, lookback_hours=24, timeframe_minutes=15):
     if not data_client:
         logging.warning("[Bars] No Alpaca data client available.")
@@ -46,7 +73,7 @@ def fetch_recent_bars(data_client, symbols, lookback_hours=24, timeframe_minutes
 
     try:
         raw_symbols = list(getattr(bars, "data", {}).keys())
-        logging.info("[Bars] Raw response symbols: %s", raw_symbols)
+        logging.debug("[Bars] Raw response symbols: %s", raw_symbols)
     except Exception:
         logging.warning("[Bars] Could not inspect raw bar response.")
 
@@ -95,7 +122,7 @@ def fetch_recent_bars(data_client, symbols, lookback_hours=24, timeframe_minutes
         else:
             latest_bar_ages_minutes[symbol] = None
 
-    logging.info("[Bars] Latest bar times: %s", latest_bar_times)
+    logging.debug("[Bars] Latest bar times: %s", latest_bar_times)
     logging.info("[Bars] Latest bar ages minutes: %s", latest_bar_ages_minutes)
 
     return result
@@ -233,10 +260,19 @@ def fetch_recent_bars_with_min_count(
     if not symbols:
         return {}
 
-    if min_ready_symbols is None:
-        min_ready_symbols = 1
+    required_ready_symbols = (
+        min_ready_symbols
+        if min_ready_symbols is not None
+        else len(symbols)
+    )
 
-    min_ready_symbols = max(1, min(int(min_ready_symbols), len(symbols)))
+    required_ready_symbols = max(
+        1,
+        min(len(symbols), int(required_ready_symbols)),
+    )
+
+    if len(symbols_with_enough_bars) >= required_ready_symbols:
+        return latest_result
 
     lookback_hours = initial_lookback_hours
     latest_result = {}

@@ -31,6 +31,54 @@ def _safe_round(value, digits: int = 2):
         return value
 
 
+def _safe_round(value, digits: int = 2):
+    try:
+        return round(float(value), digits)
+    except Exception:
+        return value
+
+
+def _compact_order_for_log(order: dict) -> dict:
+    compact = {
+        "symbol": order.get("symbol"),
+        "side": order.get("side"),
+        "status": order.get("status"),
+        "qty": _safe_round(order.get("qty"), 4),
+        "notional": _safe_round(order.get("notional"), 2),
+        "price": _safe_round(order.get("price"), 4),
+        "order_id": order.get("order_id"),
+        "reason": order.get("reason"),
+        "row_id": order.get("row_id"),
+    }
+
+    if order.get("error"):
+        compact["error"] = order.get("error")
+
+    if order.get("cash") is not None:
+        compact["cash"] = _safe_round(order.get("cash"), 2)
+
+    return {k: v for k, v in compact.items() if v is not None}
+
+
+def _compact_orders_for_log(orders) -> list[dict]:
+    return [
+        _compact_order_for_log(order)
+        for order in orders or []
+        if isinstance(order, dict)
+    ]
+
+
+def _compact_executable_row_for_log(row: dict) -> dict:
+    return {
+        "symbol": row.get("symbol"),
+        "decision": row.get("decision"),
+        "qty": _safe_round(row.get("qty"), 4),
+        "notional": _safe_round(row.get("notional"), 2),
+        "price": _safe_round(row.get("price"), 4),
+        "reason": row.get("reason"),
+    }
+
+
 def _compact_order_for_log(order: dict) -> dict:
     compact = {
         "symbol": order.get("symbol"),
@@ -277,12 +325,6 @@ def _finish_layer4_result(
 ) -> dict:
     """
     Store and log the final Layer 4 execution result from every return path.
-
-    This makes cycles like 67 diagnosable because every execution attempt ends with:
-    - Complete
-    - Execution result
-    - duration
-    - count integrity check
     """
     result["finished_at"] = datetime.now(timezone.utc).isoformat()
     result["duration_seconds"] = round(time.monotonic() - started_monotonic, 3)
@@ -294,8 +336,11 @@ def _finish_layer4_result(
 
     result["count_integrity_ok"] = attempted == submitted + skipped + errors
 
-    layer4_state["last_cycle_id"] = result.get("cycle_id")
-    layer4_state["last_plan_id"] = result.get("plan_id")
+    cycle_id = result.get("cycle_id")
+    plan_id = result.get("plan_id")
+
+    layer4_state["last_cycle_id"] = cycle_id
+    layer4_state["last_plan_id"] = plan_id
     layer4_state["last_result"] = result
 
     logging.log(
@@ -303,8 +348,8 @@ def _finish_layer4_result(
         "[Layer4Exec] Complete | cycle_id=%s plan_id=%s attempted=%s "
         "submitted=%s skipped=%s errors=%s blocked_reason=%s "
         "duration=%.3fs count_integrity_ok=%s",
-        result.get("cycle_id"),
-        result.get("plan_id"),
+        cycle_id,
+        plan_id,
         attempted,
         submitted,
         skipped,
@@ -319,8 +364,8 @@ def _finish_layer4_result(
     if compact_orders:
         logging.warning(
             "[Layer4Exec] Orders summary | cycle_id=%s plan_id=%s orders=%s",
-            result.get("cycle_id"),
-            result.get("plan_id"),
+            cycle_id,
+            plan_id,
             compact_orders,
         )
 
@@ -517,6 +562,8 @@ def execute_layer4_plan(plan: Any, summary: dict | None = None) -> dict:
             reason,
         )
 
+        available_cash_budget = _available_cash(client)
+
         if decision == "SELL":
             held_qty = position_qty.get(symbol, 0.0)
             if held_qty <= 0:
@@ -542,13 +589,12 @@ def execute_layer4_plan(plan: Any, summary: dict | None = None) -> dict:
             side = OrderSide.SELL
 
         elif decision == "BUY":
-            cash = _available_cash(client)
-            if notional > cash:
+            if notional > available_cash_budget:
                 logging.info(
-                    "[Layer4Exec] BUY skipped for %s; notional %.2f exceeds cash %.2f.",
+                    "[Layer4Exec] BUY skipped for %s; notional %.2f exceeds remaining cash budget %.2f.",
                     symbol,
                     notional,
-                    cash,
+                    available_cash_budget,
                 )
                 result["skipped"] += 1
                 result["orders"].append(
@@ -556,15 +602,16 @@ def execute_layer4_plan(plan: Any, summary: dict | None = None) -> dict:
                         "symbol": symbol,
                         "side": "buy",
                         "status": "skipped",
-                        "reason": "insufficient_cash",
+                        "reason": "insufficient_cash_budget",
                         "notional": notional,
-                        "cash": cash,
+                        "cash": available_cash_budget,
                         "plan_id": plan_id,
                         "row_id": row_id,
                     }
                 )
                 continue
 
+            available_cash_budget -= notional
             side = OrderSide.BUY
 
         else:
@@ -676,24 +723,6 @@ def execute_layer4_plan(plan: Any, summary: dict | None = None) -> dict:
                     "row_id": row_id,
                 }
             )
-
-    submitted_orders = [
-        {
-            "symbol": o.get("symbol"),
-            "side": o.get("side"),
-            "qty": o.get("qty"),
-            "order_id": o.get("order_id"),
-        }
-        for o in result.get("orders", [])
-        if o.get("status") == "submitted"
-    ]
-
-    logging.warning(
-        "[Layer4Exec] Submitted orders summary | cycle_id=%s plan_id=%s orders=%s",
-        result.get("cycle_id"),
-        result.get("plan_id"),
-        submitted_orders,
-    )
 
     return _finish_layer4_result(
         result=result,
