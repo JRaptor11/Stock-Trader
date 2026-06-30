@@ -16,7 +16,7 @@ from core.state import (
     fail_safe_event,
     norm_symbol,
 )
-from utils.trade_utils import log_trade_decision
+from trading.trade_utils import log_trade_decision
 
 # ─────────────────────────────────────────────
 # Safe Context Accessor

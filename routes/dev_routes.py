@@ -13,7 +13,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, JSONResponse
 from core.state import app_state
 from config import runtime_config as config
 from integrations.alerts import send_email_alert, send_telegram_alert
-from utils.trade_utils import TRADE_REASON_LOG
+from trading.trade_utils import TRADE_REASON_LOG
 from integrations.auth import verify_credentials
 from utils.misc_utils import with_retries
 from market.stream import FakeTrade
@@ -27,6 +27,7 @@ from market.stream import FakeTrade
 # These routes should NOT be exposed in production
 # environments unless properly secured.
 #
+# ---------------------------------------------------------------
 # Responsibilities
 # ---------------------------------------------------------------
 # • Trade simulation
@@ -34,39 +35,46 @@ from market.stream import FakeTrade
 # • Strategy diagnostics
 # • Manual alert testing
 #
-# ================================================================
-#
+# ---------------------------------------------------------------
 # ROUTE TABLE
+# ---------------------------------------------------------------
 #
-# ┌────────────────────────┬────────┬────────────────────────────────────┐
-# │ Route                  │ Method │ Description                        │
-# ├────────────────────────┼────────┼────────────────────────────────────┤
-# │ /dev-routes            │ GET    │ List dev/debug routes              │
-# ├────────────────────────┼────────┼────────────────────────────────────┤
-# │ /debug-buy             │ POST   │ Force debug buy                    │
-# │ /debug-sell            │ POST   │ Force debug sell                   │
-# ├────────────────────────┼────────┼────────────────────────────────────┤
-# │ /simulate-buy          │ POST   │ Simulate buy execution             │
-# │ /simulate-sell         │ POST   │ Simulate sell execution            │
-# │ /simulate-100-trades   │ POST   │ Run 100 simulated trades           │
-# ├────────────────────────┼────────┼────────────────────────────────────┤
-# │ /test-sequence         │ POST   │ Run buy → sell test sequence       │
-# │ /test-buy-only         │ POST   │ Trigger buy test                   │
-# │ /test-sell-only        │ POST   │ Trigger sell test                  │
-# ├────────────────────────┼────────┼────────────────────────────────────┤
-# │ /test-positions        │ GET    │ Show Alpaca positions              │
-# │ /debug/open-trades     │ GET    │ Inspect open_trades state          │
-# ├────────────────────────┼────────┼────────────────────────────────────┤
-# │ /trades                │ GET    │ View trade log                     │
-# │ /trades-csv            │ GET    │ Export trade log CSV               │
-# │ /trade-decisions       │ GET    │ View strategy decision state       │
-# ├────────────────────────┼────────┼────────────────────────────────────┤
-# │ /diagnostics           │ GET    │ Run diagnostics snapshot           │
-# ├────────────────────────┼────────┼────────────────────────────────────┤
-# │ /test-alert            │ POST   │ Send test email alert              │
-# │ /test-telegram         │ POST   │ Send test Telegram alert           │
-# │ /test-update-balance   │ POST   │ Force balance refresh              │
-# └────────────────────────┴────────┴────────────────────────────────────┘
+# ┌────────────────────────────┬────────┬────────────────────────────────────────────┐
+# │ Route                      │ Method │ Description                                │
+# ├────────────────────────────┼────────┼────────────────────────────────────────────┤
+# │ /dev-routes                │ GET    │ List dev/debug routes                      │
+# ├────────────────────────────┼────────┼────────────────────────────────────────────┤
+# │ /debug-buy                 │ POST   │ Force debug buy through execution path     │
+# │ /debug-sell                │ POST   │ Force debug sell through execution path    │
+# ├────────────────────────────┼────────┼────────────────────────────────────────────┤
+# │ /simulate-buy              │ POST   │ Inject fake trade tick                     │
+# │ /simulate-sell             │ POST   │ Inject fake trade tick                     │
+# │ /simulate-100-trades       │ POST   │ Run 100 simulated fake trade ticks         │
+# ├────────────────────────────┼────────┼────────────────────────────────────────────┤
+# │ /test-sequence             │ POST   │ Run buy → sell fake tick test sequence     │
+# │ /test-buy-only             │ POST   │ Trigger single fake tick test              │
+# │ /test-sell-only            │ POST   │ Trigger single fake tick test              │
+# ├────────────────────────────┼────────┼────────────────────────────────────────────┤
+# │ /test-positions            │ GET    │ Show Alpaca positions                      │
+# │ /debug/open-trades         │ GET    │ Inspect open_trades state                  │
+# │ /strategy-state            │ GET    │ View current in-memory strategy state      │
+# ├────────────────────────────┼────────┼────────────────────────────────────────────┤
+# │ /trades-live               │ GET    │ View current in-memory trade state         │
+# │ /trades-csv-live           │ GET    │ Export in-memory trade state as CSV        │
+# ├────────────────────────────┼────────┼────────────────────────────────────────────┤
+# │ /trade-history             │ GET    │ View trade_history.csv rows as JSON        │
+# │ /trade-history-csv         │ GET    │ Export trade_history.csv as CSV            │
+# │ /trade-summary             │ GET    │ View trade_summary.csv rows as JSON        │
+# │ /trade-summary-csv         │ GET    │ Export trade_summary.csv as CSV            │
+# │ /trade-decisions           │ GET    │ View trade_decisions_log.csv rows as JSON  │
+# │ /trade-decisions-csv       │ GET    │ Export trade_decisions_log.csv as CSV      │
+# ├────────────────────────────┼────────┼────────────────────────────────────────────┤
+# │ /diagnostics               │ GET    │ Run diagnostics snapshot                   │
+# ├────────────────────────────┼────────┼────────────────────────────────────────────┤
+# │ /test-alert                │ POST   │ Send test email alert                      │
+# │ /test-telegram             │ POST   │ Send test Telegram alert                   │
+# │ /test-update-balance       │ POST   │ Force account balance refresh              │
+# └────────────────────────────┴────────┴────────────────────────────────────────────┘
 #
 # Notes
 # ---------------------------------------------------------------
@@ -146,24 +154,47 @@ def dev_route_list():
     Return a simple HTML list of dev/debug routes.
     """
     route_descriptions = {
-        "/dev-routes": "This dev route list",
-        "/debug-buy": "Force a debug buy through execution path",
-        "/debug-sell": "Force a debug sell through execution path",
-        "/simulate-buy": "Inject a fake trade tick",
-        "/simulate-sell": "Inject a fake trade tick",
-        "/simulate-100-trades": "Stress test trade flow with fake ticks",
-        "/test-positions": "Show current positions",
-        "/test-sequence": "Run a simple fake tick sequence test",
-        "/test-buy-only": "Inject a single fake trade tick",
-        "/test-sell-only": "Inject a single fake trade tick",
-        "/trades": "View completed trades",
-        "/trades-csv": "Download trade log CSV",
-        "/trade-decisions": "View trade decision log",
-        "/diagnostics": "Run system diagnostics",
+        # Route discovery
+        "/dev-routes": "Show this dev/debug route list",
+
+        # Debug trading actions
+        "/debug-buy": "Force a debug buy through the execution path",
+        "/debug-sell": "Force a debug sell through the execution path",
+
+        # Trade simulation
+        "/simulate-buy": "Inject a fake trade tick into the normal trade handler",
+        "/simulate-sell": "Inject a fake trade tick into the normal trade handler",
+        "/simulate-100-trades": "Run 100 fake trade ticks for stress testing",
+
+        # Test sequences
+        "/test-sequence": "Run a simple fake buy → sell tick sequence",
+        "/test-buy-only": "Inject a single fake trade tick for buy-side testing",
+        "/test-sell-only": "Inject a single fake trade tick for sell-side testing",
+
+        # Position / state inspection
+        "/test-positions": "Show current Alpaca positions",
+        "/debug/open-trades": "Show raw open_trades state",
+        "/strategy-state": "Show current in-memory strategy state",
+
+        # Live in-memory trade state
+        "/trades-live": "View current in-memory open trades and latest signal state",
+        "/trades-csv-live": "Download a simple CSV snapshot of current in-memory open trades",
+
+        # Trade history CSV-backed routes
+        "/trade-history": "View parsed trade_history.csv rows as JSON",
+        "/trade-history-csv": "Download trade_history.csv as CSV text",
+        "/trade-summary": "View parsed trade_summary.csv rows as JSON",
+        "/trade-summary-csv": "Download trade_summary.csv as CSV text",
+        "/trade-decisions": "View parsed trade_decisions_log.csv rows as JSON",
+        "/trade-decisions-csv": "Download trade_decisions_log.csv as CSV text",
+
+        # Diagnostics
+        "/diagnostics": "Run a system diagnostics snapshot",
+
+        # Alert testing
         "/test-alert": "Send a test email alert",
         "/test-telegram": "Send a test Telegram alert",
-        "/test-update-balance": "Force one balance update",
-        "/debug/open-trades": "View current open_trades state",
+        "/test-update-balance": "Force one account balance update",
     }
 
     html = "<html><body><h1>Dev Routes</h1><ul>"
@@ -369,9 +400,9 @@ def view_trade_log_csv():
     return "\n".join(lines)
 
 
-@dev_routes.get("/trade-decisions")
+@dev_routes.get("/strategy-state")
 @with_retries()
-def view_trade_decisions():
+def view_strategy_state():
     """
     View recent strategy / decision state snapshot.
     """

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from alpaca.trading.enums import TimeInForce, QueryOrderStatus, OrderSide
 from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest, GetOrdersRequest
 from utils.threading_utils import safe_thread
-from utils.trade_utils import log_trade_to_summary
+from trading.trade_utils import log_trade_to_summary
 from core.state import app_state
 
 

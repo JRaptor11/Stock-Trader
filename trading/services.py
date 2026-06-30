@@ -2,7 +2,7 @@ import asyncio
 import time
 import logging
 from datetime import datetime
-from heartbeat import Heartbeat
+from runners.heartbeat import Heartbeat
 from core.state import app_state
 
 

@@ -9,7 +9,7 @@ from alpaca.trading.requests import GetOrdersRequest
 
 from core.state import app_state, fail_safe_event
 from config import runtime_config as config
-from utils.orders_utils import (
+from trading.orders import (
     create_order_request,
     normalize_side,
     track_limit_order,

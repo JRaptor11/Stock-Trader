@@ -27,7 +27,7 @@ from trading.portfolio_reconciler import run_portfolio_reconciler
 from config import runtime_config as config
 from utils.threading_utils import safe_thread
 from utils.system_utils import monitor_system_resources
-from utils.trade_utils import ensure_trade_logs_exist
+from trading.trade_utils import ensure_trade_logs_exist
 from utils.lifecycle_utils import (
     record_program_startup,
     was_last_program_shutdown_abnormal,

@@ -5,7 +5,7 @@ import asyncio
 import logging
 import contextvars
 from collections import deque
-from smart_deque import SmartDeque
+from utils.smart_deque import SmartDeque
 from types import MappingProxyType
 
 from market.market_data import MarketDataBuffer
