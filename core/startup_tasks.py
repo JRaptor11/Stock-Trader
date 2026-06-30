@@ -11,14 +11,14 @@ from alpaca.trading.client import TradingClient
 from alpaca.data.historical import StockHistoricalDataClient
 
 from core.state import app_state
-from fail_safes import monitor_fail_safes
+from safety.fail_safes import monitor_fail_safes
 from trading.services import (
     PositionTracker,
     OrderExecutor,
     AccountBalanceTracker,
 )
 from market.stream import ThreadedAlpacaStream
-from strategy import AtrNoiseFilter, VolatilityScorer
+from strategies.strategy import AtrNoiseFilter, VolatilityScorer
 
 from runners.layer_monitor import run_layer_monitor
 from core.app_state_init import initialize_layer_state
