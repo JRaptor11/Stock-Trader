@@ -35,7 +35,7 @@ from utils.orders_utils import (
     should_block_extended_order_near_open
 )
 
-from patched_stream import PatchedStockDataStream
+from market.patched_stream import PatchedStockDataStream
 
 import concurrent.futures
 
