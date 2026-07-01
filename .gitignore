@@ -56,3 +56,21 @@ venv/
 .DS_Store
 Thumbs.db
 *.swp
+
+# ===============================
+# Local Alpaca exports/reports
+# ===============================
+alpaca_export_*/
+alpaca_day_report*/
+alpaca_day_report_*/
+account_snapshot.json
+positions_after_close.json
+positions_after_close.csv
+orders_today.json
+orders_today.csv
+fills_today.json
+fills_today.csv
+open_orders_after_close.json
+open_orders_after_close.csv
+summary.json
+summary.txt
