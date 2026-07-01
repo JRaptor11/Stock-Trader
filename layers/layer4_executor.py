@@ -23,6 +23,7 @@ from trading.orders import (
     track_limit_order,
 )
 
+from layers.layer_csv import append_layer4_order_rows
 
 def _normalize_decision(value: Any) -> str:
     return str(value or "").upper().strip()
@@ -272,6 +273,8 @@ def _finish_layer4_result(
             plan_id,
             compact_orders,
         )
+
+    append_layer4_order_rows(result)
 
     return result
 

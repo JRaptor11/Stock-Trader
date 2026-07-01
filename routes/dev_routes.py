@@ -8,7 +8,7 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import HTMLResponse, PlainTextResponse, JSONResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, FileResponse, JSONResponse
 
 from core.state import app_state
 from config import runtime_config as config
@@ -18,8 +18,9 @@ from integrations.auth import verify_credentials
 from utils.misc_utils import with_retries
 from market.stream import FakeTrade
 
+from layers.layer_csv import LAYER_CSV_FILES, layer_csv_path, read_csv_rows
+
 # ================================================================
-# dev_routes.py
 #
 # Development and debugging endpoints used for testing
 # trading logic, system behavior, and diagnostics.
@@ -143,6 +144,19 @@ def _rows_to_csv_text(rows: list[dict], fieldnames: list[str] | None = None) -> 
     if rows:
         writer.writerows(rows)
     return output.getvalue()
+
+
+def _layer_csv_filename(name: str) -> str:
+    filename = LAYER_CSV_FILES.get(name)
+
+    if not filename:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown layer CSV '{name}'. Available: {sorted(LAYER_CSV_FILES)}",
+        )
+
+    return filename
+
 
 # ================================================================
 # ROUTE DISCOVERY
@@ -651,6 +665,45 @@ async def test_sell_only(symbol: str = "AAPL", price: float = 100.0):
     except Exception as e:
         logging.exception("[DevRoutes] test-sell-only failed")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@dev_router.get("/layers/layer-routes")
+def layer_routes():
+    return {
+        "/layers/layer-routes": "Show Layer CSV route list",
+        "/layers/cycles": "View parsed layer_cycles.csv rows as JSON",
+        "/layers/cycles-csv": "Download layer_cycles.csv",
+        "/layers/plans": "View parsed layer3_plans.csv rows as JSON",
+        "/layers/plans-csv": "Download layer3_plans.csv",
+        "/layers/orders": "View parsed layer4_orders.csv rows as JSON",
+        "/layers/orders-csv": "Download layer4_orders.csv",
+        "/layers/portfolio-snapshots": "View parsed layer_portfolio_snapshots.csv rows as JSON",
+        "/layers/portfolio-snapshots-csv": "Download layer_portfolio_snapshots.csv",
+    }
+
+
+@dev_router.get("/layers/{name}")
+def view_layer_csv(name: str, limit: int = Query(1000, ge=1, le=10000)):
+    filename = _layer_csv_filename(name)
+    return read_csv_rows(filename, limit=limit)
+
+
+@dev_router.get("/layers/{name}-csv")
+def download_layer_csv(name: str):
+    filename = _layer_csv_filename(name)
+    path = layer_csv_path(filename)
+
+    if not path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"{filename} not found",
+        )
+
+    return FileResponse(
+        path,
+        media_type="text/csv",
+        filename=filename,
+    )
 
 
 # ================================================================

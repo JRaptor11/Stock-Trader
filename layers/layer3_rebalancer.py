@@ -8,6 +8,11 @@ from utils.symbols import normalize_symbol
 from core.state import app_state
 from config import runtime_config as config
 
+from layers.layer_csv import (
+    append_layer3_plan_rows,
+    append_layer_portfolio_snapshot_rows,
+)
+
 try:
     from alpaca.trading.enums import QueryOrderStatus
     from alpaca.trading.requests import GetOrdersRequest
@@ -1219,6 +1224,9 @@ def run_layer3_dry_run() -> dict:
     rebalance["last_summary"] = summary
     rebalance["last_error"] = None
     rebalance["active_plan_id"] = plan_id
+
+    append_layer3_plan_rows(summary, plan)
+    append_layer_portfolio_snapshot_rows(summary, plan)
 
     logging.info(
         "[Layer3] Dry-run drift plan complete | cycle_id=%s decisions=%s equity=$%.2f cash=$%.2f",

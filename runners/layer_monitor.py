@@ -20,6 +20,7 @@ from market.bar_data import (
 from core.state import app_state
 from layers.layer3_rebalancer import run_layer3_dry_run
 from layers.layer4_executor import execute_layer4_plan
+from layers.layer_csv import append_layer_cycle_row
 
 
 def _execution_setting(name: str, default):
@@ -396,6 +397,22 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
                     layer4_execution_result = execute_layer4_plan(
                         layer3_plan,
                         layer3_summary,
+                    )
+
+                    append_layer_cycle_row(
+                        status="ok",
+                        reason=None,
+                        market_is_open=market_is_open,
+                        fresh_count=freshness_report.get("fresh_count") if isinstance(freshness_report, dict) else None,
+                        required_fresh_symbols=required_fresh_symbols,
+                        ranked_count=len(ranked or []),
+                        top_symbols=[
+                            getattr(r, "symbol", None)
+                            for r in (ranked or [])[:5]
+                        ],
+                        target_summary=target_summary_for_log(target),
+                        layer3_summary=layer3_summary,
+                        layer4_result=layer4_execution_result,
                     )
 
                     logging.info(
