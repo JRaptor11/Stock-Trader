@@ -61,6 +61,8 @@ Thumbs.db
 # Local Alpaca exports/reports
 # ===============================
 alpaca_export_*/
+alpaca_day_export*/
+alpaca_day_export_*/
 alpaca_day_report*/
 alpaca_day_report_*/
 account_snapshot.json
