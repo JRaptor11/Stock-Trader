@@ -1,3 +1,5 @@
+# runners/layer_monitor.py
+
 import asyncio
 import logging
 import math
@@ -166,6 +168,14 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
                             "[Layers] Market closed and layer_monitor_run_24_7=false. "
                             "Skipping this cycle."
                         )
+
+                        append_layer_cycle_row(
+                            status="skipped",
+                            reason="market_closed_run_24_7_false",
+                            market_is_open=market_is_open,
+                            ranked_count=0,
+                        )
+
                         continue
 
                     logging.info(
@@ -308,6 +318,15 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
                             skip_info,
                         )
 
+                        append_layer_cycle_row(
+                            status="skipped",
+                            reason="insufficient_fresh_bars",
+                            market_is_open=market_is_open,
+                            fresh_count=freshness_report.get("fresh_count"),
+                            required_fresh_symbols=required_fresh_symbols,
+                            ranked_count=0,
+                        )
+
                         continue
 
                     if not market_is_open:
@@ -326,6 +345,15 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
                         )
 
                         _expire_active_plan_for_market_close()
+
+                        append_layer_cycle_row(
+                            status="market_closed_observation_only",
+                            reason="market_closed",
+                            market_is_open=market_is_open,
+                            fresh_count=freshness_report.get("fresh_count") if isinstance(freshness_report, dict) else None,
+                            required_fresh_symbols=required_fresh_symbols,
+                            ranked_count=0,
+                        )
 
                         continue
 
@@ -453,10 +481,21 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
 
         except asyncio.CancelledError:
             logging.info("[Layers] Layer monitor cancelled.")
+
+            append_layer_cycle_row(
+                status="cancelled",
+                reason="layer_monitor_exception",
+            )
+
             raise
 
         except Exception:
             logging.exception("[Layers] Layer monitor evaluation failed.")
+
+            append_layer_cycle_row(
+                status="error",
+                reason="layer_monitor_exception",
+            )
 
         finally:
             if not app_state["stream"]["shutdown_event"].is_set():

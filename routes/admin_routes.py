@@ -1,4 +1,4 @@
-# admin_routes.py
+# routes/admin_routes.py
 
 import logging
 import os
@@ -16,24 +16,32 @@ from integrations.auth import verify_credentials
 from config.runtime_config import get_config, reset_config, set_config
 from utils.misc_utils import with_retries
 
+
 # ================================================================
-# admin_routes.py
 #
-# Administrative control endpoints for the trading bot.
+# Administrative control and operational monitoring endpoints for
+# the trading bot.
 #
-# These routes are used to control system components,
-# inspect internal state, and update runtime configuration.
+# These routes are used to control system components, inspect live
+# runtime health, manage Telegram/background services, view Layer
+# system status, and update runtime configuration.
 #
+# These routes should NOT be exposed publicly unless properly secured.
+#
+# ---------------------------------------------------------------
 # Responsibilities
 # ---------------------------------------------------------------
 # • Stream lifecycle control
-# • System monitoring and diagnostics
+# • Manual order execution
+# • System health and resource monitoring
+# • Layer 1/2/3/4 operational status inspection
 # • Telegram bot management
-# • Runtime configuration updates
+# • Manual alert triggering
+# • Runtime configuration inspection and updates
 #
-# ================================================================
-#
+# ---------------------------------------------------------------
 # ROUTE TABLE
+# ---------------------------------------------------------------
 #
 # ┌────────────────────┬────────┬──────────────────────────────────────┐
 # │ Route              │ Method │ Description                          │
@@ -45,6 +53,7 @@ from utils.misc_utils import with_retries
 # ├────────────────────┼────────┼──────────────────────────────────────┤
 # │ /metrics           │ GET    │ CPU and memory usage metrics         │
 # │ /healthz           │ GET    │ Comprehensive service health check   │
+# │ /layer-status      │ GET    │ Current Layer system status          │
 # ├────────────────────┼────────┼──────────────────────────────────────┤
 # │ /status-telegram   │ GET    │ Telegram bot status                  │
 # │ /shutdown-telegram │ GET    │ Stop Telegram bot                    │
@@ -61,14 +70,22 @@ from utils.misc_utils import with_retries
 # Notes
 # ---------------------------------------------------------------
 # • All routes require admin authentication
-# • Used for operational control and monitoring
+# • Intended for operational control and monitoring
+# • Some routes are read-only; others can start/stop services,
+#   submit manual orders, send alerts, or update runtime config
+# • /layer-status is read-only and does not execute trades
 #
 # ================================================================
 
+
 admin_routes = APIRouter()
+
 
 # ================================================================
 # STREAM CONTROL ROUTES
+# ---------------------------------------------------------------
+# Routes for starting, stopping, and inspecting the Alpaca trade
+# stream and its background thread/loop state.
 # ================================================================
 
 @admin_routes.post("/start-stream")
@@ -109,6 +126,7 @@ async def shutdown_stream(credentials: str = Depends(verify_credentials)):
     except Exception as e:
         logging.exception("Error during manual stream shutdown: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @admin_routes.get("/stream-status")
 @with_retries()
@@ -183,8 +201,12 @@ async def stream_status(credentials: str = Depends(verify_credentials)):
 
     return status
 
+
 # ================================================================
 # MANUAL EXECUTION ROUTES
+# ---------------------------------------------------------------
+# Routes that can submit manual orders through the execution path.
+# Use carefully while the bot is live.
 # ================================================================
 
 @admin_routes.post("/execute")
@@ -218,8 +240,12 @@ async def execute_order(
         logging.error("Order execution failed: %s", str(e), exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
+
 # ================================================================
 # SYSTEM MONITORING ROUTES
+# ---------------------------------------------------------------
+# Read-only operational health routes for process resources,
+# service health, and current Layer 1/2/3/4 runtime status.
 # ================================================================
 
 @admin_routes.get("/metrics")
@@ -263,8 +289,229 @@ async def health_check(credentials: str = Depends(verify_credentials)):
     summary_status = "OK" if all(v["running"] for v in status.values()) else "DEGRADED"
     return {"status": summary_status, "services": status}
 
+
+@admin_routes.get("/layer-status")
+@with_retries()
+async def layer_status(credentials: str = Depends(verify_credentials)):
+    """
+    Return current in-memory Layer 1/2/3/4 operational status.
+
+    This route does not read CSVs and does not place trades.
+    It is meant for quick operational checks after startup/deploys.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+
+    layers = app_state.get("layers", {})
+    execution = app_state.get("execution", {})
+    main = app_state.get("main", {})
+
+    latest = layers.get("latest", {})
+    rebalance = layers.get("rebalance", {})
+    layer4 = layers.get("layer4", {})
+    layer4_execution = layers.get("layer4_execution", {})
+    active_plan = layers.get("active_execution_plan")
+    bar_freshness = layers.get("bar_freshness", {})
+
+    if not isinstance(latest, dict):
+        latest = {}
+
+    if not isinstance(rebalance, dict):
+        rebalance = {}
+
+    if not isinstance(layer4, dict):
+        layer4 = {}
+
+    if not isinstance(layer4_execution, dict):
+        layer4_execution = {}
+
+    if not isinstance(bar_freshness, dict):
+        bar_freshness = {}
+
+    configured_symbols = list(main.get("symbol", []) or [])
+
+    ranked = latest.get("ranked", [])
+    if not isinstance(ranked, list):
+        ranked = []
+
+    target_portfolio = latest.get("target_portfolio", {})
+    if not isinstance(target_portfolio, dict):
+        target_portfolio = {}
+
+    target_meta = latest.get("target_meta", {})
+    if not isinstance(target_meta, dict):
+        target_meta = {}
+
+    target_symbols = [
+        symbol
+        for symbol in target_portfolio.keys()
+        if str(symbol).upper().strip() not in {"CASH", "_META"}
+        and not str(symbol).startswith("_")
+    ]
+
+    target_summary = {
+        "target_symbol_count": len(target_symbols),
+        "target_symbols": target_symbols,
+        "cash_pct": target_portfolio.get("CASH"),
+        "market_strength": target_meta.get("market_strength"),
+        "weighting_mode": target_meta.get("weighting_mode"),
+        "top_score": target_meta.get("top_score"),
+        "avg_top_score": target_meta.get("avg_top_score"),
+    }
+
+    last_plan = rebalance.get("last_plan", [])
+    if not isinstance(last_plan, list):
+        last_plan = []
+
+    last_plan_decision_counts = {}
+    for row in last_plan:
+        if not isinstance(row, dict):
+            continue
+
+        decision = str(row.get("decision") or "unknown")
+        last_plan_decision_counts[decision] = last_plan_decision_counts.get(decision, 0) + 1
+
+    active_plan_summary = None
+
+    if isinstance(active_plan, dict):
+        active_plan_rows = active_plan.get("rows", [])
+        if not isinstance(active_plan_rows, list):
+            active_plan_rows = []
+
+        active_plan_decision_counts = {}
+        for row in active_plan_rows:
+            if not isinstance(row, dict):
+                continue
+
+            decision = str(row.get("decision") or "unknown")
+            active_plan_decision_counts[decision] = active_plan_decision_counts.get(decision, 0) + 1
+
+        active_plan_summary = {
+            "plan_id": active_plan.get("plan_id"),
+            "status": active_plan.get("status"),
+            "created_at": active_plan.get("created_at"),
+            "expires_at": active_plan.get("expires_at"),
+            "ttl_seconds": active_plan.get("ttl_seconds"),
+            "row_count": len(active_plan_rows),
+            "decision_counts": active_plan_decision_counts,
+            "summary": active_plan.get("summary"),
+        }
+
+    last_layer4_result = layer4_execution.get("last_result")
+    compact_layer4_result = None
+
+    if isinstance(last_layer4_result, dict):
+        orders = last_layer4_result.get("orders", [])
+        if not isinstance(orders, list):
+            orders = []
+
+        compact_layer4_result = {
+            "cycle_id": last_layer4_result.get("cycle_id"),
+            "plan_id": last_layer4_result.get("plan_id"),
+            "enabled": last_layer4_result.get("enabled"),
+            "started_at": last_layer4_result.get("started_at"),
+            "finished_at": last_layer4_result.get("finished_at"),
+            "duration_seconds": last_layer4_result.get("duration_seconds"),
+            "attempted": last_layer4_result.get("attempted"),
+            "submitted": last_layer4_result.get("submitted"),
+            "skipped": last_layer4_result.get("skipped"),
+            "errors": last_layer4_result.get("errors"),
+            "blocked_reason": last_layer4_result.get("blocked_reason"),
+            "count_integrity_ok": last_layer4_result.get("count_integrity_ok"),
+            "order_count": len(orders),
+        }
+
+    tick_counts = {}
+    market_data_buffer = app_state.get("market_data", {}).get("buffer")
+
+    if market_data_buffer is not None:
+        for symbol in configured_symbols:
+            try:
+                tick_counts[symbol] = len(market_data_buffer.get_recent_prices(symbol))
+            except Exception:
+                tick_counts[symbol] = None
+
+    issues = []
+
+    if layers.get("engine") is None:
+        issues.append("layer_engine_missing")
+
+    if layers.get("paper_portfolio") is None:
+        issues.append("paper_portfolio_missing")
+
+    if not latest:
+        issues.append("no_layer12_snapshot")
+
+    if rebalance.get("last_error"):
+        issues.append("layer3_last_error")
+
+    if compact_layer4_result and compact_layer4_result.get("count_integrity_ok") is False:
+        issues.append("layer4_count_integrity_failed")
+
+    status = "ok" if not issues else "degraded"
+
+    return {
+        "status": status,
+        "issues": issues,
+        "timestamp": now,
+        "configured_symbols": configured_symbols,
+        "execution": {
+            "old_stream_strategy_enabled": execution.get("old_stream_strategy_enabled"),
+            "layer3_execution_enabled": execution.get("layer3_execution_enabled"),
+            "layer4_execution_enabled": execution.get("layer4_execution_enabled"),
+            "layer3_market_hours_only": execution.get("layer3_market_hours_only"),
+            "layer3_bootstrap_confirmation_enabled": execution.get("layer3_bootstrap_confirmation_enabled"),
+            "layer3_bootstrap_min_bar_count": execution.get("layer3_bootstrap_min_bar_count"),
+        },
+        "initialization": {
+            "layer_engine_exists": layers.get("engine") is not None,
+            "layer_engine_type": type(layers.get("engine")).__name__ if layers.get("engine") else None,
+            "paper_portfolio_exists": layers.get("paper_portfolio") is not None,
+            "paper_portfolio_type": type(layers.get("paper_portfolio")).__name__ if layers.get("paper_portfolio") else None,
+        },
+        "market_data": {
+            "tick_counts": tick_counts,
+        },
+        "latest_layer12": {
+            "timestamp": latest.get("timestamp"),
+            "symbols_evaluated": latest.get("symbols_evaluated"),
+            "bar_counts": latest.get("bar_counts"),
+            "ranked_count": len(ranked),
+            "top_ranked": ranked[:5],
+            "target_summary": target_summary,
+        },
+        "bar_freshness": bar_freshness,
+        "layer3": {
+            "enabled": rebalance.get("enabled"),
+            "dry_run": rebalance.get("dry_run"),
+            "last_cycle_id": rebalance.get("last_cycle_id"),
+            "last_run_at": rebalance.get("last_run_at"),
+            "last_error": rebalance.get("last_error"),
+            "last_plan_count": len(last_plan),
+            "last_plan_decision_counts": last_plan_decision_counts,
+            "last_summary": rebalance.get("last_summary"),
+            "target_seen_counts": rebalance.get("target_seen_counts"),
+            "target_absent_counts": rebalance.get("target_absent_counts"),
+            "bootstrap_confirmation_applied": rebalance.get("bootstrap_confirmation_applied"),
+            "bootstrap_confirmation_symbols": rebalance.get("bootstrap_confirmation_symbols"),
+            "confirmation_updates_allowed": rebalance.get("confirmation_updates_allowed"),
+            "confirmation_updates_blocked_reason": rebalance.get("confirmation_updates_blocked_reason"),
+        },
+        "active_execution_plan": active_plan_summary,
+        "layer4": {
+            "active_plan_id": layer4.get("active_plan_id"),
+            "active_plan_expires_at": layer4.get("active_plan_expires_at"),
+            "last_attempted_at": layer4_execution.get("last_attempted_at"),
+            "last_cycle_id": layer4_execution.get("last_cycle_id"),
+            "last_plan_id": layer4_execution.get("last_plan_id"),
+            "last_result": compact_layer4_result,
+        },
+    }
+
+
 # ================================================================
 # TELEGRAM BOT CONTROL ROUTES
+# ---------------------------------------------------------------
+# Routes for inspecting and stopping the Telegram bot integration.
 # ================================================================
 
 @admin_routes.get("/status-telegram")
@@ -313,6 +560,8 @@ async def shutdown_telegram(credentials: str = Depends(verify_credentials)):
 
 # ================================================================
 # ALERT ROUTES
+# ---------------------------------------------------------------
+# Routes that manually trigger alert delivery for operational testing.
 # ================================================================
 
 @admin_routes.post("/force-alert", response_class=PlainTextResponse)
@@ -324,8 +573,12 @@ async def force_alert(credentials: str = Depends(verify_credentials)):
     send_email_alert("🚨 Manual Alert", "This is a manually triggered alert.")
     return "Alert sent."
 
+
 # ================================================================
 # RUNTIME CONFIGURATION ROUTES
+# ---------------------------------------------------------------
+# Routes for inspecting defaults, applying runtime-only config
+# overrides, and resetting config overrides.
 # ================================================================
 
 def _cast_config_value(key: str, value: str):
@@ -452,14 +705,17 @@ def reset_config_key(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 # ================================================================
 # ADMIN ROUTE DISCOVERY
+# ---------------------------------------------------------------
+# Read-only route index for available authenticated admin endpoints.
 # ================================================================
 
 @admin_routes.get("/admin-routes", response_class=HTMLResponse)
 async def admin_route_list(credentials: str = Depends(verify_credentials)):
     """
-    Return a simple HTML list of admin routes.
+    Return an HTML list of authenticated admin routes.
     """
     route_descriptions = {
         "/start-stream": "Manually start the trade data stream",
@@ -468,6 +724,7 @@ async def admin_route_list(credentials: str = Depends(verify_credentials)):
         "/execute": "Submit a trade order",
         "/metrics": "System resource usage report",
         "/healthz": "Comprehensive service health check",
+        "/layer-status": "Current in-memory Layer 1/2/3/4 operational status",
         "/status-telegram": "Telegram bot status",
         "/shutdown-telegram": "Shut down Telegram bot",
         "/force-alert": "Send manual alert",

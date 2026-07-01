@@ -1,4 +1,4 @@
-# auth_routes.py
+# routes/auth_routes.py
 
 import secrets
 
@@ -8,31 +8,53 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from core.state import app_state
 from config import runtime_config as config
 
-auth_routes = APIRouter()
-security = HTTPBasic()
 
 # ================================================================
-# AUTHENTICATION ROUTES
-# ================================================================
 #
-# ┌──────────────────┬────────┬──────────────────────────────────┐
-# │ Route            │ Method │ Description                      │
-# ├──────────────────┼────────┼──────────────────────────────────┤
-# │ /login           │ POST   │ Authenticate and return token    │
-# │ /logout          │ POST   │ Invalidate auth token            │
-# │ /verify-token    │ GET    │ Verify token validity            │
-# └──────────────────┴────────┴──────────────────────────────────┘
+# Authentication endpoints for obtaining, invalidating, and checking
+# temporary route-access tokens.
+#
+# These routes use HTTP Basic credentials to create a temporary token
+# stored in app_state["routes"]["auth_routes"]["token_store"].
+#
+# ---------------------------------------------------------------
+# Responsibilities
+# ---------------------------------------------------------------
+# • Authenticate with configured admin credentials
+# • Generate temporary access tokens
+# • Invalidate existing tokens
+# • Verify token validity
+#
+# ---------------------------------------------------------------
+# ROUTE TABLE
+# ---------------------------------------------------------------
+#
+# ┌───────────────┬────────┬────────────────────────────────────┐
+# │ Route         │ Method │ Description                        │
+# ├───────────────┼────────┼────────────────────────────────────┤
+# │ /login        │ POST   │ Authenticate and return token      │
+# │ /logout       │ POST   │ Invalidate auth token              │
+# │ /verify-token │ GET    │ Verify token validity              │
+# └───────────────┴────────┴────────────────────────────────────┘
 #
 # Notes
 # ---------------------------------------------------------------
-# • Uses HTTP Basic authentication
-# • Generates session tokens
-# • Tokens stored in app_state["routes"]["auth_routes"]["token_store"]
+# • Uses HTTP Basic authentication for login
+# • Tokens are stored in app_state
+# • This router does not control trading behavior
 #
 # ================================================================
 
+
+auth_routes = APIRouter()
+security = HTTPBasic()
+
+
 # ================================================================
 # AUTHENTICATION
+# ---------------------------------------------------------------
+# Route for validating configured credentials and issuing a temporary
+# access token.
 # ================================================================
 
 @auth_routes.post("/login")
@@ -60,8 +82,11 @@ def login(credentials: HTTPBasicCredentials = Depends(security)):
         "token": token,
     }
 
+
 # ================================================================
 # TOKEN MANAGEMENT
+# ---------------------------------------------------------------
+# Routes for invalidating and verifying temporary access tokens.
 # ================================================================
 
 @auth_routes.post("/logout")
@@ -81,7 +106,7 @@ def logout(request: Request):
 @auth_routes.get("/verify-token")
 def verify_token(request: Request):
     """
-    Verify whether a provided auth token is still valid.
+    Verify whether the provided auth token is currently valid.
     """
     token = request.headers.get("Authorization")
 
