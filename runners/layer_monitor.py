@@ -128,6 +128,49 @@ def store_latest_layer_result(symbols, bar_counts, ranked, target):
     )
 
 
+def store_off_hours_layer_warmup_result(symbols, bar_counts, ranked, target, freshness_report):
+    """
+    Store a non-executable Layer 1/2 warmup target while the market is closed.
+
+    This intentionally does not update app_state["layers"]["latest"], because
+    that object is the Layer 3 handoff used for executable planning. The warmup
+    still matters because layer_engine.evaluate() updates Layer 2's internal
+    previous_target_portfolio, so the first market-open target can be smoothed
+    against an existing target instead of becoming a brand-new first_target.
+    """
+    layers = app_state.setdefault("layers", {})
+
+    ranked_snapshot = []
+    for r in ranked or []:
+        ranked_snapshot.append({
+            "symbol": getattr(r, "symbol", None),
+            "score": float(getattr(r, "score", 0.0) or 0.0),
+            "last_price": float(getattr(r, "last_price", 0.0) or 0.0),
+            "reason": getattr(r, "reason", ""),
+        })
+
+    target = target or {}
+    target_meta = target.get("_meta", {}) if isinstance(target, dict) else {}
+
+    layers["last_off_hours_warmup"] = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "reason": "market_closed_target_warmup",
+        "executable": False,
+        "symbols_evaluated": list(symbols or []),
+        "bar_counts": dict(bar_counts or {}),
+        "ranked": ranked_snapshot,
+        "target_portfolio": dict(target),
+        "target_meta": dict(target_meta),
+        "freshness_report": dict(freshness_report or {}),
+    }
+
+    logging.info(
+        "[Layers] Stored off-hours Layer 1/2 warmup target | ranked_count=%s target_summary=%s",
+        len(ranked_snapshot),
+        target_summary_for_log(target),
+    )
+
+
 async def run_layer_monitor(interval_seconds: int = 600) -> None:
     """
     Runs Layer 1/2 evaluation on a timer.
@@ -358,6 +401,53 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
                         continue
 
                     evaluation_symbols = list(fresh_bars_by_symbol.keys())
+
+                    if not market_is_open:
+                        result = layer_engine.evaluate(
+                            evaluation_symbols,
+                            bars_by_symbol=fresh_bars_by_symbol,
+                        )
+
+                        ranked = result.get("ranked", [])
+                        target = result.get("target_portfolio", {})
+
+                        fresh_bar_counts = {
+                            symbol: len(fresh_bars_by_symbol.get(symbol, []))
+                            for symbol in evaluation_symbols
+                        }
+
+                        store_off_hours_layer_warmup_result(
+                            symbols=evaluation_symbols,
+                            bar_counts=fresh_bar_counts,
+                            ranked=ranked,
+                            target=target,
+                            freshness_report=freshness_report,
+                        )
+
+                        append_layer_cycle_row(
+                            status="warmup_only",
+                            reason="market_closed_target_warmup",
+                            market_is_open=market_is_open,
+                            fresh_count=freshness_report.get("fresh_count") if isinstance(freshness_report, dict) else None,
+                            required_fresh_symbols=required_fresh_symbols,
+                            ranked_count=len(ranked or []),
+                            top_symbols=[
+                                getattr(r, "symbol", None)
+                                for r in (ranked or [])[:5]
+                            ],
+                            target_summary=target_summary_for_log(target),
+                            layer3_summary={},
+                            layer4_result={},
+                        )
+
+                        logging.info(
+                            "[Layers] Market closed; completed Layer 1/2 target warmup. "
+                            "Skipping Layer 3 planning and Layer 4 execution."
+                        )
+
+                        _expire_active_plan_for_market_close()
+
+                        continue
 
                     result = layer_engine.evaluate(
                         evaluation_symbols,

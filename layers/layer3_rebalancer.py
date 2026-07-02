@@ -105,6 +105,26 @@ def clean_target_portfolio(target: dict) -> tuple[dict, float, dict]:
     return target_weights, target_cash_pct, target_meta
 
 
+def _get_off_hours_warmup_target_symbols() -> set[str]:
+    """
+    Return tradable symbols from the latest market-closed Layer 1/2 warmup target.
+
+    This is used only to make Layer 3's startup/open bootstrap smarter. If a
+    warmup target exists, the first market-open bootstrap should only instantly
+    confirm symbols that were already present in the warmed target. Brand-new
+    open-only symbols should survive normal confirmation first.
+    """
+    warmup = app_state.get("layers", {}).get("last_off_hours_warmup")
+
+    if not isinstance(warmup, dict):
+        return set()
+
+    target = warmup.get("target_portfolio", {})
+    target_weights, _, _ = clean_target_portfolio(target)
+
+    return set(target_weights.keys())
+
+
 def _ranked_price_map(latest: dict) -> dict:
     """
     Build symbol -> last_price from the stored Layer 1 ranked snapshot.
@@ -737,6 +757,12 @@ def _maybe_bootstrap_layer3_confirmation(
     - the symbol is currently in the target portfolio
     - the symbol has enough recent bars
     - either the market is open OR LAYER3_MARKET_HOURS_ONLY=false
+
+    If an off-hours Layer 1/2 warmup target exists, bootstrap is restricted to
+    symbols that were already present in that warmup target. This reduces
+    first-open churn by preventing brand-new open-only symbols from being
+    instantly confirmed by bootstrap. Those new symbols can still trade after
+    normal target confirmation cycles.
     """
 
     bootstrap_enabled = _layer3_bool_setting(
@@ -770,11 +796,28 @@ def _maybe_bootstrap_layer3_confirmation(
     latest = app_state.get("layers", {}).get("latest", {})
     bar_counts = latest.get("bar_counts", {}) or {}
 
+    warmup_symbols = _get_off_hours_warmup_target_symbols()
+
+    if warmup_symbols:
+        eligible_target_symbols = set(target_symbols) & warmup_symbols
+        warmup_skipped_symbols = sorted(set(target_symbols) - warmup_symbols)
+    else:
+        eligible_target_symbols = set(target_symbols)
+        warmup_skipped_symbols = []
+
+    if warmup_skipped_symbols:
+        logging.info(
+            "[Layer3Bootstrap] Warmup filter delayed bootstrap for new open-only "
+            "symbols=%s warmup_symbols=%s",
+            warmup_skipped_symbols,
+            sorted(warmup_symbols),
+        )
+
     target_seen_counts = rebalance.setdefault("target_seen_counts", {})
 
     bootstrapped_symbols = []
 
-    for symbol in sorted(target_symbols):
+    for symbol in sorted(eligible_target_symbols):
         bars_available = safe_int(bar_counts.get(symbol, 0), 0)
 
         if bars_available < min_bar_count:
@@ -796,18 +839,27 @@ def _maybe_bootstrap_layer3_confirmation(
 
     rebalance["bootstrap_confirmation_applied"] = True
     rebalance["bootstrap_confirmation_symbols"] = bootstrapped_symbols
+    rebalance["bootstrap_confirmation_warmup_filter_applied"] = bool(warmup_symbols)
+    rebalance["bootstrap_confirmation_warmup_symbols"] = sorted(warmup_symbols)
+    rebalance["bootstrap_confirmation_warmup_skipped_symbols"] = warmup_skipped_symbols
 
     if bootstrapped_symbols:
         logging.warning(
             "[Layer3Bootstrap] Bootstrapped target confirmation for symbols=%s "
-            "required_seen_count=%s min_bar_count=%s",
+            "required_seen_count=%s min_bar_count=%s warmup_filter_applied=%s "
+            "warmup_skipped_symbols=%s",
             bootstrapped_symbols,
             required_seen_count,
             min_bar_count,
+            bool(warmup_symbols),
+            warmup_skipped_symbols,
         )
     else:
         logging.info(
-            "[Layer3Bootstrap] Bootstrap completed but no symbols qualified."
+            "[Layer3Bootstrap] Bootstrap completed but no symbols qualified. "
+            "warmup_filter_applied=%s warmup_skipped_symbols=%s",
+            bool(warmup_symbols),
+            warmup_skipped_symbols,
         )
 
     return bootstrapped_symbols
@@ -1173,6 +1225,14 @@ def run_layer3_dry_run() -> dict:
         ),
         "bootstrap_confirmation_symbols": rebalance.get(
             "bootstrap_confirmation_symbols",
+            [],
+        ),
+        "bootstrap_confirmation_warmup_filter_applied": rebalance.get(
+            "bootstrap_confirmation_warmup_filter_applied",
+            False,
+        ),
+        "bootstrap_confirmation_warmup_skipped_symbols": rebalance.get(
+            "bootstrap_confirmation_warmup_skipped_symbols",
             [],
         ),
 
