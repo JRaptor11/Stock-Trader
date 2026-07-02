@@ -82,6 +82,15 @@ LAYER3_PLAN_FIELDS = [
     "cash_after_estimate",
     "target_seen_count",
     "target_absent_count",
+
+    "bootstrap_confirmation_applied",
+    "bootstrap_confirmation_symbols",
+    "bootstrap_confirmation_warmup_filter_applied",
+    "bootstrap_confirmation_warmup_skipped_symbols",
+    "open_session_warmup_symbols",
+    "open_session_reset_seen_symbols",
+    "open_session_reset_absent_symbols",
+
     "open_order_exists",
     "equity",
     "cash",
@@ -270,6 +279,15 @@ def append_layer3_plan_rows(summary: dict | None, plan: list[dict] | None) -> No
             "cash_after_estimate": row.get("cash_after_estimate"),
             "target_seen_count": row.get("target_seen_count"),
             "target_absent_count": row.get("target_absent_count"),
+
+            "bootstrap_confirmation_applied": summary.get("bootstrap_confirmation_applied"),
+            "bootstrap_confirmation_symbols": summary.get("bootstrap_confirmation_symbols"),
+            "bootstrap_confirmation_warmup_filter_applied": summary.get("bootstrap_confirmation_warmup_filter_applied"),
+            "bootstrap_confirmation_warmup_skipped_symbols": summary.get("bootstrap_confirmation_warmup_skipped_symbols"),
+            "open_session_warmup_symbols": summary.get("open_session_warmup_symbols"),
+            "open_session_reset_seen_symbols": summary.get("open_session_reset_seen_symbols"),
+            "open_session_reset_absent_symbols": summary.get("open_session_reset_absent_symbols"),
+
             "open_order_exists": row.get("open_order_exists"),
             "equity": row.get("equity") or summary.get("equity"),
             "cash": row.get("cash") or summary.get("cash"),
