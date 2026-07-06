@@ -69,6 +69,16 @@ def _layer3_int_setting(name: str, default: int) -> int:
     )
 
 
+def _layer3_float_setting(name: str, default: float) -> float:
+    return safe_float(
+        app_state.get("execution", {}).get(
+            name,
+            getattr(config, name.upper(), default),
+        ),
+        default,
+    )
+
+
 def clean_target_portfolio(target: dict) -> tuple[dict, float, dict]:
     """
     Split Layer 2 target output into:
@@ -105,157 +115,90 @@ def clean_target_portfolio(target: dict) -> tuple[dict, float, dict]:
     return target_weights, target_cash_pct, target_meta
 
 
-def _get_off_hours_warmup_target_symbols() -> set[str]:
+def _get_off_hours_warmup_bootstrap_symbols() -> tuple[set[str], dict]:
     """
-    Return tradable symbols from the latest market-closed Layer 1/2 warmup target.
+    Return warmup target symbols that are fresh enough to trust for bootstrap.
 
-    This is used only to make Layer 3's startup/open bootstrap smarter. If a
-    warmup target exists, the first market-open bootstrap should only instantly
-    confirm symbols that were already present in the warmed target. Brand-new
-    open-only symbols should survive normal confirmation first.
-
-    A stale warmup is ignored. Under normal Render operation, the monitor should
-    refresh this every 10 minutes while the market is closed, so a fresh warmup
-    should exist shortly before the open.
+    Closed-market warmup is useful for target continuity, but a symbol should
+    not receive instant Layer 3 confirmation at the open just because it was in
+    a warmup target built from stale bars. If freshness diagnostics are missing,
+    fall back to the previous behavior and mark that in diagnostics.
     """
     warmup = app_state.get("layers", {}).get("last_off_hours_warmup")
 
+    diagnostics = {
+        "warmup_present": isinstance(warmup, dict),
+        "warmup_target_symbols": [],
+        "warmup_freshness_available": False,
+        "eligible_symbols": [],
+        "stale_symbols": [],
+        "missing_age_symbols": [],
+        "max_age_minutes": None,
+    }
+
     if not isinstance(warmup, dict):
-        return set()
-
-    max_age_minutes = _layer3_int_setting(
-        "layer3_warmup_max_age_minutes",
-        90,
-    )
-
-    timestamp_raw = warmup.get("timestamp")
-
-    try:
-        timestamp_text = str(timestamp_raw or "").replace("Z", "+00:00")
-        warmup_dt = datetime.fromisoformat(timestamp_text)
-
-        if warmup_dt.tzinfo is None:
-            warmup_dt = warmup_dt.replace(tzinfo=timezone.utc)
-
-        age_minutes = (
-            datetime.now(timezone.utc) - warmup_dt.astimezone(timezone.utc)
-        ).total_seconds() / 60.0
-
-        if age_minutes > max_age_minutes:
-            logging.info(
-                "[Layer3Bootstrap] Ignoring stale off-hours warmup target | "
-                "age_minutes=%.1f max_age_minutes=%s",
-                age_minutes,
-                max_age_minutes,
-            )
-            return set()
-
-    except Exception:
-        logging.info(
-            "[Layer3Bootstrap] Ignoring off-hours warmup target because "
-            "timestamp could not be parsed | timestamp=%s",
-            timestamp_raw,
-        )
-        return set()
+        return set(), diagnostics
 
     target = warmup.get("target_portfolio", {})
     target_weights, _, _ = clean_target_portfolio(target)
+    target_symbols = set(target_weights.keys())
+    diagnostics["warmup_target_symbols"] = sorted(target_symbols)
 
-    return set(target_weights.keys())
+    if not target_symbols:
+        return set(), diagnostics
 
+    freshness_report = warmup.get("freshness_report", {})
+    if not isinstance(freshness_report, dict):
+        freshness_report = {}
 
-def _prepare_open_session_confirmation_state(
-    rebalance: dict,
-    target_symbols: set[str],
-    positions: dict,
-    seen_counts: dict,
-    absent_counts: dict,
-    market_is_open: bool,
-) -> None:
-    """
-    Prepare Layer 3 confirmation state once at the first open-market Layer 3
-    cycle of each UTC date.
-
-    Why this exists:
-    - Smart bootstrap only controls bootstrap.
-    - Old target_seen_count / target_absent_count values can still carry over
-      from the previous market session.
-    - Without this reset, a brand-new open-only symbol may trade immediately
-      simply because it had a high seen count yesterday.
-
-    Behavior:
-    - Reset bootstrap_confirmation_applied once per date so the daily bootstrap
-      can run.
-    - If a fresh off-hours warmup target exists:
-        * target symbols not in warmup are limited to 1 seen cycle
-        * held symbols absent from target are limited to 1 absent cycle
-      This forces one more live confirmation cycle before new buys or full exits.
-    """
-    if not market_is_open:
-        return
-
-    session_date = datetime.now(timezone.utc).date().isoformat()
-
-    if rebalance.get("open_session_confirmation_prepared_for_date") == session_date:
-        return
-
-    rebalance["open_session_confirmation_prepared_for_date"] = session_date
-
-    # Allow bootstrap once per trading date instead of once per process lifetime.
-    rebalance["bootstrap_confirmation_applied"] = False
-    rebalance["bootstrap_confirmation_symbols"] = []
-    rebalance["bootstrap_confirmation_warmup_filter_applied"] = False
-    rebalance["bootstrap_confirmation_warmup_symbols"] = []
-    rebalance["bootstrap_confirmation_warmup_skipped_symbols"] = []
-
-    warmup_symbols = _get_off_hours_warmup_target_symbols()
-
-    if not warmup_symbols:
-        logging.info(
-            "[Layer3Bootstrap] Prepared new open-session confirmation state "
-            "for date=%s with no fresh warmup target. Existing confirmation "
-            "counts were left unchanged.",
-            session_date,
-        )
-        return
-
-    target_symbols = set(target_symbols or [])
-    position_symbols = set(positions.keys())
-
-    reset_seen_symbols = []
-    reset_absent_symbols = []
-
-    # New open-only target symbols should not inherit high seen counts from a
-    # previous session. They get this live cycle counted as 1, then must survive
-    # another cycle if L3_REQUIRE_TARGET_CONFIRMATION_CYCLES=2.
-    for symbol in sorted(target_symbols - warmup_symbols):
-        current_seen = safe_int(seen_counts.get(symbol, 0), 0)
-
-        if current_seen > 1:
-            seen_counts[symbol] = 1
-            reset_seen_symbols.append(symbol)
-
-    # Held symbols that disappear from target right at the open should not be
-    # fully exited just because yesterday's absent count was already high.
-    for symbol in sorted(position_symbols - target_symbols):
-        current_absent = safe_int(absent_counts.get(symbol, 0), 0)
-
-        if current_absent > 1:
-            absent_counts[symbol] = 1
-            reset_absent_symbols.append(symbol)
-
-    rebalance["open_session_warmup_symbols"] = sorted(warmup_symbols)
-    rebalance["open_session_reset_seen_symbols"] = reset_seen_symbols
-    rebalance["open_session_reset_absent_symbols"] = reset_absent_symbols
-
-    logging.info(
-        "[Layer3Bootstrap] Prepared new open-session confirmation state | "
-        "date=%s warmup_symbols=%s reset_seen_symbols=%s reset_absent_symbols=%s",
-        session_date,
-        sorted(warmup_symbols),
-        reset_seen_symbols,
-        reset_absent_symbols,
+    max_age_minutes = _layer3_float_setting(
+        "layer3_warmup_bootstrap_max_age_minutes",
+        safe_float(freshness_report.get("max_age_minutes"), 35.0),
     )
+    diagnostics["max_age_minutes"] = max_age_minutes
+
+    latest_ages = freshness_report.get("latest_bar_ages_minutes", {})
+    fresh_symbols = set(
+        _norm_symbol(s)
+        for s in freshness_report.get("fresh_symbols", []) or []
+    )
+
+    if not isinstance(latest_ages, dict) or not latest_ages:
+        # Backward-compatible fallback for older warmup snapshots that did not
+        # store age diagnostics. New monitor code fills this in.
+        diagnostics["warmup_freshness_available"] = False
+        diagnostics["eligible_symbols"] = sorted(target_symbols)
+        return target_symbols, diagnostics
+
+    diagnostics["warmup_freshness_available"] = True
+
+    eligible_symbols = set()
+    stale_symbols = []
+    missing_age_symbols = []
+
+    for symbol in sorted(target_symbols):
+        raw_age = latest_ages.get(symbol)
+
+        if raw_age is None:
+            # If the report explicitly says the symbol is fresh, allow it even
+            # when age is missing. Otherwise avoid bootstrapping it.
+            if symbol in fresh_symbols:
+                eligible_symbols.add(symbol)
+            else:
+                missing_age_symbols.append(symbol)
+            continue
+
+        age = safe_float(raw_age, -1.0)
+        if age >= 0.0 and age <= max_age_minutes:
+            eligible_symbols.add(symbol)
+        else:
+            stale_symbols.append(symbol)
+
+    diagnostics["eligible_symbols"] = sorted(eligible_symbols)
+    diagnostics["stale_symbols"] = stale_symbols
+    diagnostics["missing_age_symbols"] = missing_age_symbols
+
+    return eligible_symbols, diagnostics
 
 
 def _ranked_price_map(latest: dict) -> dict:
@@ -876,6 +819,114 @@ def _cap_planned_notional(decision: str, delta_value: float, current_qty: float,
     return abs_delta, None
 
 
+def _prepare_market_open_session_state(
+    rebalance: dict,
+    *,
+    market_is_open: bool,
+) -> dict:
+    """
+    Reset stale confirmation/bootstrap state once per market-open session.
+
+    This prevents yesterday's target_seen/target_absent counters from instantly
+    confirming buys/exits on the first live cycle of a new day.
+    """
+    today = datetime.now(timezone.utc).date().isoformat()
+
+    state = rebalance.setdefault("open_session", {})
+    reset_seen_symbols = []
+    reset_absent_symbols = []
+
+    if not market_is_open:
+        return {
+            "date": state.get("date"),
+            "is_new_session": False,
+            "reset_seen_symbols": reset_seen_symbols,
+            "reset_absent_symbols": reset_absent_symbols,
+            "live_cycle_count": safe_int(state.get("live_cycle_count", 0), 0),
+        }
+
+    if state.get("date") != today:
+        seen_counts = rebalance.setdefault("target_seen_counts", {})
+        absent_counts = rebalance.setdefault("target_absent_counts", {})
+
+        reset_seen_symbols = sorted([
+            symbol
+            for symbol, count in seen_counts.items()
+            if safe_int(count, 0) != 0
+        ])
+        reset_absent_symbols = sorted([
+            symbol
+            for symbol, count in absent_counts.items()
+            if safe_int(count, 0) != 0
+        ])
+
+        for symbol in list(seen_counts.keys()):
+            seen_counts[symbol] = 0
+
+        for symbol in list(absent_counts.keys()):
+            absent_counts[symbol] = 0
+
+        rebalance["bootstrap_confirmation_applied"] = False
+        rebalance["bootstrap_confirmation_symbols"] = []
+        rebalance["bootstrap_confirmation_warmup_filter_applied"] = False
+        rebalance["bootstrap_confirmation_warmup_symbols"] = []
+        rebalance["bootstrap_confirmation_warmup_skipped_symbols"] = []
+        rebalance["bootstrap_confirmation_warmup_stale_symbols"] = []
+        rebalance["bootstrap_confirmation_warmup_missing_age_symbols"] = []
+
+        state.clear()
+        state["date"] = today
+        state["live_cycle_count"] = 0
+        state["opened_at"] = datetime.now(timezone.utc).isoformat()
+
+        logging.info(
+            "[Layer3Bootstrap] Prepared new open-session confirmation state | "
+            "date=%s reset_seen_symbols=%s reset_absent_symbols=%s",
+            today,
+            reset_seen_symbols,
+            reset_absent_symbols,
+        )
+
+    state["live_cycle_count"] = safe_int(state.get("live_cycle_count", 0), 0) + 1
+    state["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    return {
+        "date": state.get("date"),
+        "is_new_session": bool(
+            reset_seen_symbols
+            or reset_absent_symbols
+            or state.get("live_cycle_count") == 1
+        ),
+        "reset_seen_symbols": reset_seen_symbols,
+        "reset_absent_symbols": reset_absent_symbols,
+        "live_cycle_count": safe_int(state.get("live_cycle_count", 0), 0),
+    }
+
+
+def _opening_transition_info(rebalance: dict, market_is_open: bool) -> dict:
+    transition_cycles = _layer3_int_setting(
+        "layer3_opening_transition_cycles",
+        3,
+    )
+    open_session = (
+        rebalance.get("open_session", {})
+        if isinstance(rebalance.get("open_session"), dict)
+        else {}
+    )
+    live_cycle_count = safe_int(open_session.get("live_cycle_count", 0), 0)
+    active = bool(
+        market_is_open
+        and transition_cycles > 0
+        and 1 <= live_cycle_count <= transition_cycles
+    )
+
+    return {
+        "active": active,
+        "live_cycle_count": live_cycle_count,
+        "transition_cycles": transition_cycles,
+    }
+
+
 def _maybe_bootstrap_layer3_confirmation(
     rebalance: dict,
     target_symbols: set[str],
@@ -929,9 +980,12 @@ def _maybe_bootstrap_layer3_confirmation(
     latest = app_state.get("layers", {}).get("latest", {})
     bar_counts = latest.get("bar_counts", {}) or {}
 
-    warmup_symbols = _get_off_hours_warmup_target_symbols()
+    warmup_symbols, warmup_diagnostics = _get_off_hours_warmup_bootstrap_symbols()
+    warmup_target_symbols = set(
+        warmup_diagnostics.get("warmup_target_symbols", []) or []
+    )
 
-    if warmup_symbols:
+    if warmup_target_symbols:
         eligible_target_symbols = set(target_symbols) & warmup_symbols
         warmup_skipped_symbols = sorted(set(target_symbols) - warmup_symbols)
     else:
@@ -940,10 +994,14 @@ def _maybe_bootstrap_layer3_confirmation(
 
     if warmup_skipped_symbols:
         logging.info(
-            "[Layer3Bootstrap] Warmup filter delayed bootstrap for new open-only "
-            "symbols=%s warmup_symbols=%s",
+            "[Layer3Bootstrap] Warmup freshness filter delayed bootstrap for "
+            "symbols=%s eligible_warmup_symbols=%s stale_warmup_symbols=%s "
+            "missing_age_symbols=%s max_age_minutes=%s",
             warmup_skipped_symbols,
             sorted(warmup_symbols),
+            warmup_diagnostics.get("stale_symbols", []),
+            warmup_diagnostics.get("missing_age_symbols", []),
+            warmup_diagnostics.get("max_age_minutes"),
         )
 
     target_seen_counts = rebalance.setdefault("target_seen_counts", {})
@@ -972,27 +1030,37 @@ def _maybe_bootstrap_layer3_confirmation(
 
     rebalance["bootstrap_confirmation_applied"] = True
     rebalance["bootstrap_confirmation_symbols"] = bootstrapped_symbols
-    rebalance["bootstrap_confirmation_warmup_filter_applied"] = bool(warmup_symbols)
+    rebalance["bootstrap_confirmation_warmup_filter_applied"] = bool(warmup_target_symbols)
     rebalance["bootstrap_confirmation_warmup_symbols"] = sorted(warmup_symbols)
+    rebalance["bootstrap_confirmation_warmup_target_symbols"] = sorted(warmup_target_symbols)
     rebalance["bootstrap_confirmation_warmup_skipped_symbols"] = warmup_skipped_symbols
+    rebalance["bootstrap_confirmation_warmup_stale_symbols"] = warmup_diagnostics.get("stale_symbols", [])
+    rebalance["bootstrap_confirmation_warmup_missing_age_symbols"] = warmup_diagnostics.get("missing_age_symbols", [])
+    rebalance["bootstrap_confirmation_warmup_freshness_available"] = warmup_diagnostics.get("warmup_freshness_available")
+    rebalance["bootstrap_confirmation_warmup_max_age_minutes"] = warmup_diagnostics.get("max_age_minutes")
 
     if bootstrapped_symbols:
         logging.warning(
             "[Layer3Bootstrap] Bootstrapped target confirmation for symbols=%s "
             "required_seen_count=%s min_bar_count=%s warmup_filter_applied=%s "
-            "warmup_skipped_symbols=%s",
+            "warmup_skipped_symbols=%s stale_warmup_symbols=%s missing_age_symbols=%s",
             bootstrapped_symbols,
             required_seen_count,
             min_bar_count,
-            bool(warmup_symbols),
+            bool(warmup_target_symbols),
             warmup_skipped_symbols,
+            warmup_diagnostics.get("stale_symbols", []),
+            warmup_diagnostics.get("missing_age_symbols", []),
         )
     else:
         logging.info(
             "[Layer3Bootstrap] Bootstrap completed but no symbols qualified. "
-            "warmup_filter_applied=%s warmup_skipped_symbols=%s",
-            bool(warmup_symbols),
+            "warmup_filter_applied=%s warmup_skipped_symbols=%s stale_warmup_symbols=%s "
+            "missing_age_symbols=%s",
+            bool(warmup_target_symbols),
             warmup_skipped_symbols,
+            warmup_diagnostics.get("stale_symbols", []),
+            warmup_diagnostics.get("missing_age_symbols", []),
         )
 
     return bootstrapped_symbols
@@ -1057,28 +1125,33 @@ def run_layer3_dry_run() -> dict:
     positions = _get_positions_snapshot()
     open_order_symbols, open_order_details = _get_open_order_symbols()
 
+    market_is_open_now = get_market_is_open(app_state)
+
+    # Reset stale confirmation/bootstrap state once at the first executable
+    # market-open Layer 3 cycle of the session, before this cycle increments
+    # seen/absent counts.
+    open_session_info = _prepare_market_open_session_state(
+        rebalance,
+        market_is_open=market_is_open_now,
+    )
+
+    opening_transition = _opening_transition_info(
+        rebalance,
+        market_is_open_now,
+    )
+
     seen_counts, absent_counts = _update_target_stability(
         rebalance,
         target_weights,
         positions,
     )
 
-    market_is_open = bool(rebalance.get("market_is_open", False))
+    market_is_open = bool(rebalance.get("market_is_open", market_is_open_now))
     confirmation_updates_allowed = bool(
         rebalance.get("confirmation_updates_allowed", False)
     )
 
     target_symbols = set(target_weights.keys())
-
-    if confirmation_updates_allowed:
-        _prepare_open_session_confirmation_state(
-            rebalance=rebalance,
-            target_symbols=target_symbols,
-            positions=positions,
-            seen_counts=seen_counts,
-            absent_counts=absent_counts,
-            market_is_open=market_is_open,
-        )
 
     if confirmation_updates_allowed:
         _maybe_bootstrap_layer3_confirmation(
@@ -1195,9 +1268,28 @@ def run_layer3_dry_run() -> dict:
                 reason = "exit_not_confirmed"
             else:
                 decision = "SELL"
-                reason = "target_removed_confirmed"
-                planned_qty = current_qty if not L3_WHOLE_SHARES_ONLY else float(int(current_qty))
-                planned_notional = planned_qty * live_price
+
+                if opening_transition.get("active"):
+                    # During the first few executable live cycles, avoid full
+                    # liquidation from one target_removed signal. Still permit
+                    # a controlled scale-out so the portfolio can rotate, just
+                    # not all at once.
+                    capped_notional, _ = _cap_planned_notional(
+                        decision="SELL",
+                        delta_value=delta_value,
+                        current_qty=current_qty,
+                        equity=equity,
+                    )
+                    planned_qty = min(
+                        current_qty,
+                        _whole_share_qty(capped_notional, live_price),
+                    )
+                    planned_notional = planned_qty * live_price
+                    reason = "opening_target_removed_scale_out_capped"
+                else:
+                    reason = "target_removed_confirmed"
+                    planned_qty = current_qty if not L3_WHOLE_SHARES_ONLY else float(int(current_qty))
+                    planned_notional = planned_qty * live_price
 
                 if planned_qty <= 0:
                     decision = "HOLD"
@@ -1356,6 +1448,13 @@ def run_layer3_dry_run() -> dict:
         "execution_layer": "layer4",
         "execution_mode": "layer4_direct_compat",
 
+        "open_session_date": open_session_info.get("date"),
+        "open_session_live_cycle_count": open_session_info.get("live_cycle_count"),
+        "open_session_reset_seen_symbols": open_session_info.get("reset_seen_symbols", []),
+        "open_session_reset_absent_symbols": open_session_info.get("reset_absent_symbols", []),
+        "opening_transition_active": opening_transition.get("active"),
+        "opening_transition_cycles": opening_transition.get("transition_cycles"),
+
         "market_is_open": market_is_open,
         "confirmation_updates_allowed": confirmation_updates_allowed,
         "confirmation_updates_blocked_reason": rebalance.get(
@@ -1377,10 +1476,19 @@ def run_layer3_dry_run() -> dict:
             "bootstrap_confirmation_warmup_skipped_symbols",
             [],
         ),
-
-        "bootstrap_confirmation_warmup_skipped_symbols": rebalance.get(
-            "bootstrap_confirmation_warmup_skipped_symbols",
+        "bootstrap_confirmation_warmup_stale_symbols": rebalance.get(
+            "bootstrap_confirmation_warmup_stale_symbols",
             [],
+        ),
+        "bootstrap_confirmation_warmup_missing_age_symbols": rebalance.get(
+            "bootstrap_confirmation_warmup_missing_age_symbols",
+            [],
+        ),
+        "bootstrap_confirmation_warmup_freshness_available": rebalance.get(
+            "bootstrap_confirmation_warmup_freshness_available",
+        ),
+        "bootstrap_confirmation_warmup_max_age_minutes": rebalance.get(
+            "bootstrap_confirmation_warmup_max_age_minutes",
         ),
         "open_session_warmup_symbols": rebalance.get(
             "open_session_warmup_symbols",

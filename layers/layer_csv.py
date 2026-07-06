@@ -36,14 +36,38 @@ LAYER_CYCLE_FIELDS = [
     "ranked_count",
     "top_symbols",
     "target_summary",
+
     "layer3_status",
     "layer3_decision_counts",
+    "confirmation_updates_allowed",
+    "confirmation_updates_blocked_reason",
+
+    "open_session_date",
+    "open_session_live_cycle_count",
+    "open_session_reset_seen_symbols",
+    "open_session_reset_absent_symbols",
+
+    "opening_transition_active",
+    "opening_transition_cycles",
+
+    "bootstrap_confirmation_applied",
+    "bootstrap_confirmation_symbols",
+    "bootstrap_confirmation_warmup_filter_applied",
+    "bootstrap_confirmation_warmup_symbols",
+    "bootstrap_confirmation_warmup_target_symbols",
+    "bootstrap_confirmation_warmup_skipped_symbols",
+    "bootstrap_confirmation_warmup_stale_symbols",
+    "bootstrap_confirmation_warmup_missing_age_symbols",
+    "bootstrap_confirmation_warmup_freshness_available",
+    "bootstrap_confirmation_warmup_max_age_minutes",
+
     "layer4_attempted",
     "layer4_submitted",
     "layer4_skipped",
     "layer4_errors",
     "layer4_blocked_reason",
     "layer4_count_integrity_ok",
+
     "equity",
     "cash",
     "target_cash_pct",
@@ -179,6 +203,63 @@ def _csv_value(value: Any) -> str | int | float | bool | None:
     return value
 
 
+def _rewrite_csv_header_if_needed(path: Path, fieldnames: list[str]) -> bool:
+    """
+    Return True if caller should write a new header.
+
+    If the file already exists but its header is stale, rewrite it with the
+    current fieldnames while preserving existing rows. This keeps CSV schema
+    changes, such as new Layer cycle diagnostics, readable by DictReader.
+    """
+    if not path.exists() or path.stat().st_size == 0:
+        return True
+
+    try:
+        with path.open("r", newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            existing_fieldnames = reader.fieldnames or []
+
+            if existing_fieldnames == fieldnames:
+                return False
+
+            existing_rows = list(reader)
+
+        tmp_path = path.with_name(f"{path.name}.tmp")
+
+        with tmp_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=fieldnames,
+                extrasaction="ignore",
+            )
+            writer.writeheader()
+
+            for row in existing_rows:
+                writer.writerow({
+                    key: _csv_value(row.get(key))
+                    for key in fieldnames
+                })
+
+        tmp_path.replace(path)
+
+        logging.info(
+            "[LayerCSV] Rewrote CSV header for schema update | file=%s old_fields=%s new_fields=%s",
+            path.name,
+            existing_fieldnames,
+            fieldnames,
+        )
+
+        return False
+
+    except Exception:
+        logging.warning(
+            "[LayerCSV] Failed checking/rebuilding CSV header for %s. Appending with existing behavior.",
+            path,
+            exc_info=True,
+        )
+        return False
+
+
 def _append_csv_rows(filename: str, fieldnames: list[str], rows: list[dict]) -> None:
     if not rows:
         return
@@ -187,7 +268,7 @@ def _append_csv_rows(filename: str, fieldnames: list[str], rows: list[dict]) -> 
     path.parent.mkdir(parents=True, exist_ok=True)
 
     with _LAYER_CSV_LOCK:
-        write_header = not path.exists() or path.stat().st_size == 0
+        write_header = _rewrite_csv_header_if_needed(path, fieldnames)
 
         with path.open("a", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(
@@ -425,14 +506,38 @@ def append_layer_cycle_row(
         "ranked_count": ranked_count,
         "top_symbols": top_symbols,
         "target_summary": target_summary,
+
         "layer3_status": layer3_summary.get("status"),
         "layer3_decision_counts": layer3_summary.get("decision_counts"),
+        "confirmation_updates_allowed": layer3_summary.get("confirmation_updates_allowed"),
+        "confirmation_updates_blocked_reason": layer3_summary.get("confirmation_updates_blocked_reason"),
+
+        "open_session_date": layer3_summary.get("open_session_date"),
+        "open_session_live_cycle_count": layer3_summary.get("open_session_live_cycle_count"),
+        "open_session_reset_seen_symbols": layer3_summary.get("open_session_reset_seen_symbols"),
+        "open_session_reset_absent_symbols": layer3_summary.get("open_session_reset_absent_symbols"),
+
+        "opening_transition_active": layer3_summary.get("opening_transition_active"),
+        "opening_transition_cycles": layer3_summary.get("opening_transition_cycles"),
+
+        "bootstrap_confirmation_applied": layer3_summary.get("bootstrap_confirmation_applied"),
+        "bootstrap_confirmation_symbols": layer3_summary.get("bootstrap_confirmation_symbols"),
+        "bootstrap_confirmation_warmup_filter_applied": layer3_summary.get("bootstrap_confirmation_warmup_filter_applied"),
+        "bootstrap_confirmation_warmup_symbols": layer3_summary.get("bootstrap_confirmation_warmup_symbols"),
+        "bootstrap_confirmation_warmup_target_symbols": layer3_summary.get("bootstrap_confirmation_warmup_target_symbols"),
+        "bootstrap_confirmation_warmup_skipped_symbols": layer3_summary.get("bootstrap_confirmation_warmup_skipped_symbols"),
+        "bootstrap_confirmation_warmup_stale_symbols": layer3_summary.get("bootstrap_confirmation_warmup_stale_symbols"),
+        "bootstrap_confirmation_warmup_missing_age_symbols": layer3_summary.get("bootstrap_confirmation_warmup_missing_age_symbols"),
+        "bootstrap_confirmation_warmup_freshness_available": layer3_summary.get("bootstrap_confirmation_warmup_freshness_available"),
+        "bootstrap_confirmation_warmup_max_age_minutes": layer3_summary.get("bootstrap_confirmation_warmup_max_age_minutes"),
+
         "layer4_attempted": layer4_result.get("attempted"),
         "layer4_submitted": layer4_result.get("submitted"),
         "layer4_skipped": layer4_result.get("skipped"),
         "layer4_errors": layer4_result.get("errors"),
         "layer4_blocked_reason": layer4_result.get("blocked_reason"),
         "layer4_count_integrity_ok": layer4_result.get("count_integrity_ok"),
+
         "equity": layer3_summary.get("equity"),
         "cash": layer3_summary.get("cash"),
         "target_cash_pct": layer3_summary.get("target_cash_pct") or target_summary.get("cash_pct"),

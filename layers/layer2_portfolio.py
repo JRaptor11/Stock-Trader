@@ -236,6 +236,7 @@ class Layer2PortfolioBuilder:
         self,
         raw_target: Dict[str, float],
         previous_target: Dict[str, float],
+        context: dict | None = None,
     ) -> tuple[float, float, str, float]:
         raw_weights = self._tradable_weights(raw_target)
         previous_weights = self._tradable_weights(previous_target)
@@ -262,6 +263,19 @@ class Layer2PortfolioBuilder:
                 max_raw_change,
             )
 
+        context = context or {}
+        opening_transition_active = bool(
+            context.get("opening_transition_active")
+        )
+
+        if opening_transition_active:
+            return (
+                self.normal_alpha,
+                self.normal_max_step,
+                "opening_transition_normal_smooth",
+                max_raw_change,
+            )
+
         if max_raw_change >= self.shock_threshold:
             return (
                 self.shock_alpha,
@@ -277,7 +291,11 @@ class Layer2PortfolioBuilder:
             max_raw_change,
         )
 
-    def _apply_adaptive_smoothing(self, raw_target: Dict[str, float]) -> Dict[str, float]:
+    def _apply_adaptive_smoothing(
+        self,
+        raw_target: Dict[str, float],
+        context: dict | None = None,
+    ) -> Dict[str, float]:
         if not self.target_smoothing_enabled:
             raw_target["_meta"]["smoothing_applied"] = False
             raw_target["_meta"]["smoothing_mode"] = "disabled"
@@ -295,6 +313,7 @@ class Layer2PortfolioBuilder:
         alpha, max_step, smoothing_mode, max_raw_change = self._select_smoothing_profile(
             raw_target=raw_target,
             previous_target=previous_target,
+            context=context,
         )
 
         raw_weights = self._tradable_weights(raw_target)
@@ -361,15 +380,22 @@ class Layer2PortfolioBuilder:
             "smoothed_cash_pct": round(cash_pct, 4),
             "raw_symbol_weights": raw_symbol_weights,
             "smoothed_symbol_count": len(smoothed_weights),
+            "opening_transition_active": bool((context or {}).get("opening_transition_active")),
+            "opening_transition_cycle": (context or {}).get("opening_transition_cycle"),
         }
 
         self.previous_target_portfolio = dict(final_target)
 
         return final_target
 
-    def build_target_portfolio(self, ranked_scores: List[StockScore]) -> Dict[str, float]:
+
+    def build_target_portfolio(
+        self,
+        ranked_scores: List[StockScore],
+        context: dict | None = None,
+    ) -> Dict[str, float]:
         raw_target = self._build_raw_target_portfolio(ranked_scores)
-        return self._apply_adaptive_smoothing(raw_target)
+        return self._apply_adaptive_smoothing(raw_target, context=context)
 
 
 class Layer2PortfolioEngine:
@@ -387,13 +413,21 @@ class Layer2PortfolioEngine:
         self.ranker = Layer1StockRanker(market_data_buffer)
         self.portfolio_builder = Layer2PortfolioBuilder(top_n=top_n)
 
-    def evaluate(self, symbols: List[str], bars_by_symbol: Dict[str, list] | None = None) -> dict:
+    def evaluate(
+        self,
+        symbols: List[str],
+        bars_by_symbol: Dict[str, list] | None = None,
+        context: dict | None = None,
+    ) -> dict:
         if bars_by_symbol is not None:
             ranked = self.ranker.rank_from_bars(bars_by_symbol)
         else:
             ranked = self.ranker.rank(symbols)
 
-        target = self.portfolio_builder.build_target_portfolio(ranked)
+        target = self.portfolio_builder.build_target_portfolio(
+            ranked,
+            context=context,
+        )
 
         return {
             "ranked": ranked,

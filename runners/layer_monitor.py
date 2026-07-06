@@ -74,6 +74,50 @@ def _fresh_symbol_requirement(symbol_count: int) -> int:
     return max(1, min(symbol_count, max(min_symbols, ratio_required)))
 
 
+def _layer2_evaluation_context(market_is_open: bool, *, count_live_cycle: bool) -> dict:
+    """
+    Build context passed into Layer 2 smoothing.
+
+    We count only executable market-open Layer 1/2 evaluations, not skipped
+    freshness cycles and not closed-market warmups. This lets Layer 2 damp
+    large target shocks for the first few real live cycles after the open.
+    """
+    layers = app_state.setdefault("layers", {})
+    state = layers.setdefault("opening_transition", {})
+
+    today = datetime.now(timezone.utc).date().isoformat()
+
+    if state.get("date") != today:
+        state.clear()
+        state["date"] = today
+        state["live_evaluation_count"] = 0
+
+    transition_cycles = safe_int(
+        _execution_setting("layer2_opening_transition_smoothing_cycles", 3),
+        3,
+    )
+
+    if market_is_open and count_live_cycle:
+        state["live_evaluation_count"] = safe_int(
+            state.get("live_evaluation_count", 0),
+            0,
+        ) + 1
+
+    live_cycle = safe_int(state.get("live_evaluation_count", 0), 0)
+    active = bool(market_is_open and live_cycle > 0 and live_cycle <= transition_cycles)
+
+    state["transition_cycles"] = transition_cycles
+    state["active"] = active
+    state["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    return {
+        "market_is_open": bool(market_is_open),
+        "opening_transition_active": active,
+        "opening_transition_cycle": live_cycle if market_is_open else None,
+        "opening_transition_cycles": transition_cycles,
+    }
+
+
 def store_latest_layer_result(symbols, bar_counts, ranked, target):
     """
     Store the latest Layer 1/2 result in app_state so Layer 3 can read it.
@@ -291,26 +335,20 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
                         35.0,
                     )
 
+                    freshness_probe_bars_by_symbol, freshness_report = filter_fresh_bars(
+                        bars_by_symbol,
+                        symbols,
+                        max_age_minutes=max_age_minutes,
+                    )
+
                     if freshness_required:
-                        fresh_bars_by_symbol, freshness_report = filter_fresh_bars(
-                            bars_by_symbol,
-                            symbols,
-                            max_age_minutes=max_age_minutes,
-                        )
+                        fresh_bars_by_symbol = freshness_probe_bars_by_symbol
                     else:
+                        # Off-hours freshness is diagnostic only. We still evaluate
+                        # the full bar set for warmup smoothing, but keep the real
+                        # age/fresh/stale report so Layer 3 bootstrap can avoid
+                        # trusting stale warmup symbols at the open.
                         fresh_bars_by_symbol = bars_by_symbol
-                        freshness_report = {
-                            "max_age_minutes": max_age_minutes,
-                            "fresh_symbols": list(symbols),
-                            "stale_symbols": [],
-                            "missing_symbols": [],
-                            "fresh_count": len(symbols),
-                            "stale_count": 0,
-                            "total_symbols": len(symbols),
-                            "latest_bar_times": {},
-                            "latest_bar_ages_minutes": {},
-                            "freshness_required": False,
-                        }
 
                     freshness_report["freshness_required"] = freshness_required
                     freshness_report["market_is_open"] = market_is_open
@@ -321,12 +359,19 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
                     if not freshness_required:
                         logging.info(
                             "[Bars] Freshness check | required=False market_is_open=%s "
-                            "status=not_enforced symbol_count=%s max_age_minutes=%s",
+                            "status=not_enforced fresh=%s/%s stale=%s missing=%s ages=%s "
+                            "max_age_minutes=%s",
                             market_is_open,
-                            len(symbols or []),
+                            freshness_report.get("fresh_count", 0),
+                            freshness_report.get("total_symbols", len(symbols or [])),
+                            freshness_report.get("stale_symbols", []),
+                            freshness_report.get("missing_symbols", []),
+                            freshness_report.get("latest_bar_ages_minutes", {}),
                             max_age_minutes,
                         )
+
                     else:
+
                         logging.info(
                             "[Bars] Freshness check | required=True market_is_open=%s "
                             "max_age_minutes=%s fresh=%s/%s required_fresh_symbols=%s "
@@ -394,6 +439,10 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
                         result = layer_engine.evaluate(
                             evaluation_symbols,
                             bars_by_symbol=fresh_bars_by_symbol,
+                            context=_layer2_evaluation_context(
+                                market_is_open=False,
+                                count_live_cycle=False,
+                            ),
                         )
 
                         ranked = result.get("ranked", [])
@@ -440,6 +489,10 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
                     result = layer_engine.evaluate(
                         evaluation_symbols,
                         bars_by_symbol=fresh_bars_by_symbol,
+                        context=_layer2_evaluation_context(
+                            market_is_open=True,
+                            count_live_cycle=True,
+                        ),
                     )
 
                     logging.info("[Layers] Evaluation complete.")
@@ -487,7 +540,8 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
                     logging.info(
                         "[Layer3] Plan summary | cycle_id=%s plan_id=%s status=%s decisions=%s "
                         "equity=$%s cash=$%s target_symbols=%s target_cash_pct=%s "
-                        "open_orders=%s fail_safe_active=%s",
+                        "open_orders=%s fail_safe_active=%s opening_transition=%s open_cycle=%s "
+                        "warmup_stale=%s warmup_skipped=%s",
                         layer3_summary.get("cycle_id"),
                         layer3_summary.get("plan_id"),
                         layer3_summary.get("status"),
@@ -498,6 +552,10 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
                         layer3_summary.get("target_cash_pct"),
                         layer3_summary.get("open_order_count"),
                         layer3_summary.get("fail_safe_active"),
+                        layer3_summary.get("opening_transition_active"),
+                        layer3_summary.get("open_session_live_cycle_count"),
+                        layer3_summary.get("bootstrap_confirmation_warmup_stale_symbols"),
+                        layer3_summary.get("bootstrap_confirmation_warmup_skipped_symbols"),
                     )
 
                     layer4_execution_result = execute_layer4_plan(
