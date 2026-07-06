@@ -372,26 +372,16 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
 
                         continue
 
-                    if not market_is_open:
-                        layers = app_state.setdefault("layers", {})
-                        layers["last_off_hours_cycle"] = {
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                            "reason": "market_closed_observation_only",
-                            "symbols": list(symbols),
-                            "bar_counts": bar_counts,
-                            "freshness_report": freshness_report,
-                        }
+                    evaluation_symbols = list(fresh_bars_by_symbol.keys())
 
-                        logging.info(
-                            "[Layers] Market closed; completed observation-only bar/freshness cycle. "
-                            "Skipping Layer 1/2 target update, Layer 3 planning, and Layer 4 execution."
+                    if not evaluation_symbols:
+                        logging.warning(
+                            "[Layers] Skipping Layer 1/2/3/4 because no evaluation symbols are available."
                         )
 
-                        _expire_active_plan_for_market_close()
-
                         append_layer_cycle_row(
-                            status="market_closed_observation_only",
-                            reason="market_closed",
+                            status="skipped",
+                            reason="no_evaluation_symbols",
                             market_is_open=market_is_open,
                             fresh_count=freshness_report.get("fresh_count") if isinstance(freshness_report, dict) else None,
                             required_fresh_symbols=required_fresh_symbols,
@@ -399,8 +389,6 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
                         )
 
                         continue
-
-                    evaluation_symbols = list(fresh_bars_by_symbol.keys())
 
                     if not market_is_open:
                         result = layer_engine.evaluate(
