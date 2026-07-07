@@ -259,6 +259,8 @@ def dev_route_list():
                 "/layers/orders-csv": "GET — Download layer4_orders.csv",
                 "/layers/portfolio-snapshots": "GET — View parsed layer_portfolio_snapshots.csv rows as JSON",
                 "/layers/portfolio-snapshots-csv": "GET — Download layer_portfolio_snapshots.csv",
+                "/layers/shadow": "GET — View parsed layer4_shadow.csv rows as JSON",
+                "/layers/shadow-csv": "GET — Download layer4_shadow.csv",
                 "/layers/dashboard": "GET — Summarize latest Layer cycle health, skips, plan state, and order state",
                 "/layers/cycle/{cycle_id}": "GET — Join cycle, plan, order, and snapshot rows for one Layer cycle",
                 "/layers/symbol/{symbol}": "GET — Summarize Layer 3 / Layer 4 behavior for one symbol",

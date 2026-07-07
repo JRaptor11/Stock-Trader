@@ -20,6 +20,7 @@ LAYER_CSV_FILES = {
     "cycles": "layer_cycles.csv",
     "plans": "layer3_plans.csv",
     "orders": "layer4_orders.csv",
+    "shadow": "layer4_shadow.csv",
     "portfolio-snapshots": "layer_portfolio_snapshots.csv",
 }
 
@@ -67,6 +68,12 @@ LAYER_CYCLE_FIELDS = [
     "layer4_errors",
     "layer4_blocked_reason",
     "layer4_count_integrity_ok",
+
+    "layer4_shadow_rows",
+    "layer4_shadow_execute",
+    "layer4_shadow_delay",
+    "layer4_shadow_reduce",
+    "layer4_shadow_block",
 
     "equity",
     "cash",
@@ -149,6 +156,64 @@ LAYER4_ORDER_FIELDS = [
     "blocked_reason",
     "duration_seconds",
     "count_integrity_ok",
+]
+
+
+LAYER4_SHADOW_FIELDS = [
+    "timestamp",
+    "finished_at",
+    "cycle_id",
+    "plan_id",
+    "row_id",
+    "symbol",
+    "side",
+    "decision",
+    "layer3_reason",
+    "shadow_action",
+    "shadow_confidence",
+    "shadow_reason",
+    "would_execute",
+    "would_delay",
+    "would_reduce",
+    "would_block",
+    "recommended_qty_multiplier",
+    "live_pressure_score",
+    "buy_chase_risk",
+    "sell_strength_protection",
+    "sell_classification",
+    "position_green",
+    "position_unrealized_plpc",
+    "live_tick_count",
+    "live_1m_bar_count",
+    "live_5m_bar_count",
+    "live_price",
+    "row_price",
+    "live_vs_row_price_pct",
+    "latest_1m_close",
+    "latest_5m_close",
+    "latest_1m_volume",
+    "latest_5m_volume",
+    "live_ret_30s",
+    "live_ret_60s",
+    "live_ret_300s",
+    "live_range_component",
+    "live_volume_component",
+    "qty",
+    "notional",
+    "price",
+    "current_qty",
+    "target_qty",
+    "current_weight",
+    "target_weight",
+    "delta_weight",
+    "relative_drift",
+    "shadow_row_count",
+    "shadow_execute_count",
+    "shadow_delay_count",
+    "shadow_reduce_count",
+    "shadow_block_count",
+    "shadow_error",
+    "duration_seconds",
 ]
 
 
@@ -477,6 +542,83 @@ def append_layer4_order_rows(result: dict | None) -> None:
         logging.warning("[LayerCSV] Failed to append Layer 4 order rows.", exc_info=True)
 
 
+def append_layer4_shadow_rows(result: dict | None) -> None:
+    result = result or {}
+    shadow_rows = result.get("rows", []) or []
+
+    rows = []
+
+    for shadow in shadow_rows:
+        if not isinstance(shadow, dict):
+            continue
+
+        rows.append({
+            "timestamp": shadow.get("timestamp") or datetime.utcnow().isoformat(),
+            "finished_at": result.get("finished_at"),
+            "cycle_id": shadow.get("cycle_id") or result.get("cycle_id"),
+            "plan_id": shadow.get("plan_id") or result.get("plan_id"),
+            "row_id": shadow.get("row_id"),
+            "symbol": shadow.get("symbol"),
+            "side": shadow.get("side"),
+            "decision": shadow.get("decision"),
+            "layer3_reason": shadow.get("layer3_reason"),
+            "shadow_action": shadow.get("shadow_action"),
+            "shadow_confidence": shadow.get("shadow_confidence"),
+            "shadow_reason": shadow.get("shadow_reason"),
+            "would_execute": shadow.get("would_execute"),
+            "would_delay": shadow.get("would_delay"),
+            "would_reduce": shadow.get("would_reduce"),
+            "would_block": shadow.get("would_block"),
+            "recommended_qty_multiplier": shadow.get("recommended_qty_multiplier"),
+            "live_pressure_score": shadow.get("live_pressure_score"),
+            "buy_chase_risk": shadow.get("buy_chase_risk"),
+            "sell_strength_protection": shadow.get("sell_strength_protection"),
+            "sell_classification": shadow.get("sell_classification"),
+            "position_green": shadow.get("position_green"),
+            "position_unrealized_plpc": shadow.get("position_unrealized_plpc"),
+            "live_tick_count": shadow.get("live_tick_count"),
+            "live_1m_bar_count": shadow.get("live_1m_bar_count"),
+            "live_5m_bar_count": shadow.get("live_5m_bar_count"),
+            "live_price": shadow.get("live_price"),
+            "row_price": shadow.get("row_price"),
+            "live_vs_row_price_pct": shadow.get("live_vs_row_price_pct"),
+            "latest_1m_close": shadow.get("latest_1m_close"),
+            "latest_5m_close": shadow.get("latest_5m_close"),
+            "latest_1m_volume": shadow.get("latest_1m_volume"),
+            "latest_5m_volume": shadow.get("latest_5m_volume"),
+            "live_ret_30s": shadow.get("live_ret_30s"),
+            "live_ret_60s": shadow.get("live_ret_60s"),
+            "live_ret_300s": shadow.get("live_ret_300s"),
+            "live_range_component": shadow.get("live_range_component"),
+            "live_volume_component": shadow.get("live_volume_component"),
+            "qty": shadow.get("qty"),
+            "notional": shadow.get("notional"),
+            "price": shadow.get("price"),
+            "current_qty": shadow.get("current_qty"),
+            "target_qty": shadow.get("target_qty"),
+            "current_weight": shadow.get("current_weight"),
+            "target_weight": shadow.get("target_weight"),
+            "delta_weight": shadow.get("delta_weight"),
+            "relative_drift": shadow.get("relative_drift"),
+            "shadow_row_count": result.get("row_count"),
+            "shadow_execute_count": result.get("execute_count"),
+            "shadow_delay_count": result.get("delay_count"),
+            "shadow_reduce_count": result.get("reduce_count"),
+            "shadow_block_count": result.get("block_count"),
+            "shadow_error": result.get("error"),
+            "duration_seconds": result.get("duration_seconds"),
+        })
+
+    try:
+        _append_csv_rows(
+            LAYER_CSV_FILES["shadow"],
+            LAYER4_SHADOW_FIELDS,
+            rows,
+        )
+    except Exception:
+        logging.warning("[LayerCSV] Failed to append Layer 4 shadow rows.", exc_info=True)
+
+
 def append_layer_cycle_row(
     *,
     status: str,
@@ -493,6 +635,7 @@ def append_layer_cycle_row(
     target_summary = target_summary or {}
     layer3_summary = layer3_summary or {}
     layer4_result = layer4_result or {}
+    layer4_shadow_result = layer4_result.get("shadow_result") or {}
 
     row = {
         "timestamp": datetime.utcnow().isoformat(),
@@ -537,6 +680,12 @@ def append_layer_cycle_row(
         "layer4_errors": layer4_result.get("errors"),
         "layer4_blocked_reason": layer4_result.get("blocked_reason"),
         "layer4_count_integrity_ok": layer4_result.get("count_integrity_ok"),
+
+        "layer4_shadow_rows": layer4_shadow_result.get("row_count"),
+        "layer4_shadow_execute": layer4_shadow_result.get("execute_count"),
+        "layer4_shadow_delay": layer4_shadow_result.get("delay_count"),
+        "layer4_shadow_reduce": layer4_shadow_result.get("reduce_count"),
+        "layer4_shadow_block": layer4_shadow_result.get("block_count"),
 
         "equity": layer3_summary.get("equity"),
         "cash": layer3_summary.get("cash"),

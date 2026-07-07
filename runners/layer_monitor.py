@@ -32,6 +32,51 @@ def _execution_setting(name: str, default):
     )
 
 
+def _live_bar_health_snapshot(symbols: list[str]) -> dict:
+    md = app_state.get("market_data", {}).get("buffer")
+    if not md:
+        return {}
+
+    out = {}
+
+    for symbol in symbols or []:
+        try:
+            prices = list(md.get_recent_prices(symbol) or [])
+            bars_1m = (
+                list(md.get_live_bars(symbol, timeframe_seconds=60, limit=3) or [])
+                if hasattr(md, "get_live_bars")
+                else []
+            )
+            bars_5m = (
+                list(md.get_live_bars(symbol, timeframe_seconds=300, limit=3) or [])
+                if hasattr(md, "get_live_bars")
+                else []
+            )
+
+            latest_1m = bars_1m[-1] if bars_1m else {}
+            latest_5m = bars_5m[-1] if bars_5m else {}
+
+            out[symbol] = {
+                "tick_count": len(prices),
+                "live_price": prices[-1] if prices else None,
+                "live_1m_bar_count": len(bars_1m),
+                "live_5m_bar_count": len(bars_5m),
+                "latest_1m_close": latest_1m.get("close"),
+                "latest_5m_close": latest_5m.get("close"),
+                "latest_1m_volume": latest_1m.get("volume"),
+                "latest_5m_volume": latest_5m.get("volume"),
+                "latest_1m_trade_count": latest_1m.get("trade_count"),
+                "latest_5m_trade_count": latest_5m.get("trade_count"),
+            }
+
+        except Exception as exc:
+            out[symbol] = {
+                "error": str(exc),
+            }
+
+    return out
+
+
 def _expire_active_plan_for_market_close() -> None:
     layers = app_state.setdefault("layers", {})
     active_plan = layers.get("active_execution_plan")
@@ -278,6 +323,14 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
                             for symbol in symbols
                         }
                         logging.info("[Layers] Tick counts: %s", tick_counts)
+
+                        live_bar_health = _live_bar_health_snapshot(symbols)
+                        app_state.setdefault("layers", {})["live_bar_health"] = live_bar_health
+
+                        logging.info(
+                            "[LiveBars] Health snapshot | %s",
+                            live_bar_health,
+                        )
 
                     required_fresh_symbols = _fresh_symbol_requirement(len(symbols))
 

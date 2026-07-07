@@ -1140,10 +1140,25 @@ def run_layer3_dry_run() -> dict:
         market_is_open_now,
     )
 
+    market_is_open_now = get_market_is_open(app_state)
+    open_session_info = _prepare_market_open_session_state(
+        rebalance,
+        market_is_open=market_is_open_now,
+    )
+    opening_transition = _opening_transition_info(
+        rebalance,
+        market_is_open_now,
+    )
+
     seen_counts, absent_counts = _update_target_stability(
         rebalance,
         target_weights,
         positions,
+    )
+
+    market_is_open = bool(rebalance.get("market_is_open", False))
+    confirmation_updates_allowed = bool(
+        rebalance.get("confirmation_updates_allowed", False)
     )
 
     market_is_open = bool(rebalance.get("market_is_open", market_is_open_now))

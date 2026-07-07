@@ -44,7 +44,9 @@ def ensure_app_state_structure() -> None:
     layers.setdefault("latest", {})
     layers.setdefault("rebalance", {})
     layers.setdefault("layer4", {})
-    layers.setdefault("layer4_execution", {})
+    layers.setdefault("layer4_shadow", {})
+    layers.setdefault("layer4_execution", {})  # temporary backward-compatible bucket
+    layers.setdefault("layer5_execution", {})
     layers.setdefault("active_execution_plan", None)
     layers.setdefault("execution_plan_history", [])
 
@@ -155,6 +157,18 @@ def initialize_layer_state(top_n: int = 5, force_recreate_engine: bool = False) 
     layer4_execution.setdefault("last_plan_id", None)
     layer4_execution.setdefault("last_attempted_at", None)
     layer4_execution.setdefault("last_result", None)
+
+    layer4_shadow = layers.setdefault("layer4_shadow", {})
+    layer4_shadow.setdefault("last_cycle_id", None)
+    layer4_shadow.setdefault("last_plan_id", None)
+    layer4_shadow.setdefault("last_run_at", None)
+    layer4_shadow.setdefault("last_result", None)
+
+    layer5_execution = layers.setdefault("layer5_execution", {})
+    layer5_execution.setdefault("last_cycle_id", None)
+    layer5_execution.setdefault("last_plan_id", None)
+    layer5_execution.setdefault("last_attempted_at", None)
+    layer5_execution.setdefault("last_result", None)
 
     # Current Layer 3 plan that Layer 4 works.
     layers.setdefault("active_execution_plan", None)

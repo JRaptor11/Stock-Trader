@@ -108,6 +108,15 @@ app_state = {
             "last_attempted_at": None,
             "last_result": None,
         },
+
+        "layer4": {},
+        "layer4_shadow": {},
+
+        # Keep old bucket temporarily in case routes still read it.
+        "layer4_execution": {},
+
+        # New home for literal broker execution.
+        "layer5_execution": {},
     },
 
     # ─────────────────────────────────────────────
@@ -158,7 +167,7 @@ app_state = {
     "market_data": {  # NEW
         # Keep this comfortably above VolatilityScorer.lookback so volatility,
         # momentum, and future derived-feature calculations have enough history.
-        "buffer": MarketDataBuffer(maxlen_prices=100, maxlen_volumes=100),
+        "buffer": MarketDataBuffer(maxlen_prices=2000, maxlen_volumes=2000),
     },
 
 
