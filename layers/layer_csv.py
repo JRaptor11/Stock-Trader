@@ -22,6 +22,7 @@ LAYER_CSV_FILES = {
     "orders": "layer4_orders.csv",
     "shadow": "layer4_shadow.csv",
     "portfolio-snapshots": "layer_portfolio_snapshots.csv",
+    "live-bar-health": "layer_live_bar_health.csv",
 }
 
 
@@ -40,6 +41,11 @@ LAYER_CYCLE_FIELDS = [
 
     "layer3_status",
     "layer3_decision_counts",
+
+    "account_source",
+    "broker_snapshot_ok",
+    "account_snapshot_error",
+
     "confirmation_updates_allowed",
     "confirmation_updates_blocked_reason",
 
@@ -141,6 +147,11 @@ LAYER4_ORDER_FIELDS = [
     "row_id",
     "symbol",
     "side",
+    "submitted_side",
+    "order_request_side",
+    "order_type",
+    "time_in_force",
+    "market_is_open",
     "status",
     "qty",
     "notional",
@@ -148,7 +159,20 @@ LAYER4_ORDER_FIELDS = [
     "order_id",
     "reason",
     "error",
+    "broker_error_code",
+    "broker_error_message",
+    "broker_error_existing_qty",
+    "broker_error_available_qty",
+    "broker_error_held_for_orders",
+    "broker_error_symbol",
+    "broker_error_raw",
+    "cooldown_until",
+    "cooldown_remaining_seconds",
+    "position_qty_before",
+    "open_order_count_for_symbol",
     "cash",
+    "cash_budget_before",
+    "cash_budget_after",
     "attempted",
     "submitted",
     "skipped",
@@ -235,6 +259,26 @@ LAYER_PORTFOLIO_FIELDS = [
     "equity",
     "decision",
     "reason",
+]
+
+LAYER_LIVE_BAR_HEALTH_FIELDS = [
+    "timestamp",
+    "cycle_id",
+    "symbol",
+    "market_is_open",
+    "tick_count",
+    "live_1m_bar_count",
+    "live_5m_bar_count",
+    "latest_live_price",
+    "latest_1m_close",
+    "latest_5m_close",
+    "latest_1m_volume",
+    "latest_5m_volume",
+    "rest_bar_count",
+    "rest_latest_close",
+    "rest_latest_timestamp",
+    "rest_bar_age_minutes",
+    "live_vs_rest_close_pct",
 ]
 
 
@@ -530,6 +574,24 @@ def append_layer4_order_rows(result: dict | None) -> None:
             "blocked_reason": result.get("blocked_reason"),
             "duration_seconds": result.get("duration_seconds"),
             "count_integrity_ok": result.get("count_integrity_ok"),
+            "submitted_side": order.get("submitted_side"),
+            "order_request_side": order.get("order_request_side"),
+            "order_type": order.get("order_type"),
+            "time_in_force": order.get("time_in_force"),
+            "market_is_open": order.get("market_is_open"),
+            "broker_error_code": order.get("broker_error_code"),
+            "broker_error_message": order.get("broker_error_message"),
+            "broker_error_existing_qty": order.get("broker_error_existing_qty"),
+            "broker_error_available_qty": order.get("broker_error_available_qty"),
+            "broker_error_held_for_orders": order.get("broker_error_held_for_orders"),
+            "broker_error_symbol": order.get("broker_error_symbol"),
+            "broker_error_raw": order.get("broker_error_raw"),
+            "cooldown_until": order.get("cooldown_until"),
+            "cooldown_remaining_seconds": order.get("cooldown_remaining_seconds"),
+            "position_qty_before": order.get("position_qty_before"),
+            "open_order_count_for_symbol": order.get("open_order_count_for_symbol"),
+            "cash_budget_before": order.get("cash_budget_before"),
+            "cash_budget_after": order.get("cash_budget_after"),
         })
 
     try:
@@ -619,6 +681,22 @@ def append_layer4_shadow_rows(result: dict | None) -> None:
         logging.warning("[LayerCSV] Failed to append Layer 4 shadow rows.", exc_info=True)
 
 
+def append_layer_live_bar_health_rows(rows: list[dict] | None) -> None:
+    rows = rows or []
+
+    if not rows:
+        return
+
+    try:
+        _append_csv_rows(
+            LAYER_CSV_FILES["live-bar-health"],
+            LAYER_LIVE_BAR_HEALTH_FIELDS,
+            rows,
+        )
+    except Exception:
+        logging.warning("[LayerCSV] Failed to append live bar health rows.", exc_info=True)
+
+
 def append_layer_cycle_row(
     *,
     status: str,
@@ -652,6 +730,11 @@ def append_layer_cycle_row(
 
         "layer3_status": layer3_summary.get("status"),
         "layer3_decision_counts": layer3_summary.get("decision_counts"),
+
+        "account_source": layer3_summary.get("account_source"),
+        "broker_snapshot_ok": layer3_summary.get("broker_snapshot_ok"),
+        "account_snapshot_error": layer3_summary.get("account_snapshot_error"),
+
         "confirmation_updates_allowed": layer3_summary.get("confirmation_updates_allowed"),
         "confirmation_updates_blocked_reason": layer3_summary.get("confirmation_updates_blocked_reason"),
 

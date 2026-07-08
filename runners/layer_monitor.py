@@ -22,7 +22,7 @@ from market.bar_data import (
 from core.state import app_state
 from layers.layer3_rebalancer import run_layer3_dry_run
 from layers.layer4_executor import execute_layer4_plan
-from layers.layer_csv import append_layer_cycle_row
+from layers.layer_csv import append_layer_cycle_row, append_layer_live_bar_health_rows
 
 
 def _execution_setting(name: str, default):
@@ -30,51 +30,6 @@ def _execution_setting(name: str, default):
         name,
         getattr(config, name.upper(), default),
     )
-
-
-def _live_bar_health_snapshot(symbols: list[str]) -> dict:
-    md = app_state.get("market_data", {}).get("buffer")
-    if not md:
-        return {}
-
-    out = {}
-
-    for symbol in symbols or []:
-        try:
-            prices = list(md.get_recent_prices(symbol) or [])
-            bars_1m = (
-                list(md.get_live_bars(symbol, timeframe_seconds=60, limit=3) or [])
-                if hasattr(md, "get_live_bars")
-                else []
-            )
-            bars_5m = (
-                list(md.get_live_bars(symbol, timeframe_seconds=300, limit=3) or [])
-                if hasattr(md, "get_live_bars")
-                else []
-            )
-
-            latest_1m = bars_1m[-1] if bars_1m else {}
-            latest_5m = bars_5m[-1] if bars_5m else {}
-
-            out[symbol] = {
-                "tick_count": len(prices),
-                "live_price": prices[-1] if prices else None,
-                "live_1m_bar_count": len(bars_1m),
-                "live_5m_bar_count": len(bars_5m),
-                "latest_1m_close": latest_1m.get("close"),
-                "latest_5m_close": latest_5m.get("close"),
-                "latest_1m_volume": latest_1m.get("volume"),
-                "latest_5m_volume": latest_5m.get("volume"),
-                "latest_1m_trade_count": latest_1m.get("trade_count"),
-                "latest_5m_trade_count": latest_5m.get("trade_count"),
-            }
-
-        except Exception as exc:
-            out[symbol] = {
-                "error": str(exc),
-            }
-
-    return out
 
 
 def _expire_active_plan_for_market_close() -> None:
@@ -101,6 +56,134 @@ def _expire_active_plan_for_market_close() -> None:
             "[Layers] Expired active execution plan because market is closed | plan_id=%s",
             active_plan.get("plan_id"),
         )
+
+
+def _bar_value(bar, key: str, default=None):
+    if isinstance(bar, dict):
+        return bar.get(key, default)
+    return getattr(bar, key, default)
+
+
+def _latest_rest_bar_timestamp(bar) -> datetime | None:
+    raw = _bar_value(bar, "timestamp") or _bar_value(bar, "t")
+
+    if isinstance(raw, datetime):
+        return raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
+
+    if raw is None:
+        return None
+
+    try:
+        parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def _latest_close_from_bar(bar) -> float | None:
+    value = _bar_value(bar, "close")
+    close = safe_float(value, 0.0)
+    return close if close > 0 else None
+
+
+def _build_live_bar_health_rows(
+    *,
+    symbols: list[str],
+    rest_bars_by_symbol: dict,
+    market_is_open: bool,
+    cycle_id=None,
+) -> list[dict]:
+    md = app_state.get("market_data", {}).get("buffer")
+
+    if md is None:
+        return []
+
+    rows = []
+    now = datetime.now(timezone.utc)
+
+    for symbol in symbols:
+        try:
+            recent_prices = list(md.get_recent_prices(symbol) or [])
+            bars_1m = list(md.get_live_bars(symbol, timeframe_seconds=60, limit=10) or []) if hasattr(md, "get_live_bars") else []
+            bars_5m = list(md.get_live_bars(symbol, timeframe_seconds=300, limit=6) or []) if hasattr(md, "get_live_bars") else []
+
+            latest_live_price = safe_float(recent_prices[-1], 0.0) if recent_prices else 0.0
+            latest_1m = bars_1m[-1] if bars_1m else None
+            latest_5m = bars_5m[-1] if bars_5m else None
+
+            rest_bars = list(rest_bars_by_symbol.get(symbol, []) or [])
+            latest_rest = rest_bars[-1] if rest_bars else None
+            rest_close = _latest_close_from_bar(latest_rest) if latest_rest is not None else None
+            rest_ts = _latest_rest_bar_timestamp(latest_rest) if latest_rest is not None else None
+
+            rest_age_minutes = None
+            if rest_ts is not None:
+                rest_age_minutes = round(max(0.0, (now - rest_ts).total_seconds() / 60.0), 3)
+
+            live_vs_rest_close_pct = None
+            if latest_live_price > 0 and rest_close and rest_close > 0:
+                live_vs_rest_close_pct = round((latest_live_price - rest_close) / rest_close, 6)
+
+            rows.append({
+                "timestamp": now.isoformat(),
+                "cycle_id": cycle_id,
+                "symbol": symbol,
+                "market_is_open": market_is_open,
+                "tick_count": len(recent_prices),
+                "live_1m_bar_count": len(bars_1m),
+                "live_5m_bar_count": len(bars_5m),
+                "latest_live_price": round(latest_live_price, 4) if latest_live_price > 0 else None,
+                "latest_1m_close": round(safe_float(_bar_value(latest_1m, "close"), 0.0), 4) if latest_1m else None,
+                "latest_5m_close": round(safe_float(_bar_value(latest_5m, "close"), 0.0), 4) if latest_5m else None,
+                "latest_1m_volume": round(safe_float(_bar_value(latest_1m, "volume"), 0.0), 2) if latest_1m else None,
+                "latest_5m_volume": round(safe_float(_bar_value(latest_5m, "volume"), 0.0), 2) if latest_5m else None,
+                "rest_bar_count": len(rest_bars),
+                "rest_latest_close": round(rest_close, 4) if rest_close else None,
+                "rest_latest_timestamp": rest_ts.isoformat() if rest_ts else None,
+                "rest_bar_age_minutes": rest_age_minutes,
+                "live_vs_rest_close_pct": live_vs_rest_close_pct,
+            })
+
+        except Exception:
+            logging.warning(
+                "[Layers] Failed building live-bar health row for %s.",
+                symbol,
+                exc_info=True,
+            )
+
+    return rows
+
+
+def _append_live_bar_health_snapshot(
+    *,
+    symbols: list[str],
+    rest_bars_by_symbol: dict,
+    market_is_open: bool,
+    cycle_id=None,
+) -> None:
+    rows = _build_live_bar_health_rows(
+        symbols=symbols,
+        rest_bars_by_symbol=rest_bars_by_symbol,
+        market_is_open=market_is_open,
+        cycle_id=cycle_id,
+    )
+
+    if not rows:
+        return
+
+    append_layer_live_bar_health_rows(rows)
+
+    compact = {
+        row["symbol"]: {
+            "ticks": row.get("tick_count"),
+            "1m": row.get("live_1m_bar_count"),
+            "5m": row.get("live_5m_bar_count"),
+            "live_vs_rest": row.get("live_vs_rest_close_pct"),
+        }
+        for row in rows
+    }
+
+    logging.info("[Layers] Live bar health snapshot: %s", compact)
 
 
 def _fresh_symbol_requirement(symbol_count: int) -> int:
@@ -324,14 +407,6 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
                         }
                         logging.info("[Layers] Tick counts: %s", tick_counts)
 
-                        live_bar_health = _live_bar_health_snapshot(symbols)
-                        app_state.setdefault("layers", {})["live_bar_health"] = live_bar_health
-
-                        logging.info(
-                            "[LiveBars] Health snapshot | %s",
-                            live_bar_health,
-                        )
-
                     required_fresh_symbols = _fresh_symbol_requirement(len(symbols))
 
                     bars_by_symbol = fetch_recent_bars_with_min_count(
@@ -408,6 +483,20 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
                     freshness_report["required_fresh_symbols"] = required_fresh_symbols
 
                     app_state.setdefault("layers", {})["bar_freshness"] = freshness_report
+
+                    next_layer3_cycle_id = int(
+                        app_state.get("layers", {})
+                        .get("rebalance", {})
+                        .get("last_cycle_id", 0)
+                        or 0
+                    ) + 1
+
+                    _append_live_bar_health_snapshot(
+                        symbols=symbols,
+                        rest_bars_by_symbol=bars_by_symbol,
+                        market_is_open=market_is_open,
+                        cycle_id=next_layer3_cycle_id if market_is_open else None,
+                    )
 
                     if not freshness_required:
                         logging.info(
@@ -563,6 +652,13 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
                         symbol: len(fresh_bars_by_symbol.get(symbol, []))
                         for symbol in evaluation_symbols
                     }
+
+                    next_layer3_cycle_id = int(
+                        app_state.get("layers", {})
+                        .get("rebalance", {})
+                        .get("last_cycle_id", 0)
+                        or 0
+                    ) + 1
 
                     store_latest_layer_result(
                         symbols=evaluation_symbols,

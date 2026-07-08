@@ -1,6 +1,8 @@
 # layers/layer5_executor.py
 
+import json
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List
@@ -24,6 +26,11 @@ from trading.orders import (
 )
 
 from layers.layer_csv import append_layer4_order_rows
+
+
+LAYER5_BROKER_ERROR_COOLDOWN_SECONDS = 30 * 60
+LAYER5_QUANTITY_ERROR_CODES = {"40310000", 40310000}
+
 
 def _normalize_decision(value: Any) -> str:
     return str(value or "").upper().strip()
@@ -173,6 +180,167 @@ def _available_cash(client) -> float:
     except Exception:
         logging.warning("[Layer5Exec] Could not fetch account cash.", exc_info=True)
         return 0.0
+
+
+def _serialize_enum_or_value(value: Any) -> str | None:
+    if value is None:
+        return None
+
+    return str(getattr(value, "value", value))
+
+
+def _refresh_broker_snapshot(client, layer5_state: dict, *, label: str) -> dict:
+    snapshot = {
+        "label": label,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "account_ok": False,
+        "positions_ok": False,
+        "equity": None,
+        "cash": None,
+        "buying_power": None,
+        "positions": {},
+        "error": None,
+    }
+
+    try:
+        account = client.get_account()
+        snapshot["account_ok"] = True
+        snapshot["equity"] = safe_float(getattr(account, "equity", 0.0), 0.0)
+        snapshot["cash"] = safe_float(getattr(account, "cash", 0.0), 0.0)
+        snapshot["buying_power"] = safe_float(
+            getattr(account, "buying_power", 0.0),
+            0.0,
+        )
+    except Exception as exc:
+        snapshot["error"] = str(exc)
+        logging.warning(
+            "[Layer5Exec] Failed refreshing broker account snapshot | label=%s",
+            label,
+            exc_info=True,
+        )
+
+    try:
+        positions = client.get_all_positions()
+        snapshot["positions_ok"] = True
+
+        for pos in positions:
+            symbol = normalize_symbol(getattr(pos, "symbol", ""))
+            if not symbol:
+                continue
+
+            snapshot["positions"][symbol] = {
+                "qty": safe_float(getattr(pos, "qty", 0.0), 0.0),
+                "market_value": safe_float(getattr(pos, "market_value", 0.0), 0.0),
+                "avg_entry_price": safe_float(
+                    getattr(pos, "avg_entry_price", 0.0),
+                    0.0,
+                ),
+            }
+
+    except Exception as exc:
+        snapshot["error"] = str(exc)
+        logging.warning(
+            "[Layer5Exec] Failed refreshing broker positions snapshot | label=%s",
+            label,
+            exc_info=True,
+        )
+
+    layer5_state[f"broker_snapshot_{label}"] = snapshot
+    layer5_state["last_broker_snapshot"] = snapshot
+
+    return snapshot
+
+
+def _broker_error_cooldowns() -> dict:
+    return app_state.setdefault("execution", {}).setdefault(
+        "layer5_broker_error_cooldowns",
+        {},
+    )
+
+
+def _broker_error_cooldown_remaining(symbol: str) -> float:
+    cooldowns = _broker_error_cooldowns()
+    until = safe_float(cooldowns.get(symbol), 0.0)
+
+    if until <= 0:
+        cooldowns.pop(symbol, None)
+        return 0.0
+
+    remaining = until - time.time()
+    if remaining <= 0:
+        cooldowns.pop(symbol, None)
+        return 0.0
+
+    return remaining
+
+
+def _set_broker_error_cooldown(symbol: str, *, code: Any = None, message: str | None = None) -> float:
+    until = time.time() + LAYER5_BROKER_ERROR_COOLDOWN_SECONDS
+    _broker_error_cooldowns()[symbol] = until
+
+    logging.warning(
+        "[Layer5Exec] Broker-error cooldown set | symbol=%s seconds=%s code=%s message=%s",
+        symbol,
+        LAYER5_BROKER_ERROR_COOLDOWN_SECONDS,
+        code,
+        message,
+    )
+
+    return until
+
+
+def _clear_broker_error_cooldown(symbol: str) -> None:
+    _broker_error_cooldowns().pop(symbol, None)
+
+
+def _json_payload_from_exception_text(text: str) -> dict:
+    text = str(text or "").strip()
+
+    if not text:
+        return {}
+
+    try:
+        payload = json.loads(text)
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        pass
+
+    match = re.search(r"\{.*\}", text)
+    if match:
+        try:
+            payload = json.loads(match.group(0))
+            return payload if isinstance(payload, dict) else {}
+        except Exception:
+            return {}
+
+    return {}
+
+
+def _extract_broker_error_details(exc: Exception) -> dict:
+    text = str(exc)
+    payload = _json_payload_from_exception_text(text)
+
+    code = payload.get("code")
+    message = payload.get("message") or text
+
+    return {
+        "broker_error_code": code,
+        "broker_error_message": message,
+        "broker_error_available_qty": payload.get("available"),
+        "broker_error_existing_qty": payload.get("existing_qty"),
+        "broker_error_held_for_orders": payload.get("held_for_orders"),
+        "broker_error_symbol": normalize_symbol(payload.get("symbol")),
+        "broker_error_raw": text,
+    }
+
+
+def _is_quantity_availability_error(details: dict) -> bool:
+    code = details.get("broker_error_code")
+    message = str(details.get("broker_error_message") or "").lower()
+
+    return code in LAYER5_QUANTITY_ERROR_CODES or (
+        "insufficient qty available" in message
+    )
 
 
 def _executable_rows(plan: Any) -> list[dict]:
@@ -404,6 +572,17 @@ def execute_layer5_plan(plan: Any, summary: dict | None = None) -> dict:
             log_level=logging.WARNING,
         )
 
+    open_order_count_by_symbol = {}
+
+    for order in open_orders:
+        order_symbol = normalize_symbol(getattr(order, "symbol", ""))
+        if not order_symbol:
+            continue
+
+        open_order_count_by_symbol[order_symbol] = (
+            open_order_count_by_symbol.get(order_symbol, 0) + 1
+        )
+
     if open_orders:
         logging.warning(
             "[Layer5Exec] Existing broker open orders detected; skipping Layer 4 "
@@ -443,6 +622,7 @@ def execute_layer5_plan(plan: Any, summary: dict | None = None) -> dict:
     )
 
     position_qty = _position_qty_by_symbol(client)
+    _refresh_broker_snapshot(client, layer5_state, label="pre_execution")
     available_cash_budget = _available_cash(client)
 
     for row in executable:
@@ -469,6 +649,38 @@ def execute_layer5_plan(plan: Any, summary: dict | None = None) -> dict:
             price,
             reason,
         )
+
+        cooldown_remaining = _broker_error_cooldown_remaining(symbol)
+        if cooldown_remaining > 0:
+            logging.warning(
+                "[Layer5Exec] Skipping %s because broker-error cooldown is active for %.0fs. "
+                "cycle_id=%s plan_id=%s row_id=%s",
+                symbol,
+                cooldown_remaining,
+                cycle_id,
+                plan_id,
+                row_id,
+            )
+            result["skipped"] += 1
+            result["orders"].append(
+                {
+                    "symbol": symbol,
+                    "side": decision.lower(),
+                    "status": "skipped",
+                    "reason": "broker_error_cooldown",
+                    "cooldown_remaining_seconds": round(cooldown_remaining, 1),
+                    "qty": qty,
+                    "notional": notional,
+                    "price": price,
+                    "plan_id": plan_id,
+                    "row_id": row_id,
+                }
+            )
+            continue
+
+        cash_budget_before = available_cash_budget
+        position_qty_before = position_qty.get(symbol, 0.0)
+        open_order_count_for_symbol = open_order_count_by_symbol.get(symbol, 0)
 
         if decision == "SELL":
             held_qty = position_qty.get(symbol, 0.0)
@@ -511,6 +723,10 @@ def execute_layer5_plan(plan: Any, summary: dict | None = None) -> dict:
                         "reason": "insufficient_cash_budget",
                         "notional": notional,
                         "cash": available_cash_budget,
+                        "cash_budget_before": cash_budget_before,
+                        "cash_budget_after": available_cash_budget,
+                        "position_qty_before": position_qty_before,
+                        "open_order_count_for_symbol": open_order_count_for_symbol,
                         "plan_id": plan_id,
                         "row_id": row_id,
                     }
@@ -524,6 +740,13 @@ def execute_layer5_plan(plan: Any, summary: dict | None = None) -> dict:
             result["skipped"] += 1
             continue
 
+        computed_side = normalize_side(side)
+        order_request = None
+        order_request_side = None
+        order_type = None
+        order_time_in_force = None
+        cash_budget_after = available_cash_budget
+
         try:
             order_request = create_order_request(
                 symbol=symbol,
@@ -532,6 +755,37 @@ def execute_layer5_plan(plan: Any, summary: dict | None = None) -> dict:
                 price=price,
                 market_is_open=market_is_open,
             )
+
+            order_request_side = normalize_side(getattr(order_request, "side", side))
+            order_type = type(order_request).__name__
+            order_time_in_force = _serialize_enum_or_value(
+                getattr(order_request, "time_in_force", None)
+            )
+
+            logging.warning(
+                "[Layer5Exec] Broker order request | cycle_id=%s plan_id=%s row_id=%s "
+                "symbol=%s decision=%s computed_side=%s request_side=%s qty=%s "
+                "price=%s market_is_open=%s order_type=%s time_in_force=%s request=%s",
+                cycle_id,
+                plan_id,
+                row_id,
+                symbol,
+                decision,
+                computed_side,
+                order_request_side,
+                qty,
+                price,
+                market_is_open,
+                order_type,
+                order_time_in_force,
+                order_request,
+            )
+
+            if order_request_side != decision.lower():
+                raise RuntimeError(
+                    f"Order side mismatch before submit: decision={decision.lower()} "
+                    f"request_side={order_request_side} symbol={symbol} row_id={row_id}"
+                )
 
             submitted_order = client.submit_order(order_request)
             order_id = getattr(submitted_order, "id", None)
@@ -592,11 +846,22 @@ def execute_layer5_plan(plan: Any, summary: dict | None = None) -> dict:
                 plan_id,
             )
 
+            _clear_broker_error_cooldown(symbol)
+
             result["submitted"] += 1
             result["orders"].append(
                 {
                     "symbol": symbol,
                     "side": decision.lower(),
+                    "submitted_side": computed_side,
+                    "order_request_side": order_request_side,
+                    "order_type": order_type,
+                    "time_in_force": order_time_in_force,
+                    "market_is_open": market_is_open,
+                    "position_qty_before": position_qty_before,
+                    "open_order_count_for_symbol": open_order_count_for_symbol,
+                    "cash_budget_before": cash_budget_before,
+                    "cash_budget_after": cash_budget_after,
                     "status": "submitted",
                     "order_id": str(order_id),
                     "qty": qty,
@@ -609,28 +874,63 @@ def execute_layer5_plan(plan: Any, summary: dict | None = None) -> dict:
             )
 
         except Exception as exc:
+            broker_error_details = _extract_broker_error_details(exc)
+
             logging.exception(
-                "[Layer5Exec] Failed submitting %s for %s. cycle_id=%s plan_id=%s",
+                "[Layer5Exec] Failed submitting %s for %s. cycle_id=%s plan_id=%s "
+                "computed_side=%s request_side=%s broker_code=%s broker_message=%s",
                 decision,
                 symbol,
                 cycle_id,
                 plan_id,
+                computed_side,
+                order_request_side,
+                broker_error_details.get("broker_error_code"),
+                broker_error_details.get("broker_error_message"),
             )
+
+            cooldown_until = None
+            if _is_quantity_availability_error(broker_error_details):
+                cooldown_until = _set_broker_error_cooldown(
+                    symbol,
+                    code=broker_error_details.get("broker_error_code"),
+                    message=broker_error_details.get("broker_error_message"),
+                )
+
             result["errors"] += 1
             result["orders"].append(
                 {
                     "symbol": symbol,
                     "side": decision.lower(),
+                    "submitted_side": computed_side,
+                    "order_request_side": order_request_side,
+                    "order_type": order_type,
+                    "time_in_force": order_time_in_force,
+                    "market_is_open": market_is_open,
                     "status": "error",
                     "error": str(exc),
+                    "broker_error_code": broker_error_details.get("broker_error_code"),
+                    "broker_error_message": broker_error_details.get("broker_error_message"),
+                    "broker_error_existing_qty": broker_error_details.get("broker_error_existing_qty"),
+                    "broker_error_available_qty": broker_error_details.get("broker_error_available_qty"),
+                    "broker_error_held_for_orders": broker_error_details.get("broker_error_held_for_orders"),
+                    "broker_error_symbol": broker_error_details.get("broker_error_symbol"),
+                    "broker_error_raw": broker_error_details.get("broker_error_raw"),
+                    "cooldown_until": cooldown_until,
                     "qty": qty,
                     "notional": notional,
                     "price": price,
                     "reason": reason,
+                    "position_qty_before": position_qty_before,
+                    "open_order_count_for_symbol": open_order_count_for_symbol,
+                    "cash_budget_before": cash_budget_before,
+                    "cash_budget_after": cash_budget_after,
                     "plan_id": plan_id,
                     "row_id": row_id,
                 }
             )
+
+    _refresh_broker_snapshot(client, layer5_state, label="post_execution")
 
     return _finish_layer5_result(
         result=result,

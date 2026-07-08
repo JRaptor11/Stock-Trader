@@ -227,10 +227,13 @@ def _get_account_snapshot() -> dict:
     """
     Get account equity/cash/buying power.
 
-    Prefer live Alpaca account data.
-    Fall back to the balance tracker if needed.
+    Broker account data is the only source trusted for executable Layer 3
+    planning. Fallback values are returned only for diagnostics so the caller
+    can explicitly block trading instead of sizing a portfolio from stale
+    local state.
     """
     client = app_state.get("trading_client")
+    broker_error = None
 
     if client:
         try:
@@ -238,13 +241,18 @@ def _get_account_snapshot() -> dict:
 
             return {
                 "source": "alpaca_account",
+                "broker_snapshot_ok": True,
+                "account_snapshot_error": None,
                 "equity": safe_float(getattr(account, "equity", 0.0), 0.0),
                 "cash": safe_float(getattr(account, "cash", 0.0), 0.0),
                 "buying_power": safe_float(getattr(account, "buying_power", 0.0), 0.0),
             }
 
-        except Exception:
+        except Exception as exc:
+            broker_error = str(exc)
             logging.warning("[Layer3] Failed to fetch Alpaca account snapshot.", exc_info=True)
+    else:
+        broker_error = "missing_trading_client"
 
     try:
         tracker = app_state.get("services", {}).get("balance_tracker", {}).get("instance")
@@ -252,16 +260,22 @@ def _get_account_snapshot() -> dict:
             balance = tracker.get_balance()
             return {
                 "source": "balance_tracker",
+                "broker_snapshot_ok": False,
+                "account_snapshot_error": broker_error,
                 "equity": safe_float(balance.get("equity"), 0.0),
                 "cash": safe_float(balance.get("balance"), 0.0),
                 "buying_power": safe_float(balance.get("balance"), 0.0),
             }
-    except Exception:
+    except Exception as exc:
         logging.warning("[Layer3] Failed to use balance tracker fallback.", exc_info=True)
+        if broker_error is None:
+            broker_error = str(exc)
 
     balance_state = app_state.get("services", {}).get("balance_tracker", {})
     return {
         "source": "app_state_balance_tracker",
+        "broker_snapshot_ok": False,
+        "account_snapshot_error": broker_error,
         "equity": safe_float(balance_state.get("equity"), 0.0),
         "cash": safe_float(balance_state.get("balance"), 0.0),
         "buying_power": safe_float(balance_state.get("balance"), 0.0),
@@ -1100,6 +1114,41 @@ def run_layer3_dry_run() -> dict:
     account = _get_account_snapshot()
     equity = safe_float(account.get("equity"), 0.0)
     cash = safe_float(account.get("cash"), 0.0)
+    account_source = str(account.get("source") or "")
+    broker_snapshot_ok = bool(account.get("broker_snapshot_ok"))
+
+    if account_source != "alpaca_account" or not broker_snapshot_ok:
+        summary = {
+            "status": "error",
+            "dry_run": True,
+            "cycle_id": cycle_id,
+            "plan_id": plan_id,
+            "timestamp": timestamp,
+            "plan_expires_at": plan_expires_at,
+            "reason": "broker_account_snapshot_unavailable",
+            "account_source": account_source,
+            "broker_snapshot_ok": broker_snapshot_ok,
+            "account_snapshot_error": account.get("account_snapshot_error"),
+            "equity": round(equity, 2),
+            "cash": round(cash, 2),
+        }
+
+        rebalance["last_cycle_id"] = cycle_id
+        rebalance["last_run_at"] = timestamp
+        rebalance["last_plan"] = []
+        rebalance["last_summary"] = summary
+        rebalance["last_error"] = "broker_account_snapshot_unavailable"
+
+        logging.warning(
+            "[Layer3] Blocking rebalance plan because broker account snapshot is unavailable. "
+            "source=%s equity=%s cash=%s error=%s",
+            account_source,
+            equity,
+            cash,
+            account.get("account_snapshot_error"),
+        )
+
+        return {"plan": [], "summary": summary}
 
     if equity <= 0:
         summary = {
@@ -1140,25 +1189,10 @@ def run_layer3_dry_run() -> dict:
         market_is_open_now,
     )
 
-    market_is_open_now = get_market_is_open(app_state)
-    open_session_info = _prepare_market_open_session_state(
-        rebalance,
-        market_is_open=market_is_open_now,
-    )
-    opening_transition = _opening_transition_info(
-        rebalance,
-        market_is_open_now,
-    )
-
     seen_counts, absent_counts = _update_target_stability(
         rebalance,
         target_weights,
         positions,
-    )
-
-    market_is_open = bool(rebalance.get("market_is_open", False))
-    confirmation_updates_allowed = bool(
-        rebalance.get("confirmation_updates_allowed", False)
     )
 
     market_is_open = bool(rebalance.get("market_is_open", market_is_open_now))
@@ -1524,6 +1558,8 @@ def run_layer3_dry_run() -> dict:
         "market_strength": target_meta.get("market_strength"),
 
         "account_source": account.get("source"),
+        "broker_snapshot_ok": account.get("broker_snapshot_ok"),
+        "account_snapshot_error": account.get("account_snapshot_error"),
         "equity": round(equity, 2),
         "cash": round(cash, 2),
         "estimated_cash_after_plan": round(estimated_cash, 2),
