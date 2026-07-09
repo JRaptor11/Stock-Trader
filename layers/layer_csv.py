@@ -23,6 +23,12 @@ LAYER_CSV_FILES = {
     "shadow": "layer4_shadow.csv",
     "portfolio-snapshots": "layer_portfolio_snapshots.csv",
     "live-bar-health": "layer_live_bar_health.csv",
+
+    # Shadow diagnostics for comparing the current delayed REST-bar Layer 1/2
+    # pipeline against an independent live-bar Layer 1/2 pipeline.
+    "live-strategy-shadow": "layer_live_strategy_shadow.csv",
+    "live-strategy-shadow-cycles": "layer_live_strategy_shadow_cycles.csv",
+    "live-strategy-outcomes": "layer_live_strategy_outcomes.csv",
 }
 
 
@@ -279,6 +285,116 @@ LAYER_LIVE_BAR_HEALTH_FIELDS = [
     "rest_latest_timestamp",
     "rest_bar_age_minutes",
     "live_vs_rest_close_pct",
+]
+
+
+LAYER_LIVE_STRATEGY_SHADOW_FIELDS = [
+    "timestamp",
+    "cycle_id",
+    "symbol",
+    "market_is_open",
+    "rest_status",
+    "live_status",
+    "live_timeframe_seconds",
+    "live_bar_count",
+    "rest_bar_count",
+    "rest_rank",
+    "live_rank",
+    "rank_delta_live_minus_rest",
+    "rest_score",
+    "live_score",
+    "score_delta_live_minus_rest",
+    "current_weight",
+    "rest_target_weight",
+    "live_target_weight",
+    "target_weight_delta_live_minus_rest",
+    "rest_decision",
+    "live_shadow_decision",
+    "decision_agreement",
+    "live_preference_direction",
+    "rest_planned_qty",
+    "rest_planned_notional",
+    "live_shadow_estimated_notional",
+    "rest_price",
+    "live_price",
+    "live_vs_rest_price_pct",
+    "rest_reason",
+    "live_reason",
+    "rest_top_symbols",
+    "live_top_symbols",
+    "rest_target_summary",
+    "live_target_summary",
+]
+
+
+LAYER_LIVE_STRATEGY_SHADOW_CYCLE_FIELDS = [
+    "timestamp",
+    "cycle_id",
+    "market_is_open",
+    "rest_status",
+    "live_status",
+    "live_timeframe_seconds",
+    "live_min_required_bars",
+    "live_symbols_ready",
+    "symbol_count",
+    "rest_ranked_count",
+    "live_ranked_count",
+    "rest_top_symbols",
+    "live_top_symbols",
+    "top5_overlap_count",
+    "top5_overlap_symbols",
+    "total_abs_target_weight_diff",
+    "avg_abs_target_weight_diff",
+    "max_abs_target_weight_diff",
+    "decision_agreement_rate",
+    "rest_buy_count",
+    "rest_sell_count",
+    "rest_hold_count",
+    "live_buy_count",
+    "live_sell_count",
+    "live_hold_count",
+    "live_not_estimated_count",
+    "live_cash_pct",
+    "rest_cash_pct",
+    "live_market_strength",
+    "rest_market_strength",
+    "error",
+]
+
+
+LAYER_LIVE_STRATEGY_OUTCOME_FIELDS = [
+    "source_timestamp",
+    "outcome_timestamp",
+    "source_cycle_id",
+    "symbol",
+    "market_is_open_at_source",
+    "rest_status",
+    "live_status",
+    "live_timeframe_seconds",
+    "rest_rank",
+    "live_rank",
+    "rest_score",
+    "live_score",
+    "current_weight",
+    "rest_target_weight",
+    "live_target_weight",
+    "target_weight_delta_live_minus_rest",
+    "rest_decision",
+    "live_shadow_decision",
+    "decision_agreement",
+    "live_preference_direction",
+    "start_live_price",
+    "outcome_live_price",
+    "forward_return_10m",
+    "forward_return_30m",
+    "forward_return_60m",
+    "live_preference_score_10m",
+    "live_preference_score_30m",
+    "live_preference_score_60m",
+    "live_preference_result_10m",
+    "live_preference_result_30m",
+    "live_preference_result_60m",
+    "finalized_reason",
 ]
 
 
@@ -695,6 +811,52 @@ def append_layer_live_bar_health_rows(rows: list[dict] | None) -> None:
         )
     except Exception:
         logging.warning("[LayerCSV] Failed to append live bar health rows.", exc_info=True)
+
+
+def append_layer_live_strategy_shadow_rows(rows: list[dict] | None) -> None:
+    rows = rows or []
+
+    if not rows:
+        return
+
+    try:
+        _append_csv_rows(
+            LAYER_CSV_FILES["live-strategy-shadow"],
+            LAYER_LIVE_STRATEGY_SHADOW_FIELDS,
+            rows,
+        )
+    except Exception:
+        logging.warning("[LayerCSV] Failed to append live strategy shadow rows.", exc_info=True)
+
+
+def append_layer_live_strategy_shadow_cycle_row(row: dict | None) -> None:
+    if not isinstance(row, dict) or not row:
+        return
+
+    try:
+        _append_csv_rows(
+            LAYER_CSV_FILES["live-strategy-shadow-cycles"],
+            LAYER_LIVE_STRATEGY_SHADOW_CYCLE_FIELDS,
+            [row],
+        )
+    except Exception:
+        logging.warning("[LayerCSV] Failed to append live strategy shadow cycle row.", exc_info=True)
+
+
+def append_layer_live_strategy_outcome_rows(rows: list[dict] | None) -> None:
+    rows = rows or []
+
+    if not rows:
+        return
+
+    try:
+        _append_csv_rows(
+            LAYER_CSV_FILES["live-strategy-outcomes"],
+            LAYER_LIVE_STRATEGY_OUTCOME_FIELDS,
+            rows,
+        )
+    except Exception:
+        logging.warning("[LayerCSV] Failed to append live strategy outcome rows.", exc_info=True)
 
 
 def append_layer_cycle_row(

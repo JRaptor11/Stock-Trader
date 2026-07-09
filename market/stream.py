@@ -45,21 +45,11 @@ _original_thread = threading.Thread
 
 def _old_stream_strategy_enabled() -> bool:
     """
-    Return whether the legacy tick-by-tick stream strategy may submit orders.
+    Return whether the legacy tick-by-tick stream strategy may run.
 
     This should NOT control whether live ticks are received.
-    It only controls whether stream.py may call _execute_buy/_execute_sell.
+    Live ticks should still update MarketDataBuffer, last prices, and live bars.
     """
-    return bool(
-        app_state.get("execution", {}).get(
-            "old_stream_strategy_enabled",
-            False,
-        )
-    )
-
-
-def _old_stream_strategy_enabled() -> bool:
-    """Return whether the legacy tick strategy may submit broker orders."""
     return bool(
         app_state.get("execution", {}).get(
             "old_stream_strategy_enabled",
@@ -254,6 +244,30 @@ class ThreadedAlpacaStream:
             else:
                 logging.warning("[MarketDataBuffer] Missing app_state['market_data']['buffer']; skipping update.")
 
+            # === Latest price/debug tracking remains active even when legacy strategy is disabled ===
+            price = float(f"{price_raw:.2f}")
+
+            app_state.setdefault("last_trade_price_by_symbol", {})[symbol] = price
+
+            self._last_trade_handled = {
+                "symbol": symbol,
+                "price": price,
+                "timestamp": timestamp,
+                "old_stream_strategy_enabled": _old_stream_strategy_enabled(),
+            }
+            self._update_debug_snapshot("last_trade", self._last_trade_handled)
+
+            # If the old stream strategy is disabled, stop here.
+            # This keeps live ticks/live bars active but prevents the legacy
+            # StrategyManager, ConfidenceModel, HandleTrade, and old buy/sell paths from running.
+            if not _old_stream_strategy_enabled():
+                logging.debug(
+                    "[ExecutionMode] legacy stream strategy disabled for %s; "
+                    "tick stored, latest price updated, and live bars updated.",
+                    symbol,
+                )
+                return
+
             has_position, can_sell = check_local_position(symbol, app_state["open_trades"])
             if not has_position:
                 try:
@@ -305,19 +319,10 @@ class ThreadedAlpacaStream:
                 app_state.get("open_trades", {}).get(symbol),
             )
 
-            price = float(f"{price_raw:.2f}")
             logging.info(f"[{timestamp}] 📥 Trade: {symbol} | Price: ${price:.2f} | Size: {volume}")
 
-            app_state["last_trade_price_by_symbol"][symbol] = price
             app_state["strategy"]["signal_history"].append(signal)
             app_state["utils"]["trades_utils"]["trade_timestamps"].append(time.time())
-
-            self._last_trade_handled = {
-                "symbol": symbol,
-                "price": price,
-                "timestamp": timestamp
-            }
-            self._update_debug_snapshot("last_trade", self._last_trade_handled)
 
             if app_state["utils"]["trades_utils"]["in_trade_cooldown"]:
                 logging.warning("⏳ Trade blocked — cooldown active.")
@@ -332,11 +337,11 @@ class ThreadedAlpacaStream:
 
                 if not _old_stream_strategy_enabled():
                     logging.info(
-                        "[ExecutionMode] %s legacy BUY suppressed; "
-                        "stream strategy is observation-only; ",
-                        "tick tracking remains active.",
+                        "[ExecutionMode] legacy BUY suppressed for %s; "
+                        "stream strategy is observation-only; tick tracking remains active.",
                         symbol,
                     )
+
                     return
 
                 # 💡 Smart safeguard: avoid duplicate buys
@@ -370,11 +375,11 @@ class ThreadedAlpacaStream:
 
                 if not _old_stream_strategy_enabled():
                     logging.info(
-                        "[ExecutionMode] %s legacy SELL suppressed; "
-                        "stream strategy is observation-only; ",
-                        "tick tracking remains active.",
+                        "[ExecutionMode] legacy SELL suppressed for %s; "
+                        "stream strategy is observation-only; tick tracking remains active.",
                         symbol,
                     )
+
                     return
 
                 try:

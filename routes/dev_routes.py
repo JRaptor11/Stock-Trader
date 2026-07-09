@@ -4,6 +4,8 @@ import os
 import csv
 import io
 import json
+import tempfile
+import zipfile
 from collections import Counter, defaultdict
 
 import logging
@@ -261,6 +263,13 @@ def dev_route_list():
                 "/layers/portfolio-snapshots-csv": "GET — Download layer_portfolio_snapshots.csv",
                 "/layers/shadow": "GET — View parsed layer4_shadow.csv rows as JSON",
                 "/layers/shadow-csv": "GET — Download layer4_shadow.csv",
+                "/layers/live-strategy-shadow": "View parsed layer_live_strategy_shadow.csv rows as JSON",
+                "/layers/live-strategy-shadow-csv": "Download layer_live_strategy_shadow.csv",
+                "/layers/live-strategy-shadow-cycles": "View parsed layer_live_strategy_shadow_cycles.csv rows as JSON",
+                "/layers/live-strategy-shadow-cycles-csv": "Download layer_live_strategy_shadow_cycles.csv",
+                "/layers/live-strategy-outcomes": "View parsed layer_live_strategy_outcomes.csv rows as JSON",
+                "/layers/live-strategy-outcomes-csv": "Download layer_live_strategy_outcomes.csv",
+                "/layers/all-csv-diagnostics.zip": "Download all available Layer CSV diagnostics as one ZIP",
                 "/layers/dashboard": "GET — Summarize latest Layer cycle health, skips, plan state, and order state",
                 "/layers/cycle/{cycle_id}": "GET — Join cycle, plan, order, and snapshot rows for one Layer cycle",
                 "/layers/symbol/{symbol}": "GET — Summarize Layer 3 / Layer 4 behavior for one symbol",
@@ -602,6 +611,63 @@ def download_trade_decisions_csv(symbol: str | None = Query(default=None)):
 # ================================================================
 
 
+@dev_routes.get("/layers/all-csv-diagnostics.zip")
+@with_retries()
+def download_all_layer_csv_diagnostics():
+    """
+    Download every available Layer CSV diagnostic file in a single ZIP.
+
+    This includes the standard Layer 3/4/5 audit trail plus live-bar shadow
+    comparison CSVs when they exist.
+    """
+    available_files = []
+
+    for logical_name, filename in sorted(LAYER_CSV_FILES.items()):
+        path = layer_csv_path(filename)
+        if path.exists() and path.is_file():
+            available_files.append((logical_name, filename, path))
+
+    if not available_files:
+        raise HTTPException(
+            status_code=404,
+            detail="No Layer CSV diagnostic files are available yet.",
+        )
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    zip_filename = f"layer_csv_diagnostics_{timestamp}.zip"
+    zip_path = os.path.join(tempfile.gettempdir(), zip_filename)
+
+    try:
+        with zipfile.ZipFile(zip_path, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+            manifest = {
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "file_count": len(available_files),
+                "files": [
+                    {
+                        "name": logical_name,
+                        "filename": filename,
+                        "size_bytes": path.stat().st_size,
+                    }
+                    for logical_name, filename, path in available_files
+                ],
+            }
+
+            zf.writestr("manifest.json", json.dumps(manifest, indent=2, default=str))
+
+            for _logical_name, filename, path in available_files:
+                zf.write(path, arcname=filename)
+
+    except Exception as exc:
+        logging.exception("[DevRoutes] Failed creating Layer CSV diagnostics ZIP")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return FileResponse(
+        zip_path,
+        media_type="application/zip",
+        filename=zip_filename,
+    )
+
+
 @dev_routes.get("/layers/layer-routes")
 @with_retries()
 def layer_routes():
@@ -613,8 +679,25 @@ def layer_routes():
         "/layers/plans-csv": "Download layer3_plans.csv",
         "/layers/orders": "View parsed layer4_orders.csv rows as JSON",
         "/layers/orders-csv": "Download layer4_orders.csv",
+
         "/layers/portfolio-snapshots": "View parsed layer_portfolio_snapshots.csv rows as JSON",
         "/layers/portfolio-snapshots-csv": "Download layer_portfolio_snapshots.csv",
+        "/layers/shadow": "View parsed layer4_shadow.csv rows as JSON",
+        "/layers/shadow-csv": "Download layer4_shadow.csv",
+
+        "/layers/live-bar-health": "View parsed layer_live_bar_health.csv rows as JSON",
+        "/layers/live-bar-health-csv": "Download layer_live_bar_health.csv",
+
+        "/layers/live-strategy-shadow": "View parsed layer_live_strategy_shadow.csv rows as JSON",
+        "/layers/live-strategy-shadow-csv": "Download layer_live_strategy_shadow.csv",
+
+        "/layers/live-strategy-shadow-cycles": "View parsed layer_live_strategy_shadow_cycles.csv rows as JSON",
+        "/layers/live-strategy-shadow-cycles-csv": "Download layer_live_strategy_shadow_cycles.csv",
+
+        "/layers/live-strategy-outcomes": "View parsed layer_live_strategy_outcomes.csv rows as JSON",
+        "/layers/live-strategy-outcomes-csv": "Download layer_live_strategy_outcomes.csv",
+
+        "/layers/all-csv-diagnostics.zip": "Download all available Layer CSV diagnostics as one ZIP",
         "/layers/dashboard": "Summarize latest Layer cycle health, skips, plan state, and order state",
         "/layers/cycle/{cycle_id}": "Join cycle, plan, order, and snapshot rows for one Layer cycle",
         "/layers/symbol/{symbol}": "Summarize Layer 3 / Layer 4 behavior for one symbol",
