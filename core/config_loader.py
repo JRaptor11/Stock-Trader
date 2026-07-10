@@ -178,6 +178,11 @@ def load_environment_config() -> None:
         8,
     )
 
+    config.LIVE_STRATEGY_SHADOW_REST_BOOTSTRAP_ENABLED = get_bool_env(
+        "LIVE_STRATEGY_SHADOW_REST_BOOTSTRAP_ENABLED",
+        True,
+    )
+
     config.LAYER_MONITOR_RUN_24_7 = get_bool_env(
         "LAYER_MONITOR_RUN_24_7",
         True,
@@ -231,6 +236,10 @@ def apply_runtime_config_to_app_state() -> None:
 
     app_state["execution"]["layer3_bootstrap_min_bar_count"] = (
         config.LAYER3_BOOTSTRAP_MIN_BAR_COUNT
+    )
+
+    app_state["execution"]["live_strategy_shadow_rest_bootstrap_enabled"] = (
+        config.LIVE_STRATEGY_SHADOW_REST_BOOTSTRAP_ENABLED
     )
 
     symbol_raw = os.environ.get("SYMBOL", "AAPL").strip()

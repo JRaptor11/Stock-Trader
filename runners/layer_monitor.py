@@ -1,7 +1,9 @@
 # runners/layer_monitor.py
+
 import asyncio
 import logging
 import math
+import os
 import time
 from datetime import datetime, timezone, timedelta
 
@@ -41,6 +43,36 @@ def _execution_setting(name: str, default):
         name,
         getattr(config, name.upper(), default),
     )
+
+
+def _execution_bool_setting(name: str, default: bool = False) -> bool:
+    """
+    Read a boolean setting from:
+    1. app_state["execution"][name]
+    2. config.NAME
+    3. environment variable NAME
+
+    Accepted truthy values:
+    true, 1, yes, y, on
+    """
+    raw = app_state.get("execution", {}).get(name, None)
+
+    if raw is None:
+        raw = getattr(config, name.upper(), None)
+
+    if raw is None:
+        raw = os.getenv(name.upper())
+
+    if raw is None:
+        raw = os.getenv(name)
+
+    if raw is None:
+        return bool(default)
+
+    if isinstance(raw, bool):
+        return raw
+
+    return str(raw).strip().lower() in {"true", "1", "yes", "y", "on"}
 
 
 def _expire_active_plan_for_market_close() -> None:
@@ -433,19 +465,69 @@ def _latest_live_price_for_symbol(md, symbol: str, live_bars: list[dict] | None 
     return 0.0
 
 
+def _live_bar_is_complete(bar: dict, timeframe_seconds: int, now_epoch: float) -> bool:
+    """
+    Return True only for completed local live bars.
+
+    This keeps the live-shadow strategy apples-to-apples with Alpaca REST bars:
+    both paths should use completed 5-minute bars, not an in-progress partial bar.
+    """
+    try:
+        bucket_start = safe_float(_bar_value(bar, "bucket_start"), 0.0)
+        if bucket_start > 0:
+            return (bucket_start + timeframe_seconds) <= now_epoch
+    except Exception:
+        pass
+
+    try:
+        ts = _latest_rest_bar_timestamp(bar)
+        if ts is not None:
+            return (ts.timestamp() + timeframe_seconds) <= now_epoch
+    except Exception:
+        pass
+
+    return False
+
+
+def _bar_epoch_seconds(bar: dict) -> float | None:
+    """
+    Return a comparable epoch timestamp for REST bars or locally built live bars.
+    """
+    try:
+        bucket_start = safe_float(_bar_value(bar, "bucket_start"), 0.0)
+        if bucket_start > 0:
+            return float(bucket_start)
+    except Exception:
+        pass
+
+    try:
+        ts = _latest_rest_bar_timestamp(bar)
+        if ts is not None:
+            return float(ts.timestamp())
+    except Exception:
+        pass
+
+    return None
+
+
 def _build_live_bars_by_symbol(
     symbols: list[str],
     *,
     timeframe_seconds: int,
     limit: int,
+    rest_bars_by_symbol: dict | None = None,
+    rest_bootstrap_enabled: bool = False,
 ) -> tuple[dict, dict, dict]:
     md = app_state.get("market_data", {}).get("buffer")
     if md is None or not hasattr(md, "get_live_bars"):
         return {}, {}, {}
 
+    rest_bars_by_symbol = rest_bars_by_symbol or {}
+
     bars_by_symbol = {}
     bar_counts = {}
     live_prices = {}
+    now_epoch = time.time()
 
     for symbol in symbols or []:
         symbol = str(symbol or "").upper().strip()
@@ -453,13 +535,54 @@ def _build_live_bars_by_symbol(
             continue
 
         try:
-            bars = list(
+            raw_live_bars = list(
                 md.get_live_bars(
                     symbol,
                     timeframe_seconds=timeframe_seconds,
                     limit=limit,
                 ) or []
             )
+
+            completed_live_bars = [
+                bar
+                for bar in raw_live_bars
+                if _live_bar_is_complete(bar, timeframe_seconds, now_epoch)
+            ]
+
+            if rest_bootstrap_enabled:
+                bootstrap_bars = []
+
+                for bar in list(rest_bars_by_symbol.get(symbol, []) or []):
+                    bar_epoch = _bar_epoch_seconds(bar)
+                    if bar_epoch is None:
+                        continue
+
+                    # REST bars should already be completed, but enforce the
+                    # same completed-bar rule for a cleaner comparison.
+                    if (bar_epoch + timeframe_seconds) <= now_epoch:
+                        bootstrap_bars.append(bar)
+
+                if bootstrap_bars:
+                    latest_bootstrap_epoch = max(
+                        (_bar_epoch_seconds(bar) or 0.0)
+                        for bar in bootstrap_bars
+                    )
+
+                    live_after_bootstrap = [
+                        bar
+                        for bar in completed_live_bars
+                        if (_bar_epoch_seconds(bar) or 0.0) > latest_bootstrap_epoch
+                    ]
+
+                    bars = bootstrap_bars + live_after_bootstrap
+                else:
+                    bars = completed_live_bars
+            else:
+                bars = completed_live_bars
+
+            if limit and limit > 0:
+                bars = bars[-limit:]
+
         except Exception:
             logging.warning(
                 "[LiveStrategyShadow] Failed reading live bars for %s.",
@@ -470,7 +593,14 @@ def _build_live_bars_by_symbol(
 
         bars_by_symbol[symbol] = bars
         bar_counts[symbol] = len(bars)
-        live_prices[symbol] = _latest_live_price_for_symbol(md, symbol, bars)
+
+        # Use the close of the latest completed strategy input bar.
+        # With bootstrap ON, this may initially be a REST close until newer
+        # local live bars exist. With bootstrap OFF, this is pure local-live.
+        if bars:
+            live_prices[symbol] = safe_float(_bar_value(bars[-1], "close"), 0.0)
+        else:
+            live_prices[symbol] = 0.0
 
     return bars_by_symbol, bar_counts, live_prices
 
@@ -1475,8 +1605,8 @@ def run_live_strategy_shadow_comparison(
     now_epoch = time.time()
 
     timeframe_seconds = safe_int(
-        _execution_setting("live_strategy_shadow_timeframe_seconds", 60),
-        60,
+        _execution_setting("live_strategy_shadow_timeframe_seconds", 300),
+        300,
     )
     live_bar_limit = safe_int(
         _execution_setting("live_strategy_shadow_bar_limit", 500),
@@ -1495,10 +1625,19 @@ def run_live_strategy_shadow_comparison(
         0.025,
     )
 
+    rest_bars_by_symbol = rest_bars_by_symbol or {}
+
+    rest_bootstrap_enabled = _execution_bool_setting(
+        "live_strategy_shadow_rest_bootstrap_enabled",
+        True,
+    )
+
     live_bars_by_symbol, live_bar_counts, live_prices = _build_live_bars_by_symbol(
         symbols,
         timeframe_seconds=timeframe_seconds,
         limit=live_bar_limit,
+        rest_bars_by_symbol=rest_bars_by_symbol,
+        rest_bootstrap_enabled=rest_bootstrap_enabled,
     )
 
     live_symbols_ready = [
@@ -1506,6 +1645,9 @@ def run_live_strategy_shadow_comparison(
         for symbol, count in live_bar_counts.items()
         if count >= min_live_bars
     ]
+
+    symbol_count = len(symbols or [])
+    rest_ranked_count = len(rest_ranked or [])
 
     cycle_base = {
         "timestamp": now_iso,
@@ -1515,22 +1657,52 @@ def run_live_strategy_shadow_comparison(
         "live_timeframe_seconds": timeframe_seconds,
         "live_min_required_bars": min_live_bars,
         "live_symbols_ready": live_symbols_ready,
-        "symbol_count": len(symbols or []),
-        "rest_ranked_count": len(rest_ranked or []),
+        "symbol_count": symbol_count,
+        "rest_ranked_count": rest_ranked_count,
     }
 
-    if not live_symbols_ready:
+    # True comparison rule:
+    # The live shadow should only evaluate when the REST path produced a real
+    # comparable Layer 1/2 target. If REST skipped, do not update live smoothing
+    # state and do not run the portfolio simulator.
+    comparable_rest_statuses = {"ok", "market_closed_warmup"}
+
+    if rest_status not in comparable_rest_statuses or rest_ranked_count <= 0:
+        row = {
+            **cycle_base,
+            "live_status": "skipped_no_comparable_rest_target",
+            "live_ranked_count": 0,
+            "error": f"rest_status={rest_status} rest_ranked_count={rest_ranked_count}",
+        }
+        append_layer_live_strategy_shadow_cycle_row(row)
+        logging.info(
+            "[LiveStrategyShadow] Skipped because REST path did not produce a comparable target | "
+            "rest_status=%s rest_ranked=%s",
+            rest_status,
+            rest_ranked_count,
+        )
+        return row
+
+    # True comparison rule:
+    # Every symbol that REST evaluated must also have enough completed local
+    # 5-minute live bars. This prevents LIVE from ranking 1 symbol while REST
+    # ranks the full universe.
+    if len(live_symbols_ready) < symbol_count:
         row = {
             **cycle_base,
             "live_status": "insufficient_live_bars",
             "live_ranked_count": 0,
-            "error": None,
+            "error": (
+                f"requires_all_symbols_ready ready={len(live_symbols_ready)}/"
+                f"{symbol_count} counts={live_bar_counts}"
+            ),
         }
         append_layer_live_strategy_shadow_cycle_row(row)
         logging.info(
-            "[LiveStrategyShadow] Insufficient live bars | ready=%s/%s min_bars=%s timeframe=%ss counts=%s",
+            "[LiveStrategyShadow] Insufficient completed 5-minute live bars | "
+            "ready=%s/%s min_bars=%s timeframe=%ss counts=%s",
             len(live_symbols_ready),
-            len(symbols or []),
+            symbol_count,
             min_live_bars,
             timeframe_seconds,
             live_bar_counts,
@@ -1545,6 +1717,30 @@ def run_live_strategy_shadow_comparison(
         )
 
         live_ranked = ranker.rank_from_bars(live_bars_by_symbol)
+
+        # True comparison rule:
+        # If REST ranked N symbols, LIVE must rank N symbols before we build
+        # a target. This avoids updating the live Layer 2 smoothing state with
+        # a partial universe.
+        if len(live_ranked or []) < rest_ranked_count:
+            row = {
+                **cycle_base,
+                "live_status": "insufficient_live_ranked_symbols",
+                "live_ranked_count": len(live_ranked or []),
+                "error": (
+                    f"live_ranked_count={len(live_ranked or [])} "
+                    f"rest_ranked_count={rest_ranked_count}"
+                ),
+            }
+            append_layer_live_strategy_shadow_cycle_row(row)
+            logging.info(
+                "[LiveStrategyShadow] Insufficient live ranked symbols | "
+                "live_ranked=%s rest_ranked=%s",
+                len(live_ranked or []),
+                rest_ranked_count,
+            )
+            return row
+
         live_target = portfolio_builder.build_target_portfolio(
             live_ranked,
             context=_live_shadow_evaluation_context(
@@ -1553,7 +1749,7 @@ def run_live_strategy_shadow_comparison(
             ),
         )
 
-        live_status = "ok" if live_ranked else "no_live_ranked_symbols"
+        live_status = "ok"
 
     except Exception as exc:
         logging.warning("[LiveStrategyShadow] Evaluation failed.", exc_info=True)
@@ -1576,7 +1772,6 @@ def run_live_strategy_shadow_comparison(
 
     layer3_plan = layer3_plan or []
     layer3_summary = layer3_summary or {}
-    rest_bars_by_symbol = rest_bars_by_symbol or {}
 
     plan_by_symbol = {
         str(row.get("symbol") or "").upper().strip(): row

@@ -30,6 +30,7 @@ def ensure_app_state_structure() -> None:
     execution.setdefault("layer3_market_hours_only", True)
     execution.setdefault("layer3_bootstrap_confirmation_enabled", True)
     execution.setdefault("layer3_bootstrap_min_bar_count", 8)
+    execution.setdefault("live_strategy_shadow_rest_bootstrap_enabled", True)
 
     execution.setdefault("layer_monitor_run_24_7", True)
 
