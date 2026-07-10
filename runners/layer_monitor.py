@@ -30,6 +30,9 @@ from layers.layer_csv import (
     append_layer_live_strategy_outcome_rows,
     append_layer_live_strategy_shadow_cycle_row,
     append_layer_live_strategy_shadow_rows,
+    append_layer_strategy_shadow_comparison_row,
+    append_layer_strategy_shadow_order_rows,
+    append_layer_strategy_shadow_portfolio_rows,
 )
 
 
@@ -683,6 +686,753 @@ def _append_mature_live_strategy_shadow_outcomes(*, market_is_open: bool) -> Non
         )
 
 
+# ================================================================
+# DIRECT REST-vs-LIVE SHADOW PORTFOLIO SIMULATOR
+# ---------------------------------------------------------------
+# Maintains independent simulated portfolios for:
+#   REST = current delayed REST-bar target
+#   LIVE = independent live-bar target
+# This does NOT trade. It only logs simulated orders, portfolio state,
+# and equity comparison rows so we can compare performance under the
+# same fill/constraint assumptions.
+# ================================================================
+
+
+def _strategy_shadow_enabled() -> bool:
+    return bool(_execution_setting("strategy_shadow_simulator_enabled", True))
+
+
+def _strategy_shadow_state() -> dict:
+    layers = app_state.setdefault("layers", {})
+    return layers.setdefault("strategy_shadow_simulator", {})
+
+
+def _strategy_shadow_today() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def _clean_strategy_shadow_target_weights(target: dict | None) -> dict[str, float]:
+    if not isinstance(target, dict):
+        return {}
+
+    out = {}
+    for raw_symbol, raw_weight in target.items():
+        symbol = str(raw_symbol or "").upper().strip()
+        if not symbol or symbol.startswith("_") or symbol in {"CASH", "USD"}:
+            continue
+
+        weight = safe_float(raw_weight, 0.0)
+        if weight > 0:
+            out[symbol] = weight
+
+    return out
+
+
+def _strategy_shadow_price_map(
+    *,
+    symbols: list[str],
+    rest_rank_map: dict,
+    live_prices: dict,
+    rest_bars_by_symbol: dict,
+) -> dict[str, float]:
+    prices = {}
+
+    for raw_symbol in symbols or []:
+        symbol = str(raw_symbol or "").upper().strip()
+        if not symbol:
+            continue
+
+        # Use one common executable mark price for both simulated portfolios.
+        # Prefer the live trade/tick price when available, then fall back to REST rank/bar prices.
+        price = safe_float(live_prices.get(symbol), 0.0)
+
+        if price <= 0:
+            price = safe_float((rest_rank_map.get(symbol) or {}).get("last_price"), 0.0)
+
+        if price <= 0 and rest_bars_by_symbol.get(symbol):
+            try:
+                price = safe_float(rest_bars_by_symbol[symbol][-1].get("close"), 0.0)
+            except Exception:
+                price = 0.0
+
+        if price > 0:
+            prices[symbol] = price
+
+    return prices
+
+
+def _initial_shadow_positions_from_plan(layer3_plan: list[dict] | None) -> dict[str, float]:
+    positions = {}
+
+    for row in layer3_plan or []:
+        if not isinstance(row, dict):
+            continue
+
+        symbol = str(row.get("symbol") or "").upper().strip()
+        qty = safe_float(row.get("current_qty"), 0.0)
+
+        if symbol and qty > 0:
+            positions[symbol] = qty
+
+    return positions
+
+
+def _strategy_shadow_portfolio_equity(portfolio: dict, prices: dict[str, float]) -> float:
+    cash = safe_float(portfolio.get("cash"), 0.0)
+    positions = portfolio.setdefault("positions", {})
+    equity = cash
+
+    for symbol, qty in list(positions.items()):
+        qty = safe_float(qty, 0.0)
+        price = safe_float(prices.get(symbol), 0.0)
+
+        if qty <= 0:
+            positions.pop(symbol, None)
+            continue
+
+        if price > 0:
+            equity += qty * price
+
+    return equity
+
+
+def _top_strategy_shadow_weights(
+    portfolio: dict,
+    prices: dict[str, float],
+    limit: int = 5,
+) -> list[str]:
+    equity = _strategy_shadow_portfolio_equity(portfolio, prices)
+    if equity <= 0:
+        return []
+
+    rows = []
+    for symbol, qty in (portfolio.get("positions") or {}).items():
+        price = safe_float(prices.get(symbol), 0.0)
+        value = safe_float(qty, 0.0) * price
+        if value > 0:
+            rows.append((symbol, value / equity))
+
+    rows.sort(key=lambda item: item[1], reverse=True)
+    return [f"{symbol}:{weight:.4f}" for symbol, weight in rows[:limit]]
+
+
+def _init_strategy_shadow_if_needed(
+    *,
+    layer3_plan: list[dict] | None,
+    layer3_summary: dict | None,
+    prices: dict[str, float],
+) -> bool:
+    state = _strategy_shadow_state()
+    today = _strategy_shadow_today()
+
+    if state.get("date") == today and state.get("initialized"):
+        return False
+
+    positions = _initial_shadow_positions_from_plan(layer3_plan)
+    cash = safe_float((layer3_summary or {}).get("cash"), 0.0)
+
+    # If cash is missing, approximate it from equity minus current position value.
+    if cash <= 0:
+        equity = safe_float((layer3_summary or {}).get("equity"), 0.0)
+        position_value = sum(
+            safe_float(qty, 0.0) * safe_float(prices.get(symbol), 0.0)
+            for symbol, qty in positions.items()
+        )
+        cash = max(0.0, equity - position_value) if equity > 0 else 0.0
+
+    portfolios = {}
+    for name, source in (
+        ("REST", "rest"),
+        ("LIVE", "live"),
+    ):
+        portfolio = {
+            "strategy_name": name,
+            "source": source,
+            "cash": float(cash),
+            "positions": dict(positions),
+            "cumulative_trade_count": 0,
+            "cumulative_buy_notional": 0.0,
+            "cumulative_sell_notional": 0.0,
+            "cumulative_gross_turnover": 0.0,
+        }
+        equity = _strategy_shadow_portfolio_equity(portfolio, prices)
+        portfolio["peak_equity"] = equity
+        portfolios[name] = portfolio
+
+    state.clear()
+    state.update({
+        "date": today,
+        "initialized": True,
+        "initialized_at": datetime.now(timezone.utc).isoformat(),
+        "portfolios": portfolios,
+    })
+
+    logging.info(
+        "[StrategyShadowSim] Initialized REST/LIVE shadow portfolios | date=%s cash=$%.2f positions=%s",
+        today,
+        cash,
+        positions,
+    )
+
+    return True
+
+
+def _build_strategy_shadow_trade_candidates(
+    *,
+    portfolio: dict,
+    target: dict | None,
+    prices: dict[str, float],
+    equity: float,
+) -> list[dict]:
+    positions = portfolio.setdefault("positions", {})
+    target_weights = _clean_strategy_shadow_target_weights(target)
+    symbols = sorted(set(positions.keys()) | set(target_weights.keys()))
+
+    candidates = []
+
+    for symbol in symbols:
+        price = safe_float(prices.get(symbol), 0.0)
+        if price <= 0:
+            continue
+
+        current_qty = safe_float(positions.get(symbol), 0.0)
+        current_value = current_qty * price
+        current_weight = current_value / equity if equity > 0 else 0.0
+        target_weight = safe_float(target_weights.get(symbol), 0.0)
+        target_qty = (
+            math.floor((target_weight * equity) / price)
+            if target_weight > 0 and equity > 0
+            else 0
+        )
+        qty_delta = target_qty - current_qty
+
+        if abs(qty_delta) < 1:
+            continue
+
+        side = "BUY" if qty_delta > 0 else "SELL"
+        requested_qty = abs(qty_delta)
+        requested_notional = requested_qty * price
+
+        candidates.append({
+            "symbol": symbol,
+            "decision": side,
+            "side": side.lower(),
+            "price": price,
+            "requested_qty": requested_qty,
+            "requested_notional": requested_notional,
+            "current_qty": current_qty,
+            "target_qty": target_qty,
+            "qty_delta": qty_delta,
+            "current_weight": current_weight,
+            "target_weight": target_weight,
+            "delta_weight": target_weight - current_weight,
+            "reason": "shadow_target_rebalance",
+        })
+
+    # Sells first, then largest absolute drift/notional.
+    candidates.sort(
+        key=lambda row: (
+            0 if row["decision"] == "SELL" else 1,
+            -abs(safe_float(row.get("delta_weight"), 0.0)),
+            -safe_float(row.get("requested_notional"), 0.0),
+        )
+    )
+
+    return candidates
+
+
+def _simulate_one_strategy_shadow_portfolio(
+    *,
+    portfolio: dict,
+    target: dict | None,
+    prices: dict[str, float],
+    cycle_id: int | None,
+    now_iso: str,
+) -> tuple[list[dict], list[dict], dict]:
+    max_trade_notional_pct = safe_float(
+        _execution_setting("strategy_shadow_max_trade_notional_pct", 0.075),
+        0.075,
+    )
+    max_trades_per_cycle = safe_int(
+        _execution_setting("strategy_shadow_max_trades_per_cycle", 6),
+        6,
+    )
+
+    target = target or {}
+    target_weights = _clean_strategy_shadow_target_weights(target)
+    target_cash_pct = safe_float(target.get("CASH"), 0.0) if isinstance(target, dict) else 0.0
+
+    positions = portfolio.setdefault("positions", {})
+    cash = safe_float(portfolio.get("cash"), 0.0)
+    equity_before = _strategy_shadow_portfolio_equity(portfolio, prices)
+    max_notional = max(0.0, equity_before * max_trade_notional_pct)
+
+    candidates = _build_strategy_shadow_trade_candidates(
+        portfolio=portfolio,
+        target=target,
+        prices=prices,
+        equity=equity_before,
+    )
+
+    order_rows = []
+    trade_count = 0
+    buy_notional = 0.0
+    sell_notional = 0.0
+
+    def _current_equity() -> float:
+        return cash + sum(
+            safe_float(q, 0.0) * safe_float(prices.get(sym), 0.0)
+            for sym, q in positions.items()
+        )
+
+    def _append_candidate_row(
+        *,
+        candidate: dict,
+        candidate_rank: int,
+        status: str,
+        skip_reason: str | None,
+        qty: float,
+        notional: float,
+        capped_qty: float,
+        cash_before: float,
+        cash_after: float,
+        equity_before_row: float,
+        equity_after_row: float,
+        position_before: float,
+    ) -> None:
+        price = safe_float(candidate.get("price"), 0.0)
+        requested_qty = safe_float(candidate.get("requested_qty"), 0.0)
+
+        order_rows.append({
+            "timestamp": now_iso,
+            "cycle_id": cycle_id,
+            "strategy_name": portfolio.get("strategy_name"),
+            "source": portfolio.get("source"),
+            "symbol": candidate.get("symbol"),
+            "side": str(candidate.get("side") or candidate.get("decision") or "").lower(),
+            "status": status,
+            "skip_reason": skip_reason,
+            "candidate_rank": candidate_rank,
+            "qty": qty,
+            "price": round(price, 4) if price > 0 else None,
+            "notional": round(notional, 2),
+            "requested_qty": requested_qty,
+            "requested_notional": round(requested_qty * price, 2),
+            "max_trade_notional": round(max_notional, 2),
+            "capped_qty": capped_qty,
+            "current_qty_before": position_before,
+            "target_qty": candidate.get("target_qty"),
+            "qty_delta_before": candidate.get("qty_delta"),
+            "current_weight_before": round(safe_float(candidate.get("current_weight"), 0.0), 6),
+            "target_weight": round(safe_float(candidate.get("target_weight"), 0.0), 6),
+            "cash_before": round(cash_before, 2),
+            "cash_after": round(cash_after, 2),
+            "equity_before": round(equity_before_row, 2),
+            "equity_after": round(equity_after_row, 2),
+            "reason": candidate.get("reason"),
+        })
+
+    for candidate_rank, candidate in enumerate(candidates, start=1):
+        symbol = candidate["symbol"]
+        side = candidate["decision"]
+        price = safe_float(candidate.get("price"), 0.0)
+        requested_qty = safe_float(candidate.get("requested_qty"), 0.0)
+        cash_before = cash
+        position_before = safe_float(positions.get(symbol), 0.0)
+        equity_before_row = _current_equity()
+
+        if price <= 0 or requested_qty <= 0:
+            _append_candidate_row(
+                candidate=candidate,
+                candidate_rank=candidate_rank,
+                status="skipped",
+                skip_reason="bad_price_or_requested_qty",
+                qty=0,
+                notional=0.0,
+                capped_qty=0,
+                cash_before=cash_before,
+                cash_after=cash,
+                equity_before_row=equity_before_row,
+                equity_after_row=equity_before_row,
+                position_before=position_before,
+            )
+            continue
+
+        if trade_count >= max_trades_per_cycle:
+            _append_candidate_row(
+                candidate=candidate,
+                candidate_rank=candidate_rank,
+                status="skipped_cycle_trade_limit",
+                skip_reason="max_trades_per_cycle_reached",
+                qty=0,
+                notional=0.0,
+                capped_qty=0,
+                cash_before=cash_before,
+                cash_after=cash,
+                equity_before_row=equity_before_row,
+                equity_after_row=equity_before_row,
+                position_before=position_before,
+            )
+            continue
+
+        capped_qty = min(
+            requested_qty,
+            math.floor(max_notional / price) if max_notional > 0 else requested_qty,
+        )
+        qty = math.floor(capped_qty)
+
+        if qty <= 0:
+            _append_candidate_row(
+                candidate=candidate,
+                candidate_rank=candidate_rank,
+                status="skipped_too_small",
+                skip_reason="quantity_rounded_to_zero_or_below_max_trade_size",
+                qty=0,
+                notional=0.0,
+                capped_qty=capped_qty,
+                cash_before=cash_before,
+                cash_after=cash,
+                equity_before_row=equity_before_row,
+                equity_after_row=equity_before_row,
+                position_before=position_before,
+            )
+            continue
+
+        if side == "SELL":
+            qty = min(qty, int(position_before))
+            if qty <= 0:
+                _append_candidate_row(
+                    candidate=candidate,
+                    candidate_rank=candidate_rank,
+                    status="skipped_no_position",
+                    skip_reason="no_sellable_position",
+                    qty=0,
+                    notional=0.0,
+                    capped_qty=capped_qty,
+                    cash_before=cash_before,
+                    cash_after=cash,
+                    equity_before_row=equity_before_row,
+                    equity_after_row=equity_before_row,
+                    position_before=position_before,
+                )
+                continue
+
+            notional = qty * price
+            positions[symbol] = position_before - qty
+            if positions[symbol] <= 0:
+                positions.pop(symbol, None)
+            cash += notional
+            sell_notional += notional
+
+        elif side == "BUY":
+            cash_limited_qty = min(qty, math.floor(cash / price) if price > 0 else 0)
+            if cash_limited_qty <= 0:
+                _append_candidate_row(
+                    candidate=candidate,
+                    candidate_rank=candidate_rank,
+                    status="skipped_cash",
+                    skip_reason="insufficient_shadow_cash",
+                    qty=0,
+                    notional=0.0,
+                    capped_qty=capped_qty,
+                    cash_before=cash_before,
+                    cash_after=cash,
+                    equity_before_row=equity_before_row,
+                    equity_after_row=equity_before_row,
+                    position_before=position_before,
+                )
+                continue
+
+            qty = cash_limited_qty
+            notional = qty * price
+            positions[symbol] = position_before + qty
+            cash -= notional
+            buy_notional += notional
+
+        else:
+            _append_candidate_row(
+                candidate=candidate,
+                candidate_rank=candidate_rank,
+                status="skipped",
+                skip_reason="unknown_side",
+                qty=0,
+                notional=0.0,
+                capped_qty=capped_qty,
+                cash_before=cash_before,
+                cash_after=cash,
+                equity_before_row=equity_before_row,
+                equity_after_row=equity_before_row,
+                position_before=position_before,
+            )
+            continue
+
+        trade_count += 1
+        equity_after_row = _current_equity()
+
+        _append_candidate_row(
+            candidate=candidate,
+            candidate_rank=candidate_rank,
+            status="executed",
+            skip_reason=None,
+            qty=qty,
+            notional=notional,
+            capped_qty=capped_qty,
+            cash_before=cash_before,
+            cash_after=cash,
+            equity_before_row=equity_before_row,
+            equity_after_row=equity_after_row,
+            position_before=position_before,
+        )
+
+    portfolio["cash"] = cash
+    equity_after = _strategy_shadow_portfolio_equity(portfolio, prices)
+
+    portfolio["cumulative_trade_count"] = safe_int(portfolio.get("cumulative_trade_count", 0), 0) + trade_count
+    portfolio["cumulative_buy_notional"] = safe_float(portfolio.get("cumulative_buy_notional"), 0.0) + buy_notional
+    portfolio["cumulative_sell_notional"] = safe_float(portfolio.get("cumulative_sell_notional"), 0.0) + sell_notional
+    portfolio["cumulative_gross_turnover"] = safe_float(portfolio.get("cumulative_gross_turnover"), 0.0) + buy_notional + sell_notional
+    portfolio["peak_equity"] = max(safe_float(portfolio.get("peak_equity"), equity_after), equity_after)
+
+    peak = safe_float(portfolio.get("peak_equity"), equity_after)
+    drawdown = (equity_after - peak) / peak if peak > 0 else 0.0
+
+    portfolio_summary = {
+        "strategy_name": portfolio.get("strategy_name"),
+        "source": portfolio.get("source"),
+        "cash": cash,
+        "equity": equity_after,
+        "cash_pct": cash / equity_after if equity_after > 0 else None,
+        "target_cash_pct": target_cash_pct,
+        "trade_count": trade_count,
+        "buy_notional": buy_notional,
+        "sell_notional": sell_notional,
+        "gross_turnover": buy_notional + sell_notional,
+        "cumulative_trade_count": portfolio.get("cumulative_trade_count"),
+        "cumulative_buy_notional": portfolio.get("cumulative_buy_notional"),
+        "cumulative_sell_notional": portfolio.get("cumulative_sell_notional"),
+        "cumulative_gross_turnover": portfolio.get("cumulative_gross_turnover"),
+        "peak_equity": peak,
+        "drawdown_pct": drawdown,
+    }
+
+    portfolio_rows = []
+    symbols = sorted(set(positions.keys()) | set(target_weights.keys()))
+
+    for symbol in symbols:
+        price = safe_float(prices.get(symbol), 0.0)
+        qty = safe_float(positions.get(symbol), 0.0)
+        value = qty * price if price > 0 else 0.0
+        weight = value / equity_after if equity_after > 0 else 0.0
+        target_weight = safe_float(target_weights.get(symbol), 0.0)
+
+        portfolio_rows.append({
+            "timestamp": now_iso,
+            "cycle_id": cycle_id,
+            "strategy_name": portfolio.get("strategy_name"),
+            "source": portfolio.get("source"),
+            "symbol": symbol,
+            "qty": qty,
+            "price": round(price, 4) if price > 0 else None,
+            "market_value": round(value, 2),
+            "weight": round(weight, 6),
+            "target_weight": round(target_weight, 6),
+            "weight_drift": round(weight - target_weight, 6),
+            "cash": round(cash, 2),
+            "equity": round(equity_after, 2),
+            "cash_pct": round(cash / equity_after, 6) if equity_after > 0 else None,
+            "target_cash_pct": target_cash_pct,
+            "trade_count": trade_count,
+            "buy_notional": round(buy_notional, 2),
+            "sell_notional": round(sell_notional, 2),
+            "gross_turnover": round(buy_notional + sell_notional, 2),
+            "cumulative_trade_count": portfolio.get("cumulative_trade_count"),
+            "cumulative_buy_notional": round(safe_float(portfolio.get("cumulative_buy_notional"), 0.0), 2),
+            "cumulative_sell_notional": round(safe_float(portfolio.get("cumulative_sell_notional"), 0.0), 2),
+            "cumulative_gross_turnover": round(safe_float(portfolio.get("cumulative_gross_turnover"), 0.0), 2),
+            "peak_equity": round(peak, 2),
+            "drawdown_pct": round(drawdown, 6),
+            "target_summary": target_summary_for_log(target),
+        })
+
+    # Add a CASH row so cash exposure is visible without reconstructing it.
+    portfolio_rows.append({
+        "timestamp": now_iso,
+        "cycle_id": cycle_id,
+        "strategy_name": portfolio.get("strategy_name"),
+        "source": portfolio.get("source"),
+        "symbol": "CASH",
+        "qty": cash,
+        "price": 1.0,
+        "market_value": round(cash, 2),
+        "weight": round(cash / equity_after, 6) if equity_after > 0 else None,
+        "target_weight": target_cash_pct,
+        "weight_drift": round((cash / equity_after) - target_cash_pct, 6) if equity_after > 0 else None,
+        "cash": round(cash, 2),
+        "equity": round(equity_after, 2),
+        "cash_pct": round(cash / equity_after, 6) if equity_after > 0 else None,
+        "target_cash_pct": target_cash_pct,
+        "trade_count": trade_count,
+        "buy_notional": round(buy_notional, 2),
+        "sell_notional": round(sell_notional, 2),
+        "gross_turnover": round(buy_notional + sell_notional, 2),
+        "cumulative_trade_count": portfolio.get("cumulative_trade_count"),
+        "cumulative_buy_notional": round(safe_float(portfolio.get("cumulative_buy_notional"), 0.0), 2),
+        "cumulative_sell_notional": round(safe_float(portfolio.get("cumulative_sell_notional"), 0.0), 2),
+        "cumulative_gross_turnover": round(safe_float(portfolio.get("cumulative_gross_turnover"), 0.0), 2),
+        "peak_equity": round(peak, 2),
+        "drawdown_pct": round(drawdown, 6),
+        "target_summary": target_summary_for_log(target),
+    })
+
+    return order_rows, portfolio_rows, portfolio_summary
+
+
+def _strategy_shadow_comparison_winner(summaries: dict[str, dict]) -> str | None:
+    if not summaries:
+        return None
+
+    valid = {
+        name: safe_float(summary.get("equity"), 0.0)
+        for name, summary in summaries.items()
+        if safe_float(summary.get("equity"), 0.0) > 0
+    }
+
+    if not valid:
+        return None
+
+    return max(valid.items(), key=lambda item: item[1])[0]
+
+
+def run_strategy_shadow_portfolio_simulation(
+    *,
+    symbols: list[str],
+    cycle_id: int | None,
+    market_is_open: bool,
+    rest_status: str,
+    live_status: str,
+    rest_target: dict | None,
+    live_target: dict | None,
+    rest_rank_map: dict,
+    live_prices: dict,
+    rest_bars_by_symbol: dict,
+    layer3_plan: list[dict] | None,
+    layer3_summary: dict | None,
+) -> dict:
+    if not _strategy_shadow_enabled():
+        return {"status": "disabled"}
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    if not market_is_open or rest_status != "ok" or live_status != "ok":
+        row = {
+            "timestamp": now_iso,
+            "cycle_id": cycle_id,
+            "status": "skipped",
+            "market_is_open": market_is_open,
+            "rest_status": rest_status,
+            "live_status": live_status,
+            "error": "requires_market_open_and_ok_rest_live",
+        }
+        append_layer_strategy_shadow_comparison_row(row)
+        return row
+
+    prices = _strategy_shadow_price_map(
+        symbols=symbols,
+        rest_rank_map=rest_rank_map,
+        live_prices=live_prices,
+        rest_bars_by_symbol=rest_bars_by_symbol,
+    )
+
+    if not prices:
+        row = {
+            "timestamp": now_iso,
+            "cycle_id": cycle_id,
+            "status": "skipped",
+            "market_is_open": market_is_open,
+            "rest_status": rest_status,
+            "live_status": live_status,
+            "error": "no_prices_available",
+        }
+        append_layer_strategy_shadow_comparison_row(row)
+        return row
+
+    _init_strategy_shadow_if_needed(
+        layer3_plan=layer3_plan,
+        layer3_summary=layer3_summary,
+        prices=prices,
+    )
+
+    portfolios = _strategy_shadow_state().setdefault("portfolios", {})
+    target_by_strategy = {
+        "REST": rest_target,
+        "LIVE": live_target,
+    }
+
+    all_order_rows = []
+    all_portfolio_rows = []
+    summaries = {}
+
+    for strategy_name in ("REST", "LIVE"):
+        portfolio = portfolios.get(strategy_name)
+        if not isinstance(portfolio, dict):
+            continue
+
+        order_rows, portfolio_rows, summary = _simulate_one_strategy_shadow_portfolio(
+            portfolio=portfolio,
+            target=target_by_strategy.get(strategy_name),
+            prices=prices,
+            cycle_id=cycle_id,
+            now_iso=now_iso,
+        )
+        all_order_rows.extend(order_rows)
+        all_portfolio_rows.extend(portfolio_rows)
+        summaries[strategy_name] = summary
+
+    append_layer_strategy_shadow_order_rows(all_order_rows)
+    append_layer_strategy_shadow_portfolio_rows(all_portfolio_rows)
+
+    def value(name: str, key: str, default=0.0):
+        return safe_float((summaries.get(name) or {}).get(key), default)
+
+    comparison_row = {
+        "timestamp": now_iso,
+        "cycle_id": cycle_id,
+        "status": "ok",
+        "market_is_open": market_is_open,
+        "rest_status": rest_status,
+        "live_status": live_status,
+        "rest_equity": round(value("REST", "equity"), 2),
+        "live_equity": round(value("LIVE", "equity"), 2),
+        "live_minus_rest_equity": round(value("LIVE", "equity") - value("REST", "equity"), 2),
+        "rest_cash_pct": round(value("REST", "cash_pct"), 6),
+        "live_cash_pct": round(value("LIVE", "cash_pct"), 6),
+        "rest_cycle_gross_turnover": round(value("REST", "gross_turnover"), 2),
+        "live_cycle_gross_turnover": round(value("LIVE", "gross_turnover"), 2),
+        "rest_cumulative_gross_turnover": round(value("REST", "cumulative_gross_turnover"), 2),
+        "live_cumulative_gross_turnover": round(value("LIVE", "cumulative_gross_turnover"), 2),
+        "rest_drawdown_pct": round(value("REST", "drawdown_pct"), 6),
+        "live_drawdown_pct": round(value("LIVE", "drawdown_pct"), 6),
+        "winner_by_equity": _strategy_shadow_comparison_winner(summaries),
+        "live_better_than_rest": value("LIVE", "equity") > value("REST", "equity"),
+        "rest_top_weights": _top_strategy_shadow_weights(portfolios.get("REST", {}), prices),
+        "live_top_weights": _top_strategy_shadow_weights(portfolios.get("LIVE", {}), prices),
+        "error": None,
+    }
+
+    append_layer_strategy_shadow_comparison_row(comparison_row)
+
+    logging.info(
+        "[StrategyShadowSim] Complete | cycle_id=%s winner=%s REST=$%.2f LIVE=$%.2f live_minus_rest=$%.2f",
+        cycle_id,
+        comparison_row.get("winner_by_equity"),
+        comparison_row.get("rest_equity"),
+        comparison_row.get("live_equity"),
+        comparison_row.get("live_minus_rest_equity"),
+    )
+
+    return comparison_row
+
+
 def run_live_strategy_shadow_comparison(
     *,
     symbols: list[str],
@@ -1036,6 +1786,28 @@ def run_live_strategy_shadow_comparison(
     }
 
     append_layer_live_strategy_shadow_cycle_row(cycle_row)
+
+    try:
+        run_strategy_shadow_portfolio_simulation(
+            symbols=symbols_for_rows,
+            cycle_id=cycle_id,
+            market_is_open=market_is_open,
+            rest_status=rest_status,
+            live_status=live_status,
+            rest_target=rest_target,
+            live_target=live_target,
+            rest_rank_map=rest_rank_map,
+            live_prices=live_prices,
+            rest_bars_by_symbol=rest_bars_by_symbol,
+            layer3_plan=layer3_plan,
+            layer3_summary=layer3_summary,
+        )
+    except Exception:
+        logging.warning(
+            "[StrategyShadowSim] Failed during live strategy shadow comparison | cycle_id=%s",
+            cycle_id,
+            exc_info=True,
+        )
 
     logging.info(
         "[LiveStrategyShadow] Complete | cycle_id=%s live_status=%s live_ranked=%s "

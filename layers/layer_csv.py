@@ -29,6 +29,11 @@ LAYER_CSV_FILES = {
     "live-strategy-shadow": "layer_live_strategy_shadow.csv",
     "live-strategy-shadow-cycles": "layer_live_strategy_shadow_cycles.csv",
     "live-strategy-outcomes": "layer_live_strategy_outcomes.csv",
+
+    # Full shadow portfolio simulator for direct REST-vs-LIVE comparison.
+    "strategy-shadow-orders": "layer_strategy_shadow_orders.csv",
+    "strategy-shadow-portfolios": "layer_strategy_shadow_portfolios.csv",
+    "strategy-shadow-comparison": "layer_strategy_shadow_comparison.csv",
 }
 
 
@@ -395,6 +400,92 @@ LAYER_LIVE_STRATEGY_OUTCOME_FIELDS = [
     "live_preference_result_30m",
     "live_preference_result_60m",
     "finalized_reason",
+]
+
+
+LAYER_STRATEGY_SHADOW_ORDER_FIELDS = [
+    "timestamp",
+    "cycle_id",
+    "strategy_name",
+    "source",
+    "symbol",
+    "side",
+    "status",
+    "skip_reason",
+    "candidate_rank",
+    "qty",
+    "price",
+    "notional",
+    "requested_qty",
+    "requested_notional",
+    "max_trade_notional",
+    "capped_qty",
+    "current_qty_before",
+    "target_qty",
+    "qty_delta_before",
+    "current_weight_before",
+    "target_weight",
+    "cash_before",
+    "cash_after",
+    "equity_before",
+    "equity_after",
+    "reason",
+]
+
+
+LAYER_STRATEGY_SHADOW_PORTFOLIO_FIELDS = [
+    "timestamp",
+    "cycle_id",
+    "strategy_name",
+    "source",
+    "symbol",
+    "qty",
+    "price",
+    "market_value",
+    "weight",
+    "target_weight",
+    "weight_drift",
+    "cash",
+    "equity",
+    "cash_pct",
+    "target_cash_pct",
+    "trade_count",
+    "buy_notional",
+    "sell_notional",
+    "gross_turnover",
+    "cumulative_trade_count",
+    "cumulative_buy_notional",
+    "cumulative_sell_notional",
+    "cumulative_gross_turnover",
+    "peak_equity",
+    "drawdown_pct",
+    "target_summary",
+]
+
+
+LAYER_STRATEGY_SHADOW_COMPARISON_FIELDS = [
+    "timestamp",
+    "cycle_id",
+    "status",
+    "market_is_open",
+    "rest_status",
+    "live_status",
+    "rest_equity",
+    "live_equity",
+    "live_minus_rest_equity",
+    "rest_cash_pct",
+    "live_cash_pct",
+    "rest_cycle_gross_turnover",
+    "live_cycle_gross_turnover",
+    "rest_cumulative_gross_turnover",
+    "live_cumulative_gross_turnover",
+    "rest_drawdown_pct",
+    "live_drawdown_pct",
+    "winner_by_equity",
+    "live_better_than_rest",
+    "rest_top_weights",
+    "live_top_weights",
+    "error",
 ]
 
 
@@ -857,6 +948,52 @@ def append_layer_live_strategy_outcome_rows(rows: list[dict] | None) -> None:
         )
     except Exception:
         logging.warning("[LayerCSV] Failed to append live strategy outcome rows.", exc_info=True)
+
+
+def append_layer_strategy_shadow_order_rows(rows: list[dict] | None) -> None:
+    rows = rows or []
+
+    if not rows:
+        return
+
+    try:
+        _append_csv_rows(
+            LAYER_CSV_FILES["strategy-shadow-orders"],
+            LAYER_STRATEGY_SHADOW_ORDER_FIELDS,
+            rows,
+        )
+    except Exception:
+        logging.warning("[LayerCSV] Failed to append strategy shadow order rows.", exc_info=True)
+
+
+def append_layer_strategy_shadow_portfolio_rows(rows: list[dict] | None) -> None:
+    rows = rows or []
+
+    if not rows:
+        return
+
+    try:
+        _append_csv_rows(
+            LAYER_CSV_FILES["strategy-shadow-portfolios"],
+            LAYER_STRATEGY_SHADOW_PORTFOLIO_FIELDS,
+            rows,
+        )
+    except Exception:
+        logging.warning("[LayerCSV] Failed to append strategy shadow portfolio rows.", exc_info=True)
+
+
+def append_layer_strategy_shadow_comparison_row(row: dict | None) -> None:
+    if not isinstance(row, dict) or not row:
+        return
+
+    try:
+        _append_csv_rows(
+            LAYER_CSV_FILES["strategy-shadow-comparison"],
+            LAYER_STRATEGY_SHADOW_COMPARISON_FIELDS,
+            [row],
+        )
+    except Exception:
+        logging.warning("[LayerCSV] Failed to append strategy shadow comparison row.", exc_info=True)
 
 
 def append_layer_cycle_row(

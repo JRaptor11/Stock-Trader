@@ -269,6 +269,12 @@ def dev_route_list():
                 "/layers/live-strategy-shadow-cycles-csv": "Download layer_live_strategy_shadow_cycles.csv",
                 "/layers/live-strategy-outcomes": "View parsed layer_live_strategy_outcomes.csv rows as JSON",
                 "/layers/live-strategy-outcomes-csv": "Download layer_live_strategy_outcomes.csv",
+                "/layers/strategy-shadow-orders": "View simulated REST/LIVE strategy shadow orders and skipped candidates as JSON",
+                "/layers/strategy-shadow-orders-csv": "Download layer_strategy_shadow_orders.csv",
+                "/layers/strategy-shadow-portfolios": "View simulated REST/LIVE strategy shadow portfolios as JSON",
+                "/layers/strategy-shadow-portfolios-csv": "Download layer_strategy_shadow_portfolios.csv",
+                "/layers/strategy-shadow-comparison": "View simulated REST/LIVE strategy comparison rows as JSON",
+                "/layers/strategy-shadow-comparison-csv": "Download layer_strategy_shadow_comparison.csv",
                 "/layers/all-csv-diagnostics.zip": "Download all available Layer CSV diagnostics as one ZIP",
                 "/layers/dashboard": "GET — Summarize latest Layer cycle health, skips, plan state, and order state",
                 "/layers/cycle/{cycle_id}": "GET — Join cycle, plan, order, and snapshot rows for one Layer cycle",
@@ -696,6 +702,13 @@ def layer_routes():
 
         "/layers/live-strategy-outcomes": "View parsed layer_live_strategy_outcomes.csv rows as JSON",
         "/layers/live-strategy-outcomes-csv": "Download layer_live_strategy_outcomes.csv",
+
+        "/layers/strategy-shadow-orders": "View simulated REST/LIVE strategy shadow orders and skipped candidates as JSON",
+        "/layers/strategy-shadow-orders-csv": "Download layer_strategy_shadow_orders.csv",
+        "/layers/strategy-shadow-portfolios": "View simulated REST/LIVE strategy shadow portfolios as JSON",
+        "/layers/strategy-shadow-portfolios-csv": "Download layer_strategy_shadow_portfolios.csv",
+        "/layers/strategy-shadow-comparison": "View simulated REST/LIVE strategy comparison rows as JSON",
+        "/layers/strategy-shadow-comparison-csv": "Download layer_strategy_shadow_comparison.csv",
 
         "/layers/all-csv-diagnostics.zip": "Download all available Layer CSV diagnostics as one ZIP",
         "/layers/dashboard": "Summarize latest Layer cycle health, skips, plan state, and order state",
