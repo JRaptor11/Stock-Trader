@@ -258,6 +258,195 @@ def _broker_error_cooldowns() -> dict:
     )
 
 
+def _fail_safe_snapshot() -> dict:
+    fs = app_state.get("fail_safes", {}) or {}
+
+    pending_symbols = fs.get("pending_liquidation_symbols") or []
+    if isinstance(pending_symbols, str):
+        pending_symbols = [pending_symbols]
+
+    tracked_symbols = fs.get("symbols") or []
+    if isinstance(tracked_symbols, str):
+        tracked_symbols = [tracked_symbols]
+
+    symbol = normalize_symbol(fs.get("symbol"))
+
+    return {
+        "event_set": bool(fail_safe_event.is_set()),
+        "state": bool(fs.get("state")),
+        "active": bool(fail_safe_event.is_set() or fs.get("state")),
+        "last_trigger_reason": fs.get("last_trigger_reason"),
+        "symbol": symbol,
+        "symbols": sorted(
+            {normalize_symbol(item) for item in tracked_symbols if normalize_symbol(item)}
+        ),
+        "pending_liquidation_symbols": sorted(
+            {normalize_symbol(item) for item in pending_symbols if normalize_symbol(item)}
+        ),
+        "liquidate_all": bool(fs.get("liquidate_all")),
+        "updated_at": fs.get("updated_at"),
+    }
+
+
+def _fail_safe_liquidation_symbols(snapshot: dict, position_qty: dict[str, float]) -> list[str]:
+    if not snapshot.get("active"):
+        return []
+
+    if snapshot.get("liquidate_all"):
+        return sorted(symbol for symbol, qty in position_qty.items() if qty > 0)
+
+    symbols = set(snapshot.get("pending_liquidation_symbols") or [])
+    symbols.update(snapshot.get("symbols") or [])
+
+    symbol = normalize_symbol(snapshot.get("symbol"))
+    if symbol:
+        symbols.add(symbol)
+
+    return sorted(symbol for symbol in symbols if position_qty.get(symbol, 0.0) > 0)
+
+
+def _price_for_fail_safe_sell(symbol: str, existing_rows: list[dict]) -> float:
+    for row in existing_rows:
+        if normalize_symbol(row.get("symbol")) == symbol:
+            price = safe_float(row.get("price", row.get("live_price")), 0.0)
+            if price > 0:
+                return price
+
+    price = safe_float(
+        app_state.get("last_trade_price_by_symbol", {}).get(symbol),
+        0.0,
+    )
+    if price > 0:
+        return price
+
+    trade_info = app_state.get("open_trades", {}).get(symbol, {})
+    if isinstance(trade_info, dict):
+        return safe_float(trade_info.get("buy_price"), 0.0)
+
+    return 0.0
+
+
+def _append_fail_safe_liquidation_rows(
+    executable: list[dict],
+    *,
+    snapshot: dict,
+    position_qty: dict[str, float],
+    cycle_id: Any,
+    plan_id: Any,
+) -> list[dict]:
+    sell_symbols = {
+        normalize_symbol(row.get("symbol"))
+        for row in executable
+        if _normalize_decision(row.get("decision")) == "SELL"
+    }
+
+    added_rows: list[dict] = []
+
+    for symbol in _fail_safe_liquidation_symbols(snapshot, position_qty):
+        if symbol in sell_symbols:
+            continue
+
+        qty = safe_float(position_qty.get(symbol), 0.0)
+        price = _price_for_fail_safe_sell(symbol, executable)
+
+        if qty <= 0 or price <= 0:
+            logging.warning(
+                "[Layer5Exec] Fail-safe liquidation row skipped; missing qty/price | "
+                "symbol=%s qty=%s price=%s cycle_id=%s plan_id=%s",
+                symbol,
+                qty,
+                price,
+                cycle_id,
+                plan_id,
+            )
+            continue
+
+        row = {
+            "row_id": f"{plan_id or 'layer5'}:FAILSAFE:{symbol}",
+            "cycle_id": cycle_id,
+            "plan_id": plan_id,
+            "symbol": symbol,
+            "decision": "SELL",
+            "qty": qty,
+            "price": price,
+            "notional": qty * price,
+            "reason": f"fail_safe_forced_liquidation_{snapshot.get('last_trigger_reason') or 'active'}",
+            "fail_safe_forced": True,
+        }
+
+        executable.append(row)
+        added_rows.append(row)
+        sell_symbols.add(symbol)
+
+    if added_rows:
+        logging.warning(
+            "[Layer5Exec] Added fail-safe liquidation SELL rows | cycle_id=%s "
+            "plan_id=%s rows=%s",
+            cycle_id,
+            plan_id,
+            [compact_executable_row_for_log(row) for row in added_rows],
+        )
+
+    executable.sort(
+        key=lambda r: (
+            0 if _normalize_decision(r.get("decision")) == "SELL" else 1,
+            -abs(safe_float(r.get("notional"), 0.0)),
+        )
+    )
+
+    return executable
+
+
+def _record_fail_safe_blocked_buys(
+    *,
+    result: dict,
+    blocked_rows: list[dict],
+    cycle_id: Any,
+    plan_id: Any,
+) -> None:
+    for row in blocked_rows:
+        qty = safe_float(row.get("qty"), 0.0)
+        price = safe_float(row.get("price"), 0.0)
+        notional = safe_float(row.get("notional"), qty * price)
+        row_id = row.get("row_id") or f"{plan_id}:{row.get('symbol')}"
+
+        result["attempted"] += 1
+        result["skipped"] += 1
+        result["orders"].append(
+            {
+                "symbol": row.get("symbol"),
+                "side": "buy",
+                "status": "skipped",
+                "reason": "fail_safe_active_blocks_buy",
+                "qty": qty,
+                "notional": notional,
+                "price": price,
+                "plan_id": plan_id,
+                "row_id": row_id,
+            }
+        )
+
+
+def _mark_fail_safe_liquidation_submitted(symbol: str) -> None:
+    symbol = normalize_symbol(symbol)
+    if not symbol:
+        return
+
+    fs = app_state.setdefault("fail_safes", {})
+    pending = fs.get("pending_liquidation_symbols") or []
+    if isinstance(pending, str):
+        pending = [pending]
+
+    pending = [
+        normalize_symbol(item)
+        for item in pending
+        if normalize_symbol(item) != symbol
+    ]
+
+    fs["pending_liquidation_symbols"] = sorted({item for item in pending if item})
+    fs["last_liquidation_submitted_at"] = datetime.now(timezone.utc).isoformat()
+
+
 def _broker_error_cooldown_remaining(symbol: str) -> float:
     cooldowns = _broker_error_cooldowns()
     until = safe_float(cooldowns.get(symbol), 0.0)
@@ -508,21 +697,11 @@ def execute_layer5_plan(plan: Any, summary: dict | None = None) -> dict:
             started_monotonic=started_monotonic,
         )
 
-    if fail_safe_event.is_set() or app_state.get("fail_safes", {}).get("state"):
-        logging.warning(
-            "[Layer5Exec] Blocked because fail-safe is active. cycle_id=%s plan_id=%s",
-            cycle_id,
-            plan_id,
-        )
-        result["blocked_reason"] = "fail_safe_active"
-        return _finish_layer5_result(
-            result=result,
-            layer5_state=layer5_state,
-            started_monotonic=started_monotonic,
-            log_level=logging.WARNING,
-        )
+    fail_safe_snapshot = _fail_safe_snapshot()
+    layer5_state["last_fail_safe_snapshot"] = fail_safe_snapshot
 
     client = app_state.get("trading_client")
+
     if client is None:
         logging.warning("[Layer5Exec] No trading_client available.")
         result["blocked_reason"] = "missing_trading_client"
@@ -599,18 +778,67 @@ def execute_layer5_plan(plan: Any, summary: dict | None = None) -> dict:
             log_level=logging.WARNING,
         )
 
+    position_qty = _position_qty_by_symbol(client)
+    _refresh_broker_snapshot(client, layer5_state, label="pre_execution")
+    available_cash_budget = _available_cash(client)
+
     executable = _executable_rows(plan)
+
+    if fail_safe_snapshot["active"]:
+        original_executable_count = len(executable)
+        blocked_buy_rows = [row for row in executable if row.get("decision") == "BUY"]
+        executable = [row for row in executable if row.get("decision") == "SELL"]
+
+        _record_fail_safe_blocked_buys(
+            result=result,
+            blocked_rows=blocked_buy_rows,
+            cycle_id=cycle_id,
+            plan_id=plan_id,
+        )
+
+        executable = _append_fail_safe_liquidation_rows(
+            executable,
+            snapshot=fail_safe_snapshot,
+            position_qty=position_qty,
+            cycle_id=cycle_id,
+            plan_id=plan_id,
+        )
+
+        logging.warning(
+            "[Layer5Exec] Fail-safe active; SELL-only execution policy applied | "
+            "cycle_id=%s plan_id=%s event_set=%s state=%s reason=%s symbol=%s "
+            "pending=%s liquidate_all=%s original_executable=%s blocked_buys=%s sell_rows=%s",
+            cycle_id,
+            plan_id,
+            fail_safe_snapshot.get("event_set"),
+            fail_safe_snapshot.get("state"),
+            fail_safe_snapshot.get("last_trigger_reason"),
+            fail_safe_snapshot.get("symbol"),
+            fail_safe_snapshot.get("pending_liquidation_symbols"),
+            fail_safe_snapshot.get("liquidate_all"),
+            original_executable_count,
+            len(blocked_buy_rows),
+            len(executable),
+        )
+
     if not executable:
         logging.info(
-            "[Layer5Exec] No executable BUY/SELL rows. cycle_id=%s plan_id=%s",
+            "[Layer5Exec] No executable SELL rows while fail-safe active. cycle_id=%s plan_id=%s"
+            if fail_safe_snapshot["active"]
+            else "[Layer5Exec] No executable BUY/SELL rows. cycle_id=%s plan_id=%s",
             cycle_id,
             plan_id,
         )
-        result["blocked_reason"] = "no_executable_rows"
+        result["blocked_reason"] = (
+            "fail_safe_active_no_sell_rows"
+            if fail_safe_snapshot["active"]
+            else "no_executable_rows"
+        )
         return _finish_layer5_result(
             result=result,
             layer5_state=layer5_state,
             started_monotonic=started_monotonic,
+            log_level=logging.WARNING if fail_safe_snapshot["active"] else logging.INFO,
         )
 
     logging.info(
@@ -620,10 +848,6 @@ def execute_layer5_plan(plan: Any, summary: dict | None = None) -> dict:
         len(executable),
         [compact_executable_row_for_log(row) for row in executable],
     )
-
-    position_qty = _position_qty_by_symbol(client)
-    _refresh_broker_snapshot(client, layer5_state, label="pre_execution")
-    available_cash_budget = _available_cash(client)
 
     for row in executable:
         symbol = row["symbol"]
@@ -847,6 +1071,9 @@ def execute_layer5_plan(plan: Any, summary: dict | None = None) -> dict:
             )
 
             _clear_broker_error_cooldown(symbol)
+
+            if decision == "SELL" and row.get("fail_safe_forced"):
+                _mark_fail_safe_liquidation_submitted(symbol)
 
             result["submitted"] += 1
             result["orders"].append(

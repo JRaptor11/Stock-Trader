@@ -78,6 +78,11 @@ def ensure_app_state_structure() -> None:
     fail_safes.setdefault("invalid_price_cache", {})
     fail_safes.setdefault("liquidation_in_progress", set())
     fail_safes.setdefault("symbols", set())
+    fail_safes.setdefault("pending_liquidation_symbols", [])
+    fail_safes.setdefault("liquidate_all", False)
+    fail_safes.setdefault("last_trigger_reason", None)
+    fail_safes.setdefault("symbol", None)
+    fail_safes.setdefault("updated_at", None)
 
     strategy = app_state.setdefault("strategy", {})
     strategy.setdefault("sells_in_progress", set())

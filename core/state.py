@@ -289,6 +289,11 @@ app_state = {
         "position_lock": asyncio.Lock(),
         "state": False,
         "liquidation_in_progress": set(),
+        "symbols": set(),
+        "pending_liquidation_symbols": [],
+        "liquidate_all": False,
+        "symbol": None,
+        "updated_at": None,
         "last_trigger_reason": None,
     },
 

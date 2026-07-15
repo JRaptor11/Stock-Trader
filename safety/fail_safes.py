@@ -2,28 +2,127 @@ import asyncio
 from datetime import datetime, timezone
 import time
 import logging
+
 from core.state import app_state, app_state_lock, fail_safe_event
 from integrations.alerts import send_email_alert
 from trading.trade_utils import log_trade_to_csv
 from config.runtime_config import get_config
 
+
 # === Fail-Safe Actions ===
+
 async def send_fail_safe_alert_async(subject: str, body: str) -> None:
     try:
         await asyncio.to_thread(send_email_alert, subject, body)
     except Exception:
         logging.warning("[FailSafe] Failed to send email alert; continuing.", exc_info=True)
 
+
+def _normalize_symbol(symbol) -> str:
+    return str(symbol or "").upper().strip()
+
+
 def _is_held_trade_status(status: str | None) -> bool:
     status = str(status or "").lower().strip()
     return status in {"filled", "pending_sell", "synced"}
 
+
+def _coerce_symbol_set(value) -> set[str]:
+    if value is None:
+        return set()
+
+    if isinstance(value, str):
+        return {_normalize_symbol(value)} if _normalize_symbol(value) else set()
+
+    try:
+        return {
+            _normalize_symbol(symbol)
+            for symbol in value
+            if _normalize_symbol(symbol)
+        }
+    except TypeError:
+        symbol = _normalize_symbol(value)
+        return {symbol} if symbol else set()
+
+
+def _pending_liquidation_set() -> set[str]:
+    fs = app_state.setdefault("fail_safes", {})
+    pending = fs.setdefault("pending_liquidation_symbols", [])
+    return _coerce_symbol_set(pending)
+
+
+def _layered_execution_enabled() -> bool:
+    """
+    True when the current architecture should let Layer 5 execute fail-safe sells.
+
+    The current project still uses layer4_execution_enabled as the main env/config flag
+    for the Layer 4 shadow -> Layer 5 execution path, so that flag is included here.
+    """
+    execution = app_state.get("execution", {}) or {}
+
+    return bool(
+        execution.get("layer5_execution_enabled")
+        or execution.get("layer4_execution_enabled")
+        or execution.get("layer3_execution_enabled")
+    )
+
+
+def _queue_fail_safe_liquidation(
+    symbols,
+    *,
+    reason: str,
+    liquidate_all: bool = False,
+) -> list[str]:
+    normalized = sorted(_coerce_symbol_set(symbols))
+
+    with app_state_lock:
+        fs = app_state.setdefault("fail_safes", {})
+
+        existing_pending = _coerce_symbol_set(fs.get("pending_liquidation_symbols"))
+        existing_pending.update(normalized)
+
+        existing_symbols = _coerce_symbol_set(fs.get("symbols"))
+        existing_symbols.update(normalized)
+
+        fs["state"] = True
+        fs["updated_at"] = time.time()
+        fs["last_trigger_reason"] = reason
+        fs["pending_liquidation_symbols"] = sorted(existing_pending)
+        fs["symbols"] = set(existing_symbols)
+        fs["liquidate_all"] = bool(liquidate_all)
+
+        if len(normalized) == 1:
+            fs["symbol"] = normalized[0]
+
+    logging.warning(
+        "[FailSafe] Queued liquidation for layered execution | "
+        "reason=%s liquidate_all=%s symbols=%s",
+        reason,
+        liquidate_all,
+        normalized,
+    )
+
+    return normalized
+
+
 async def sell_position(symbol, price=None):
     """
     Forces a sell of the given symbol if a position exists.
-    Safe against duplicate forced-liquidation attempts.
+
+    Legacy behavior:
+        fail_safes.py -> stream_manager._execute_sell(...)
+
+    Current layered behavior:
+        fail_safes.py -> queue liquidation request -> Layer 5 submits SELL
+
+    This preserves the old stream fallback, but when layered execution is enabled,
+    it does not try to sell through the legacy stream manager.
     """
-    liquidation_in_progress = app_state["fail_safes"].setdefault("liquidation_in_progress", set())
+    symbol = _normalize_symbol(symbol)
+    liquidation_in_progress = app_state["fail_safes"].setdefault(
+        "liquidation_in_progress",
+        set(),
+    )
 
     if app_state["stream"]["shutdown_event"].is_set():
         logging.warning(f"[SELL_POSITION] Shutdown active; refusing forced sell for {symbol}")
@@ -35,7 +134,11 @@ async def sell_position(symbol, price=None):
 
     async with app_state["fail_safes"]["position_lock"]:
         trade_info = app_state.get("open_trades", {}).get(symbol)
-        trade_status = str(trade_info.get("status", "")).lower().strip() if isinstance(trade_info, dict) else ""
+        trade_status = (
+            str(trade_info.get("status", "")).lower().strip()
+            if isinstance(trade_info, dict)
+            else ""
+        )
 
         if not isinstance(trade_info, dict) or not _is_held_trade_status(trade_status):
             logging.warning(
@@ -45,9 +148,32 @@ async def sell_position(symbol, price=None):
             liquidation_in_progress.discard(symbol)
             return
 
+        if _layered_execution_enabled():
+            queued = _queue_fail_safe_liquidation(
+                [symbol],
+                reason=app_state.get("fail_safes", {}).get("last_trigger_reason") or "manual",
+                liquidate_all=False,
+            )
+            logging.warning(
+                "[SELL_POSITION] Layered execution enabled; queued forced liquidation "
+                "for Layer 5 instead of using legacy stream sell | symbol=%s queued=%s",
+                symbol,
+                queued,
+            )
+            return
+
         stream_manager = app_state["stream"].get("manager")
         if not stream_manager:
-            logging.error("[SELL_POSITION] Stream manager not available. Cannot execute sell.")
+            _queue_fail_safe_liquidation(
+                [symbol],
+                reason="legacy_sell_no_stream_manager",
+                liquidate_all=False,
+            )
+            logging.error(
+                "[SELL_POSITION] Stream manager not available. "
+                "Queued forced sell for Layer 5 instead. symbol=%s",
+                symbol,
+            )
             return
 
         liquidation_in_progress.add(symbol)
@@ -83,9 +209,13 @@ async def sell_position(symbol, price=None):
         finally:
             liquidation_in_progress.discard(symbol)
 
+
 async def check_global_fail_safe():
     """
-    Triggers a forced sell of all open positions if account equity drops below threshold.
+    Triggers forced liquidation of all open positions if account equity drops below threshold.
+
+    In layered mode, this queues liquidation requests for Layer 5.
+    In legacy mode, this falls back to direct stream-manager sells.
     """
     tracker = app_state["services"].get("balance_tracker", {}).get("instance")
     if not tracker:
@@ -96,28 +226,61 @@ async def check_global_fail_safe():
     equity = info.get("equity", 0)
     equity_threshold = get_config("EQUITY_THRESHOLD")
 
-    logging.debug(f"[FailSafe] Checking equity: ${equity:.2f} vs threshold: ${equity_threshold:.2f}")
+    logging.debug(
+        f"[FailSafe] Checking equity: ${equity:.2f} vs threshold: ${equity_threshold:.2f}"
+    )
 
-    if equity < equity_threshold:
+    if equity >= equity_threshold:
+        return
 
-        if app_state["fail_safes"].get("state"):
-            logging.debug("[FailSafe] Global fail-safe already active.")
-            return
+    fs = app_state.setdefault("fail_safes", {})
 
-        logging.warning(f"⚠️ Global fail-safe triggered! Equity below {equity_threshold}")
+    if fs.get("state") and fs.get("liquidate_all"):
+        logging.debug("[FailSafe] Global fail-safe already active.")
+        return
 
-        with app_state_lock:
-            app_state["fail_safes"]["state"] = True
-            app_state["fail_safes"]["updated_at"] = time.time()
-            app_state["fail_safes"]["last_trigger_reason"] = "global"
+    logging.warning(f"⚠️ Global fail-safe triggered! Equity below {equity_threshold}")
 
-        fail_safe_event.set()
+    open_trades_snapshot = dict(app_state.get("open_trades", {}))
+    held_symbols = []
 
-        open_trades_snapshot = dict(app_state.get("open_trades", {}))
+    for symbol, trade_data in open_trades_snapshot.items():
+        status = (
+            str(trade_data.get("status", "")).lower().strip()
+            if isinstance(trade_data, dict)
+            else ""
+        )
+
+        if _is_held_trade_status(status):
+            held_symbols.append(symbol)
+        else:
+            logging.debug(
+                f"[FailSafe] Skipping global forced sell for {symbol}; local status={status!r}"
+            )
+
+    _queue_fail_safe_liquidation(
+        held_symbols,
+        reason="global",
+        liquidate_all=True,
+    )
+
+    fail_safe_event.set()
+    logging.error(f"[FailSafe] global state=True set at {time.strftime('%H:%M:%S')}")
+
+    if _layered_execution_enabled():
+        logging.warning(
+            "[FailSafe] Global fail-safe queued for Layer 5 liquidation | symbols=%s",
+            sorted(_coerce_symbol_set(held_symbols)),
+        )
+    else:
         for symbol, trade_data in open_trades_snapshot.items():
-            status = str(trade_data.get("status", "")).lower().strip() if isinstance(trade_data, dict) else ""
+            status = (
+                str(trade_data.get("status", "")).lower().strip()
+                if isinstance(trade_data, dict)
+                else ""
+            )
+
             if not _is_held_trade_status(status):
-                logging.debug(f"[FailSafe] Skipping global forced sell for {symbol}; local status={status!r}")
                 continue
 
             price = app_state.get("last_trade_price_by_symbol", {}).get(symbol)
@@ -126,23 +289,28 @@ async def check_global_fail_safe():
 
             await sell_position(symbol, price)
 
-        if not app_state["fail_safes"].get("email_suppressed", False):
-            await send_fail_safe_alert_async(
-                "Global Fail-Safe Triggered",
-                f"Equity dropped to ${equity:.2f}. Forced liquidation was triggered."
-            )
+    if not app_state["fail_safes"].get("email_suppressed", False):
+        await send_fail_safe_alert_async(
+            "Global Fail-Safe Triggered",
+            f"Equity dropped to ${equity:.2f}. Forced liquidation was triggered.",
+        )
+
 
 async def check_per_stock_fail_safe():
-
     with app_state_lock:
         fs = app_state.setdefault("fail_safes", {})
         cache = fs.setdefault("invalid_price_cache", {})
         fs.setdefault("state", False)
+        fs.setdefault("pending_liquidation_symbols", [])
+        fs.setdefault("liquidate_all", False)
+        fs.setdefault("symbols", set())
 
         open_trades_snapshot = dict(app_state.get("open_trades", {}))
         last_price_snapshot = dict(app_state.get("last_trade_price_by_symbol", {}))
 
     for symbol, trade_data in open_trades_snapshot.items():
+        symbol = _normalize_symbol(symbol)
+
         if not isinstance(trade_data, dict):
             continue
 
@@ -154,9 +322,10 @@ async def check_per_stock_fail_safe():
         entry_price = float(trade_data.get("buy_price", 0) or 0)
         current_price = last_price_snapshot.get(symbol)
 
-        logging.debug(f"[FailSafe] {symbol}: status={status}, Entry=${entry_price}, Current=${current_price}")
+        logging.debug(
+            f"[FailSafe] {symbol}: status={status}, Entry=${entry_price}, Current=${current_price}"
+        )
 
-        # --- invalid price cache logic (guard writes with the lock) ---
         with app_state_lock:
             last_cached = cache.get(symbol)
 
@@ -180,59 +349,79 @@ async def check_per_stock_fail_safe():
                 f"(current_price={current_price})"
             )
             continue
-        else:
-            # Price recovered; clear cache for this symbol
-            if last_cached is not None:
-                with app_state_lock:
-                    cache.pop(symbol, None)
+
+        if last_cached is not None:
+            with app_state_lock:
+                cache.pop(symbol, None)
 
         current_price = float(current_price)
         percent_loss = ((entry_price - current_price) / entry_price) * 100
         threshold = get_config("MAX_POSITION_LOSS_PERCENT")
-        logging.debug(f"[FailSafe] {symbol} loss: {percent_loss:.2f}% (Threshold: {threshold}%)")
 
-        if percent_loss >= threshold:
-            logging.warning(f"⚠️ Fail-safe triggered for {symbol}! Loss: {percent_loss:.2f}%")
-            log_trade_to_csv(symbol, "FAILSAFE", current_price, time.strftime("%Y-%m-%d %H:%M:%S"))
+        logging.debug(
+            f"[FailSafe] {symbol} loss: {percent_loss:.2f}% (Threshold: {threshold}%)"
+        )
 
-            with app_state_lock:
-                fs["state"] = True
-                fs["symbol"] = symbol
-                fs.setdefault("symbols", set()).add(symbol)
-                fs["updated_at"] = time.time()
-                fs["last_trigger_reason"] = "per_stock"
+        if percent_loss < threshold:
+            continue
 
-            fail_safe_event.set()
-            logging.error(f"[FailSafe] state=True set at {time.strftime('%H:%M:%S')}")
+        already_queued = symbol in _pending_liquidation_set()
 
+        logging.warning(f"⚠️ Fail-safe triggered for {symbol}! Loss: {percent_loss:.2f}%")
+        log_trade_to_csv(
+            symbol,
+            "FAILSAFE",
+            current_price,
+            time.strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
+        _queue_fail_safe_liquidation(
+            [symbol],
+            reason="per_stock",
+            liquidate_all=False,
+        )
+
+        fail_safe_event.set()
+        logging.error(f"[FailSafe] state=True set at {time.strftime('%H:%M:%S')}")
+
+        if _layered_execution_enabled():
+            logging.warning(
+                "[FailSafe] Per-stock fail-safe queued for Layer 5 liquidation | "
+                "symbol=%s loss=%.2f%%",
+                symbol,
+                percent_loss,
+            )
+        else:
             await sell_position(symbol, current_price)
 
+        if not already_queued:
             await send_fail_safe_alert_async(
                 "Per-Stock Fail-Safe Triggered",
-                f"{symbol} dropped {percent_loss:.2f}%. Forced sell was triggered."
+                f"{symbol} dropped {percent_loss:.2f}%. Forced sell was triggered.",
             )
+
 
 async def _sleep_with_shutdown(seconds: float, step: float = 0.25) -> None:
     """
     Sleep in small chunks so shutdown_event can interrupt quickly.
-    Uses app_state["stream"]["shutdown_event"] (threading.Event).
+    Uses app_state["stream"]["shutdown_event"].
     """
     end = time.time() + float(seconds)
+
     while time.time() < end:
         if app_state["stream"]["shutdown_event"].is_set():
             return
         await asyncio.sleep(min(step, end - time.time()))
+
 
 async def monitor_fail_safes():
     """
     Background loop that continuously monitors for global and per-stock fail-safe triggers.
     Stops cleanly when shutdown_event is set.
     """
-
     shutdown_event = app_state["stream"].get("shutdown_event")
 
     while not shutdown_event.is_set():
-
         if app_state["stream"].get("state") != "running":
             logging.debug("[FailSafe] Skipping failsafe check — stream not active.")
             await _sleep_with_shutdown(5)
@@ -254,7 +443,7 @@ async def monitor_fail_safes():
             await _sleep_with_shutdown(10)
 
         except Exception as e:
-            logging.error(f"Error in fail-safe monitor: {e}")
+            logging.error(f"Error in fail-safe monitor: {e}", exc_info=True)
             await _sleep_with_shutdown(10)
 
     logging.info("[FailSafe] monitor_fail_safes exiting due to shutdown_event.")
