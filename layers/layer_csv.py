@@ -34,6 +34,12 @@ LAYER_CSV_FILES = {
     "strategy-shadow-orders": "layer_strategy_shadow_orders.csv",
     "strategy-shadow-portfolios": "layer_strategy_shadow_portfolios.csv",
     "strategy-shadow-comparison": "layer_strategy_shadow_comparison.csv",
+
+    # Opening-delay diagnostics: what live-only/hybrid would have done while
+    # the REST production path was blocked by stale bars.
+    "opening-shadow-cycles": "layer_opening_shadow_cycles.csv",
+    "opening-shadow-trades": "layer_opening_shadow_trades.csv",
+    "opening-shadow-outcomes": "layer_opening_shadow_outcomes.csv",
 }
 
 
@@ -486,6 +492,101 @@ LAYER_STRATEGY_SHADOW_COMPARISON_FIELDS = [
     "rest_top_weights",
     "live_top_weights",
     "error",
+]
+
+
+LAYER_OPENING_SHADOW_CYCLE_FIELDS = [
+    "timestamp",
+    "cycle_id",
+    "market_is_open",
+    "rest_status",
+    "rest_fresh_count",
+    "required_fresh_symbols",
+    "live_status",
+    "live_ranked_count",
+    "live_symbols_ready_count",
+    "symbol_count",
+    "warmup_available",
+    "warmup_age_minutes",
+    "warmup_target_symbols",
+    "live_top_symbols",
+    "live_cash_pct",
+    "warmup_cash_pct",
+    "total_abs_live_vs_warmup_target_diff",
+    "live_only_buy_count",
+    "live_only_sell_count",
+    "live_only_hold_count",
+    "hybrid_execute_count",
+    "hybrid_delay_count",
+    "hybrid_block_count",
+    "hybrid_buy_count",
+    "hybrid_sell_count",
+    "error",
+]
+
+
+LAYER_OPENING_SHADOW_TRADE_FIELDS = [
+    "timestamp",
+    "cycle_id",
+    "symbol",
+    "market_is_open",
+    "rest_status",
+    "rest_fresh_count",
+    "required_fresh_symbols",
+    "live_status",
+    "live_bar_count",
+    "current_qty",
+    "current_weight",
+    "live_target_weight",
+    "warmup_target_weight",
+    "target_delta_live_minus_current",
+    "target_delta_warmup_minus_current",
+    "live_only_decision",
+    "live_only_reason",
+    "live_only_qty",
+    "live_only_notional",
+    "live_only_agrees_with_warmup",
+    "hybrid_decision",
+    "hybrid_action",
+    "hybrid_reason",
+    "hybrid_qty",
+    "hybrid_notional",
+    "live_price",
+    "live_rank",
+    "live_score",
+    "warmup_rank",
+    "warmup_score",
+    "live_top_symbols",
+    "warmup_target_symbols",
+]
+
+
+LAYER_OPENING_SHADOW_OUTCOME_FIELDS = [
+    "source_timestamp",
+    "outcome_timestamp",
+    "source_cycle_id",
+    "symbol",
+    "strategy_name",
+    "proposed_decision",
+    "proposed_action",
+    "start_live_price",
+    "outcome_live_price",
+    "forward_return_10m",
+    "forward_return_30m",
+    "forward_return_60m",
+    "trade_score_10m",
+    "trade_score_30m",
+    "trade_score_60m",
+    "trade_result_10m",
+    "trade_result_30m",
+    "trade_result_60m",
+    "current_weight",
+    "live_target_weight",
+    "warmup_target_weight",
+    "proposed_qty",
+    "proposed_notional",
+    "reason",
+    "finalized_reason",
 ]
 
 
@@ -994,6 +1095,52 @@ def append_layer_strategy_shadow_comparison_row(row: dict | None) -> None:
         )
     except Exception:
         logging.warning("[LayerCSV] Failed to append strategy shadow comparison row.", exc_info=True)
+
+
+def append_layer_opening_shadow_cycle_row(row: dict | None) -> None:
+    if not isinstance(row, dict) or not row:
+        return
+
+    try:
+        _append_csv_rows(
+            LAYER_CSV_FILES["opening-shadow-cycles"],
+            LAYER_OPENING_SHADOW_CYCLE_FIELDS,
+            [row],
+        )
+    except Exception:
+        logging.warning("[LayerCSV] Failed to append opening shadow cycle row.", exc_info=True)
+
+
+def append_layer_opening_shadow_trade_rows(rows: list[dict] | None) -> None:
+    rows = rows or []
+
+    if not rows:
+        return
+
+    try:
+        _append_csv_rows(
+            LAYER_CSV_FILES["opening-shadow-trades"],
+            LAYER_OPENING_SHADOW_TRADE_FIELDS,
+            rows,
+        )
+    except Exception:
+        logging.warning("[LayerCSV] Failed to append opening shadow trade rows.", exc_info=True)
+
+
+def append_layer_opening_shadow_outcome_rows(rows: list[dict] | None) -> None:
+    rows = rows or []
+
+    if not rows:
+        return
+
+    try:
+        _append_csv_rows(
+            LAYER_CSV_FILES["opening-shadow-outcomes"],
+            LAYER_OPENING_SHADOW_OUTCOME_FIELDS,
+            rows,
+        )
+    except Exception:
+        logging.warning("[LayerCSV] Failed to append opening shadow outcome rows.", exc_info=True)
 
 
 def append_layer_cycle_row(

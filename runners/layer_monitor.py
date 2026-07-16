@@ -24,7 +24,11 @@ from market.bar_data import (
 from core.state import app_state
 from layers.layer1_ranker import Layer1StockRanker
 from layers.layer2_portfolio import Layer2PortfolioBuilder
-from layers.layer3_rebalancer import run_layer3_dry_run
+from layers.layer3_rebalancer import (
+    run_layer3_dry_run,
+    _get_account_snapshot,
+    _get_positions_snapshot,
+)
 from layers.layer4_executor import execute_layer4_plan
 from layers.layer_csv import (
     append_layer_cycle_row,
@@ -32,6 +36,9 @@ from layers.layer_csv import (
     append_layer_live_strategy_outcome_rows,
     append_layer_live_strategy_shadow_cycle_row,
     append_layer_live_strategy_shadow_rows,
+    append_layer_opening_shadow_cycle_row,
+    append_layer_opening_shadow_outcome_rows,
+    append_layer_opening_shadow_trade_rows,
     append_layer_strategy_shadow_comparison_row,
     append_layer_strategy_shadow_order_rows,
     append_layer_strategy_shadow_portfolio_rows,
@@ -39,10 +46,27 @@ from layers.layer_csv import (
 
 
 def _execution_setting(name: str, default):
-    return app_state.get("execution", {}).get(
-        name,
-        getattr(config, name.upper(), default),
-    )
+    raw = app_state.get("execution", {}).get(name, None)
+
+    if raw is not None:
+        return raw
+
+    raw = getattr(config, name.upper(), None)
+
+    if raw is not None:
+        return raw
+
+    raw = os.getenv(name.upper())
+
+    if raw is not None:
+        return raw
+
+    raw = os.getenv(name)
+
+    if raw is not None:
+        return raw
+
+    return default
 
 
 def _execution_bool_setting(name: str, default: bool = False) -> bool:
@@ -699,6 +723,555 @@ def _preference_result(score) -> str | None:
     if score < 0:
         return "live_preference_hurt"
     return "neutral"
+
+
+def _trade_direction_sign(decision: str | None) -> int:
+    decision = str(decision or "").upper().strip()
+    if decision == "BUY":
+        return 1
+    if decision == "SELL":
+        return -1
+    return 0
+
+
+def _trade_result_label(score) -> str | None:
+    if score is None:
+        return None
+    score = safe_float(score, 0.0)
+    if score > 0:
+        return "proposed_trade_helped"
+    if score < 0:
+        return "proposed_trade_hurt"
+    return "neutral"
+
+
+def _warmup_shadow_context() -> dict:
+    """
+    Return the last off-hours warmup target/ranks. This is the closest
+    strategic anchor available when the REST production path is blocked at
+    the open by stale bars.
+    """
+    warmup = app_state.get("layers", {}).get("last_off_hours_warmup", {})
+    if not isinstance(warmup, dict):
+        warmup = {}
+
+    target = warmup.get("target_portfolio") or {}
+    ranked = warmup.get("ranked") or []
+
+    rank_map = {}
+    for index, row in enumerate(ranked, start=1):
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("symbol") or "").upper().strip()
+        if not symbol:
+            continue
+        rank_map[symbol] = {
+            "rank": index,
+            "score": safe_float(row.get("score"), 0.0),
+            "last_price": safe_float(row.get("last_price"), 0.0),
+            "reason": row.get("reason"),
+        }
+
+    age_minutes = None
+    raw_ts = warmup.get("timestamp")
+    if raw_ts:
+        try:
+            parsed = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            age_minutes = round(
+                max(0.0, (datetime.now(timezone.utc) - parsed).total_seconds() / 60.0),
+                3,
+            )
+        except Exception:
+            age_minutes = None
+
+    return {
+        "available": bool(target),
+        "timestamp": raw_ts,
+        "age_minutes": age_minutes,
+        "target": target if isinstance(target, dict) else {},
+        "rank_map": rank_map,
+        "target_symbols": sorted(_target_symbols(target)),
+        "cash_pct": safe_float(target.get("CASH"), 0.0) if isinstance(target, dict) else 0.0,
+    }
+
+
+def _append_mature_opening_shadow_outcomes(*, market_is_open: bool) -> None:
+    shadow = app_state.setdefault("layers", {}).setdefault("opening_live_shadow", {})
+    pending = shadow.setdefault("pending_outcomes", [])
+
+    if not pending:
+        return
+
+    md = app_state.get("market_data", {}).get("buffer")
+    now_epoch = time.time()
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    matured_rows = []
+    keep = []
+
+    for item in pending:
+        try:
+            symbol = str(item.get("symbol") or "").upper().strip()
+            created_epoch = safe_float(item.get("created_epoch"), 0.0)
+            start_price = safe_float(item.get("start_live_price"), 0.0)
+
+            if not symbol or created_epoch <= 0 or start_price <= 0:
+                continue
+
+            current_price = _latest_live_price_for_symbol(md, symbol)
+            age_seconds = now_epoch - created_epoch
+
+            if current_price <= 0:
+                keep.append(item)
+                continue
+
+            for seconds, key in ((600, "10m"), (1800, "30m"), (3600, "60m")):
+                field = f"forward_return_{key}"
+                if age_seconds >= seconds and field not in item:
+                    item[field] = round((current_price - start_price) / start_price, 6)
+
+            has_10m = "forward_return_10m" in item
+            has_30m = "forward_return_30m" in item
+            has_60m = "forward_return_60m" in item
+
+            finalized_reason = None
+            if has_10m and has_30m and has_60m:
+                finalized_reason = "all_horizons_complete"
+            elif not market_is_open and has_10m:
+                finalized_reason = "market_closed_partial"
+
+            if not finalized_reason:
+                keep.append(item)
+                continue
+
+            sign = _trade_direction_sign(item.get("proposed_decision"))
+
+            def trade_score(key: str):
+                value = item.get(f"forward_return_{key}")
+                if value is None or sign == 0:
+                    return None
+                return round(sign * safe_float(value, 0.0), 6)
+
+            score_10m = trade_score("10m")
+            score_30m = trade_score("30m")
+            score_60m = trade_score("60m")
+
+            matured_rows.append({
+                "source_timestamp": item.get("source_timestamp"),
+                "outcome_timestamp": now_iso,
+                "source_cycle_id": item.get("cycle_id"),
+                "symbol": symbol,
+                "strategy_name": item.get("strategy_name"),
+                "proposed_decision": item.get("proposed_decision"),
+                "proposed_action": item.get("proposed_action"),
+                "start_live_price": start_price,
+                "outcome_live_price": current_price,
+                "forward_return_10m": item.get("forward_return_10m"),
+                "forward_return_30m": item.get("forward_return_30m"),
+                "forward_return_60m": item.get("forward_return_60m"),
+                "trade_score_10m": score_10m,
+                "trade_score_30m": score_30m,
+                "trade_score_60m": score_60m,
+                "trade_result_10m": _trade_result_label(score_10m),
+                "trade_result_30m": _trade_result_label(score_30m),
+                "trade_result_60m": _trade_result_label(score_60m),
+                "current_weight": item.get("current_weight"),
+                "live_target_weight": item.get("live_target_weight"),
+                "warmup_target_weight": item.get("warmup_target_weight"),
+                "proposed_qty": item.get("proposed_qty"),
+                "proposed_notional": item.get("proposed_notional"),
+                "reason": item.get("reason"),
+                "finalized_reason": finalized_reason,
+            })
+
+        except Exception:
+            logging.warning(
+                "[OpeningLiveShadow] Failed finalizing one pending outcome row.",
+                exc_info=True,
+            )
+            keep.append(item)
+
+    shadow["pending_outcomes"] = keep
+
+    if matured_rows:
+        append_layer_opening_shadow_outcome_rows(matured_rows)
+        logging.info(
+            "[OpeningLiveShadow] Appended matured outcome rows | count=%s pending=%s",
+            len(matured_rows),
+            len(keep),
+        )
+
+
+def run_opening_live_fallback_shadow(
+    *,
+    symbols: list[str],
+    cycle_id: int | None,
+    market_is_open: bool,
+    rest_status: str,
+    freshness_report: dict | None,
+    required_fresh_symbols: int | None,
+    rest_bars_by_symbol: dict | None = None,
+) -> dict:
+    """
+    Shadow-only opening-delay diagnostic.
+
+    This runs when production REST bars are stale, but local live bars may be
+    ready. It logs what a live-only opening plan and a conservative hybrid
+    opening plan would have done. It never updates the real Layer 1/2 handoff,
+    never calls Layer 3, and never submits orders.
+    """
+    enabled = _execution_bool_setting("opening_live_shadow_enabled", True)
+    _append_mature_opening_shadow_outcomes(market_is_open=market_is_open)
+
+    if not enabled:
+        return {"enabled": False, "status": "disabled"}
+
+    if not market_is_open:
+        return {"enabled": True, "status": "market_closed"}
+
+    md = app_state.get("market_data", {}).get("buffer")
+    if md is None or not hasattr(md, "get_live_bars"):
+        row = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "cycle_id": cycle_id,
+            "market_is_open": market_is_open,
+            "rest_status": rest_status,
+            "rest_fresh_count": (freshness_report or {}).get("fresh_count"),
+            "required_fresh_symbols": required_fresh_symbols,
+            "live_status": "missing_market_data_buffer",
+            "error": "missing_market_data_buffer",
+        }
+        append_layer_opening_shadow_cycle_row(row)
+        return row
+
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    now_epoch = time.time()
+
+    timeframe_seconds = safe_int(
+        _execution_setting("live_strategy_shadow_timeframe_seconds", 300),
+        300,
+    )
+    live_bar_limit = safe_int(
+        _execution_setting("live_strategy_shadow_bar_limit", 500),
+        500,
+    )
+    min_live_bars = safe_int(
+        _execution_setting("opening_live_shadow_min_bars", 6),
+        6,
+    )
+    required_live_symbols = safe_int(
+        _execution_setting("opening_live_shadow_required_symbols", required_fresh_symbols or 7),
+        required_fresh_symbols or 7,
+    )
+    top_n = safe_int(
+        _execution_setting("live_strategy_shadow_top_n", 5),
+        5,
+    )
+    drift_threshold = safe_float(
+        _execution_setting("live_strategy_shadow_min_abs_weight_drift", 0.025),
+        0.025,
+    )
+    max_trade_notional_pct = safe_float(
+        _execution_setting("opening_live_shadow_max_trade_notional_pct", 0.075),
+        0.075,
+    )
+
+    rest_bars_by_symbol = rest_bars_by_symbol or {}
+    live_bars_by_symbol, live_bar_counts, live_prices = _build_live_bars_by_symbol(
+        symbols,
+        timeframe_seconds=timeframe_seconds,
+        limit=live_bar_limit,
+        rest_bars_by_symbol=rest_bars_by_symbol,
+        rest_bootstrap_enabled=_execution_bool_setting(
+            "live_strategy_shadow_rest_bootstrap_enabled",
+            True,
+        ),
+    )
+
+    live_symbols_ready = [
+        symbol
+        for symbol, count in live_bar_counts.items()
+        if count >= min_live_bars
+    ]
+
+    warmup = _warmup_shadow_context()
+
+    cycle_base = {
+        "timestamp": now_iso,
+        "cycle_id": cycle_id,
+        "market_is_open": market_is_open,
+        "rest_status": rest_status,
+        "rest_fresh_count": (freshness_report or {}).get("fresh_count"),
+        "required_fresh_symbols": required_fresh_symbols,
+        "live_symbols_ready_count": len(live_symbols_ready),
+        "symbol_count": len(symbols or []),
+        "warmup_available": warmup.get("available"),
+        "warmup_age_minutes": warmup.get("age_minutes"),
+        "warmup_target_symbols": warmup.get("target_symbols"),
+    }
+
+    if len(live_symbols_ready) < required_live_symbols:
+        row = {
+            **cycle_base,
+            "live_status": "insufficient_live_bars",
+            "live_ranked_count": 0,
+            "error": f"ready={len(live_symbols_ready)} required={required_live_symbols} counts={live_bar_counts}",
+        }
+        append_layer_opening_shadow_cycle_row(row)
+        logging.info(
+            "[OpeningLiveShadow] Insufficient live bars | ready=%s required=%s counts=%s",
+            len(live_symbols_ready),
+            required_live_symbols,
+            live_bar_counts,
+        )
+        return row
+
+    try:
+        ranker, portfolio_builder = _get_live_shadow_components(
+            md,
+            timeframe_seconds=timeframe_seconds,
+            top_n=top_n,
+        )
+        live_ranked = ranker.rank_from_bars(live_bars_by_symbol)
+        live_target = portfolio_builder.build_target_portfolio(
+            live_ranked,
+            context=_live_shadow_evaluation_context(
+                market_is_open=market_is_open,
+                count_live_cycle=False,
+            ),
+        )
+        live_status = "ok"
+    except Exception as exc:
+        logging.warning("[OpeningLiveShadow] Evaluation failed.", exc_info=True)
+        row = {
+            **cycle_base,
+            "live_status": "error",
+            "live_ranked_count": 0,
+            "error": str(exc),
+        }
+        append_layer_opening_shadow_cycle_row(row)
+        return row
+
+    account = _get_account_snapshot()
+    positions = _get_positions_snapshot()
+    equity = safe_float(account.get("equity"), 0.0)
+    cash = safe_float(account.get("cash"), 0.0)
+
+    if equity <= 0:
+        position_value = sum(
+            safe_float((positions.get(symbol) or {}).get("qty"), 0.0)
+            * safe_float(live_prices.get(symbol), 0.0)
+            for symbol in symbols or []
+        )
+        equity = cash + position_value
+
+    live_rank_map, live_top_symbols = _rank_snapshot(live_ranked)
+    warmup_rank_map = warmup.get("rank_map") or {}
+    warmup_target = warmup.get("target") or {}
+    live_target = live_target or {}
+
+    symbols_for_rows = sorted(
+        set(str(s or "").upper().strip() for s in symbols or [] if str(s or "").strip())
+        | _target_symbols(live_target)
+        | _target_symbols(warmup_target)
+        | set(positions.keys())
+    )
+
+    rows = []
+    pending_rows = []
+    live_only_counts = {"BUY": 0, "SELL": 0, "HOLD": 0}
+    hybrid_counts = {"EXECUTE": 0, "DELAY": 0, "BLOCK": 0, "BUY": 0, "SELL": 0}
+    total_abs_live_vs_warmup = 0.0
+    max_notional = max(0.0, equity * max_trade_notional_pct)
+
+    for symbol in symbols_for_rows:
+        live_price = safe_float(live_prices.get(symbol), 0.0)
+        if live_price <= 0:
+            continue
+
+        position = positions.get(symbol) or {}
+        current_qty = safe_float(position.get("qty"), 0.0)
+        current_value = current_qty * live_price
+        current_weight = current_value / equity if equity > 0 else 0.0
+
+        live_weight = _target_weight(live_target, symbol)
+        warmup_weight = _target_weight(warmup_target, symbol)
+        live_delta = live_weight - current_weight
+        warmup_delta = warmup_weight - current_weight
+        total_abs_live_vs_warmup += abs(live_weight - warmup_weight)
+
+        if abs(live_delta) < drift_threshold:
+            live_decision = "HOLD"
+            live_reason = "live_drift_below_threshold"
+        elif live_delta > 0:
+            live_decision = "BUY"
+            live_reason = "live_underweight_vs_target"
+        else:
+            live_decision = "SELL"
+            live_reason = "live_overweight_or_target_removed"
+
+        live_only_counts[live_decision] = live_only_counts.get(live_decision, 0) + 1
+
+        requested_qty = 0
+        requested_notional = 0.0
+        if live_decision != "HOLD" and equity > 0:
+            requested_notional = abs(live_delta) * equity
+            requested_notional = min(requested_notional, max_notional) if max_notional > 0 else requested_notional
+            requested_qty = math.floor(requested_notional / live_price) if live_price > 0 else 0
+            if live_decision == "SELL":
+                requested_qty = min(requested_qty, math.floor(current_qty))
+            requested_notional = requested_qty * live_price
+
+        warmup_same_direction = (
+            live_decision == "BUY" and warmup_delta > drift_threshold
+        ) or (
+            live_decision == "SELL" and warmup_delta < -drift_threshold
+        )
+
+        if live_decision == "HOLD" or requested_qty <= 0:
+            hybrid_action = "BLOCK"
+            hybrid_decision = "HOLD"
+            hybrid_reason = "no_actionable_live_trade"
+            hybrid_qty = 0
+            hybrid_notional = 0.0
+        elif warmup_same_direction:
+            hybrid_action = "EXECUTE"
+            hybrid_decision = live_decision
+            hybrid_reason = "live_trade_agrees_with_warmup_direction"
+            hybrid_qty = requested_qty
+            hybrid_notional = requested_notional
+        elif live_decision == "SELL" and warmup_weight <= 0 and live_weight <= 0:
+            hybrid_action = "EXECUTE"
+            hybrid_decision = "SELL"
+            hybrid_reason = "risk_reducing_exit_confirmed_by_live_and_warmup_absence"
+            hybrid_qty = requested_qty
+            hybrid_notional = requested_notional
+        elif live_decision == "SELL":
+            hybrid_action = "DELAY"
+            hybrid_decision = "SELL"
+            hybrid_reason = "live_sell_conflicts_with_warmup_target"
+            hybrid_qty = 0
+            hybrid_notional = 0.0
+        else:
+            hybrid_action = "DELAY"
+            hybrid_decision = "BUY"
+            hybrid_reason = "live_buy_not_confirmed_by_warmup"
+            hybrid_qty = 0
+            hybrid_notional = 0.0
+
+        hybrid_counts[hybrid_action] = hybrid_counts.get(hybrid_action, 0) + 1
+        if hybrid_decision in {"BUY", "SELL"}:
+            hybrid_counts[hybrid_decision] = hybrid_counts.get(hybrid_decision, 0) + 1
+
+        live_info = live_rank_map.get(symbol, {})
+        warmup_info = warmup_rank_map.get(symbol, {})
+
+        rows.append({
+            "timestamp": now_iso,
+            "cycle_id": cycle_id,
+            "symbol": symbol,
+            "market_is_open": market_is_open,
+            "rest_status": rest_status,
+            "rest_fresh_count": (freshness_report or {}).get("fresh_count"),
+            "required_fresh_symbols": required_fresh_symbols,
+            "live_status": live_status,
+            "live_bar_count": live_bar_counts.get(symbol),
+            "current_qty": current_qty,
+            "current_weight": round(current_weight, 6),
+            "live_target_weight": round(live_weight, 6),
+            "warmup_target_weight": round(warmup_weight, 6),
+            "target_delta_live_minus_current": round(live_delta, 6),
+            "target_delta_warmup_minus_current": round(warmup_delta, 6),
+            "live_only_decision": live_decision,
+            "live_only_reason": live_reason,
+            "live_only_qty": requested_qty,
+            "live_only_notional": round(requested_notional, 2),
+            "live_only_agrees_with_warmup": warmup_same_direction,
+            "hybrid_decision": hybrid_decision,
+            "hybrid_action": hybrid_action,
+            "hybrid_reason": hybrid_reason,
+            "hybrid_qty": hybrid_qty,
+            "hybrid_notional": round(hybrid_notional, 2),
+            "live_price": round(live_price, 4),
+            "live_rank": live_info.get("rank"),
+            "live_score": live_info.get("score"),
+            "warmup_rank": warmup_info.get("rank"),
+            "warmup_score": warmup_info.get("score"),
+            "live_top_symbols": live_top_symbols,
+            "warmup_target_symbols": warmup.get("target_symbols"),
+        })
+
+        if requested_qty > 0 and live_decision in {"BUY", "SELL"}:
+            for strategy_name, action, qty, notional, reason in (
+                ("LIVE_ONLY_OPEN", "EXECUTE", requested_qty, requested_notional, live_reason),
+                ("HYBRID_OPEN", hybrid_action, hybrid_qty, hybrid_notional, hybrid_reason),
+            ):
+                if strategy_name == "HYBRID_OPEN" and action != "EXECUTE":
+                    continue
+                if qty <= 0 or notional <= 0:
+                    continue
+
+                pending_rows.append({
+                    "created_epoch": now_epoch,
+                    "source_timestamp": now_iso,
+                    "cycle_id": cycle_id,
+                    "symbol": symbol,
+                    "strategy_name": strategy_name,
+                    "proposed_decision": live_decision,
+                    "proposed_action": action,
+                    "start_live_price": live_price,
+                    "current_weight": round(current_weight, 6),
+                    "live_target_weight": round(live_weight, 6),
+                    "warmup_target_weight": round(warmup_weight, 6),
+                    "proposed_qty": qty,
+                    "proposed_notional": round(notional, 2),
+                    "reason": reason,
+                })
+
+    append_layer_opening_shadow_trade_rows(rows)
+
+    shadow = app_state.setdefault("layers", {}).setdefault("opening_live_shadow", {})
+    pending = shadow.setdefault("pending_outcomes", [])
+    pending.extend(pending_rows)
+    del pending[:-5000]
+
+    cycle_row = {
+        **cycle_base,
+        "live_status": live_status,
+        "live_ranked_count": len(live_ranked or []),
+        "live_top_symbols": live_top_symbols,
+        "live_cash_pct": live_target.get("CASH") if isinstance(live_target, dict) else None,
+        "warmup_cash_pct": warmup.get("cash_pct"),
+        "total_abs_live_vs_warmup_target_diff": round(total_abs_live_vs_warmup, 6),
+        "live_only_buy_count": live_only_counts.get("BUY", 0),
+        "live_only_sell_count": live_only_counts.get("SELL", 0),
+        "live_only_hold_count": live_only_counts.get("HOLD", 0),
+        "hybrid_execute_count": hybrid_counts.get("EXECUTE", 0),
+        "hybrid_delay_count": hybrid_counts.get("DELAY", 0),
+        "hybrid_block_count": hybrid_counts.get("BLOCK", 0),
+        "hybrid_buy_count": hybrid_counts.get("BUY", 0),
+        "hybrid_sell_count": hybrid_counts.get("SELL", 0),
+        "error": None,
+    }
+    append_layer_opening_shadow_cycle_row(cycle_row)
+
+    logging.info(
+        "[OpeningLiveShadow] Complete | cycle_id=%s rest_status=%s live_status=%s "
+        "live_only_buy=%s live_only_sell=%s hybrid_execute=%s hybrid_delay=%s pending=%s",
+        cycle_id,
+        rest_status,
+        live_status,
+        live_only_counts.get("BUY", 0),
+        live_only_counts.get("SELL", 0),
+        hybrid_counts.get("EXECUTE", 0),
+        hybrid_counts.get("DELAY", 0),
+        len(pending),
+    )
+
+    return cycle_row
 
 
 def _append_mature_live_strategy_shadow_outcomes(*, market_is_open: bool) -> None:
@@ -1586,6 +2159,8 @@ def run_live_strategy_shadow_comparison(
     - does not submit orders
     """
     enabled = bool(_execution_setting("live_strategy_shadow_enabled", True))
+    _append_mature_opening_shadow_outcomes(market_is_open=market_is_open)
+
     if not enabled:
         _append_mature_live_strategy_shadow_outcomes(market_is_open=market_is_open)
         return {"enabled": enabled, "status": "disabled"}
@@ -2225,9 +2800,19 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
                                 skip_info,
                             )
 
-                            # Even when the REST-bar path skips, run the live-bar shadow comparison
+                            # Even when the REST-bar path skips, run live-bar diagnostics
                             # so we can measure whether live bars had enough information to produce
                             # a usable target earlier than delayed REST bars.
+                            run_opening_live_fallback_shadow(
+                                symbols=symbols,
+                                cycle_id=next_layer3_cycle_id,
+                                market_is_open=market_is_open,
+                                rest_status="skipped_insufficient_fresh_bars",
+                                freshness_report=freshness_report,
+                                required_fresh_symbols=required_fresh_symbols,
+                                rest_bars_by_symbol=bars_by_symbol,
+                            )
+
                             run_live_strategy_shadow_comparison(
                                 symbols=symbols,
                                 cycle_id=next_layer3_cycle_id,
