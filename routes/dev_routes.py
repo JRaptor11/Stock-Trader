@@ -275,10 +275,28 @@ def dev_route_list():
                 "/layers/strategy-shadow-portfolios-csv": "Download layer_strategy_shadow_portfolios.csv",
                 "/layers/strategy-shadow-comparison": "View simulated REST/LIVE strategy comparison rows as JSON",
                 "/layers/strategy-shadow-comparison-csv": "Download layer_strategy_shadow_comparison.csv",
-                "/layers/all-csv-diagnostics.zip": "Download all available Layer CSV diagnostics as one ZIP",
-                "/layers/dashboard": "GET — Summarize latest Layer cycle health, skips, plan state, and order state",
-                "/layers/cycle/{cycle_id}": "GET — Join cycle, plan, order, and snapshot rows for one Layer cycle",
-                "/layers/symbol/{symbol}": "GET — Summarize Layer 3 / Layer 4 behavior for one symbol",
+                "/layers/rest-live-attribution-cycles": (
+                    "View joined cycle-level REST-vs-LIVE attribution rows as JSON"
+                ),
+                "/layers/rest-live-attribution-cycles-csv": (
+                    "Download layer_rest_live_attribution_cycles.csv"
+                ),
+                "/layers/rest-live-attribution-symbols": (
+                    "View joined symbol-level REST-vs-LIVE attribution rows as JSON"
+                ),
+                "/layers/rest-live-attribution-symbols-csv": (
+                    "Download layer_rest_live_attribution_symbols.csv"
+                ),
+                "/layers/all-csv-diagnostics.zip": "GET — Download all available Layer CSV diagnostics as one ZIP",
+                "/layers/dashboard": (
+                    "GET — Summarize latest Layer health and REST/LIVE attribution"
+                ),
+                "/layers/cycle/{cycle_id}": (
+                    "GET — Join cycle, plan, order, snapshot, and attribution rows"
+                ),
+                "/layers/symbol/{symbol}": (
+                    "GET — Summarize Layer behavior and REST/LIVE attribution for one symbol"
+                ),
                 "/layers/effectiveness": "GET — Summarize operational Layer effectiveness, skip reasons, execution rates, and symbol activity",
             },
         ),
@@ -623,8 +641,8 @@ def download_all_layer_csv_diagnostics():
     """
     Download every available Layer CSV diagnostic file in a single ZIP.
 
-    This includes the standard Layer 3/4/5 audit trail plus live-bar shadow
-    comparison CSVs when they exist.
+    This includes the standard Layer 3/4/5 audit trail, live-bar shadow
+    comparison CSVs, and derived REST-vs-LIVE attribution CSVs when they exist.
     """
     available_files = []
 
@@ -710,10 +728,29 @@ def layer_routes():
         "/layers/strategy-shadow-comparison": "View simulated REST/LIVE strategy comparison rows as JSON",
         "/layers/strategy-shadow-comparison-csv": "Download layer_strategy_shadow_comparison.csv",
 
+        "/layers/rest-live-attribution-cycles": (
+            "View joined cycle-level REST-vs-LIVE attribution rows as JSON"
+        ),
+        "/layers/rest-live-attribution-cycles-csv": (
+            "Download layer_rest_live_attribution_cycles.csv"
+        ),
+        "/layers/rest-live-attribution-symbols": (
+            "View joined symbol-level REST-vs-LIVE attribution rows as JSON"
+        ),
+        "/layers/rest-live-attribution-symbols-csv": (
+            "Download layer_rest_live_attribution_symbols.csv"
+        ),
+
         "/layers/all-csv-diagnostics.zip": "Download all available Layer CSV diagnostics as one ZIP",
-        "/layers/dashboard": "Summarize latest Layer cycle health, skips, plan state, and order state",
-        "/layers/cycle/{cycle_id}": "Join cycle, plan, order, and snapshot rows for one Layer cycle",
-        "/layers/symbol/{symbol}": "Summarize Layer 3 / Layer 4 behavior for one symbol",
+        "/layers/dashboard": (
+            "Summarize latest Layer health and REST/LIVE attribution"
+        ),
+        "/layers/cycle/{cycle_id}": (
+            "Join cycle, plan, order, snapshot, and attribution rows"
+        ),
+        "/layers/symbol/{symbol}": (
+            "Summarize Layer behavior and REST/LIVE attribution for one symbol"
+        ),
         "/layers/effectiveness": "Summarize operational Layer effectiveness, skip reasons, execution rates, and symbol activity",
     }
 
@@ -722,17 +759,27 @@ def layer_routes():
 @with_retries()
 def layer_dashboard(limit: int = Query(1000, ge=1, le=10000)):
     """
-    Summarize latest Layer cycle health, skips, plan state, and order state.
+    Summarize latest Layer cycle health, plan/order state, and REST/LIVE attribution.
     """
     cycles_data = _layer_csv_data("cycles", limit=limit)
     plans_data = _layer_csv_data("plans", limit=limit)
     orders_data = _layer_csv_data("orders", limit=limit)
     snapshots_data = _layer_csv_data("portfolio-snapshots", limit=limit)
+    attribution_cycles_data = _layer_csv_data(
+        "rest-live-attribution-cycles",
+        limit=limit,
+    )
+    attribution_symbols_data = _layer_csv_data(
+        "rest-live-attribution-symbols",
+        limit=limit,
+    )
 
     cycles = cycles_data.get("rows", []) or []
     plans = plans_data.get("rows", []) or []
     orders = orders_data.get("rows", []) or []
     snapshots = snapshots_data.get("rows", []) or []
+    attribution_cycles = attribution_cycles_data.get("rows", []) or []
+    attribution_symbols = attribution_symbols_data.get("rows", []) or []
 
     latest_cycle = cycles[-1] if cycles else None
     latest_plan_id = (
@@ -766,6 +813,35 @@ def layer_dashboard(limit: int = Query(1000, ge=1, le=10000)):
         if latest_plan_id and row.get("plan_id") == latest_plan_id
     ]
 
+    latest_attribution_cycle = (
+        attribution_cycles[-1]
+        if attribution_cycles
+        else None
+    )
+    latest_attribution_cycle_id = (
+        _row_cycle_id(latest_attribution_cycle)
+        if isinstance(latest_attribution_cycle, dict)
+        else ""
+    )
+    latest_attribution_timestamp = (
+        str(latest_attribution_cycle.get("timestamp") or "").strip()
+        if isinstance(latest_attribution_cycle, dict)
+        else ""
+    )
+
+    # Match both cycle ID and timestamp because cycle IDs may repeat
+    # after a process restart.
+    latest_attribution_symbol_rows = [
+        row
+        for row in attribution_symbols
+        if (
+            latest_attribution_cycle_id
+            and _row_cycle_id(row) == latest_attribution_cycle_id
+            and str(row.get("timestamp") or "").strip()
+            == latest_attribution_timestamp
+        )
+    ]
+
     return {
         "status": "ok",
         "limit": limit,
@@ -790,14 +866,40 @@ def layer_dashboard(limit: int = Query(1000, ge=1, le=10000)):
                 "count": snapshots_data.get("count"),
                 "returned": snapshots_data.get("returned"),
             },
+            "rest_live_attribution_cycles": {
+                "status": attribution_cycles_data.get("status"),
+                "count": attribution_cycles_data.get("count"),
+                "returned": attribution_cycles_data.get("returned"),
+            },
+            "rest_live_attribution_symbols": {
+                "status": attribution_symbols_data.get("status"),
+                "count": attribution_symbols_data.get("count"),
+                "returned": attribution_symbols_data.get("returned"),
+            },
         },
         "latest_cycle": latest_cycle,
         "latest_plan_id": latest_plan_id,
         "latest_plan_row_count": len(latest_plan_rows),
         "latest_order_row_count": len(latest_order_rows),
         "latest_snapshot_row_count": len(latest_snapshot_rows),
+
+        # Latest joined REST-vs-LIVE diagnostic snapshot.
+        "latest_rest_live_attribution": latest_attribution_cycle,
+        "latest_rest_live_attribution_symbol_count": len(
+            latest_attribution_symbol_rows
+        ),
+        "latest_rest_live_better_source_counts": _counter_to_dict(
+            Counter(
+                str(row.get("better_source") or "pending")
+                for row in latest_attribution_symbol_rows
+            )
+        ),
+
         "recent_cycle_status_counts": _counter_to_dict(
-            Counter(str(row.get("status") or "unknown") for row in recent_cycles)
+            Counter(
+                str(row.get("status") or "unknown")
+                for row in recent_cycles
+            )
         ),
         "recent_skip_reasons": _counter_to_dict(
             Counter(
@@ -813,19 +915,28 @@ def layer_dashboard(limit: int = Query(1000, ge=1, le=10000)):
             )
         ),
         "latest_plan_decision_counts": _counter_to_dict(
-            Counter(str(row.get("decision") or "unknown") for row in latest_plan_rows)
+            Counter(
+                str(row.get("decision") or "unknown")
+                for row in latest_plan_rows
+            )
         ),
         "latest_order_status_counts": _counter_to_dict(
-            Counter(str(row.get("status") or "unknown") for row in latest_order_rows)
+            Counter(
+                str(row.get("status") or "unknown")
+                for row in latest_order_rows
+            )
         ),
     }
 
 
 @dev_routes.get("/layers/cycle/{cycle_id}")
 @with_retries()
-def view_layer_cycle(cycle_id: str, limit: int = Query(10000, ge=1, le=10000)):
+def view_layer_cycle(
+    cycle_id: str,
+    limit: int = Query(10000, ge=1, le=10000),
+):
     """
-    Join cycle, plan, order, and snapshot rows for one Layer cycle.
+    Join cycle, plan, order, snapshot, and REST/LIVE attribution rows.
     """
     cycle_id = str(cycle_id).strip()
 
@@ -849,11 +960,39 @@ def view_layer_cycle(cycle_id: str, limit: int = Query(10000, ge=1, le=10000)):
 
     snapshots = [
         row
-        for row in _layer_csv_rows("portfolio-snapshots", limit=limit)
+        for row in _layer_csv_rows(
+            "portfolio-snapshots",
+            limit=limit,
+        )
         if _row_cycle_id(row) == cycle_id
     ]
 
-    if not cycles and not plans and not orders and not snapshots:
+    attribution_cycles = [
+        row
+        for row in _layer_csv_rows(
+            "rest-live-attribution-cycles",
+            limit=limit,
+        )
+        if _row_cycle_id(row) == cycle_id
+    ]
+
+    attribution_symbols = [
+        row
+        for row in _layer_csv_rows(
+            "rest-live-attribution-symbols",
+            limit=limit,
+        )
+        if _row_cycle_id(row) == cycle_id
+    ]
+
+    if not (
+        cycles
+        or plans
+        or orders
+        or snapshots
+        or attribution_cycles
+        or attribution_symbols
+    ):
         raise HTTPException(
             status_code=404,
             detail=f"No Layer CSV rows found for cycle_id={cycle_id}",
@@ -867,24 +1006,34 @@ def view_layer_cycle(cycle_id: str, limit: int = Query(10000, ge=1, le=10000)):
             "plans": len(plans),
             "orders": len(orders),
             "portfolio_snapshots": len(snapshots),
+            "rest_live_attribution_cycles": len(attribution_cycles),
+            "rest_live_attribution_symbols": len(attribution_symbols),
         },
         "cycle_rows": cycles,
         "plan_rows": plans,
         "order_rows": orders,
         "portfolio_snapshot_rows": snapshots,
+        "rest_live_attribution_cycle_rows": attribution_cycles,
+        "rest_live_attribution_symbol_rows": attribution_symbols,
     }
 
 
 @dev_routes.get("/layers/symbol/{symbol}")
 @with_retries()
-def view_layer_symbol(symbol: str, limit: int = Query(10000, ge=1, le=10000)):
+def view_layer_symbol(
+    symbol: str,
+    limit: int = Query(10000, ge=1, le=10000),
+):
     """
-    Summarize Layer 3 / Layer 4 behavior for one symbol.
+    Summarize Layer behavior and REST/LIVE attribution for one symbol.
     """
     symbol = normalize_symbol(symbol)
 
     if not symbol:
-        raise HTTPException(status_code=400, detail="symbol is required")
+        raise HTTPException(
+            status_code=400,
+            detail="symbol is required",
+        )
 
     plans = [
         row
@@ -900,7 +1049,19 @@ def view_layer_symbol(symbol: str, limit: int = Query(10000, ge=1, le=10000)):
 
     snapshots = [
         row
-        for row in _layer_csv_rows("portfolio-snapshots", limit=limit)
+        for row in _layer_csv_rows(
+            "portfolio-snapshots",
+            limit=limit,
+        )
+        if _row_symbol(row) == symbol
+    ]
+
+    attribution_rows = [
+        row
+        for row in _layer_csv_rows(
+            "rest-live-attribution-symbols",
+            limit=limit,
+        )
         if _row_symbol(row) == symbol
     ]
 
@@ -914,6 +1075,11 @@ def view_layer_symbol(symbol: str, limit: int = Query(10000, ge=1, le=10000)):
     ]
 
     latest_snapshot = snapshots[-1] if snapshots else None
+    latest_attribution = (
+        attribution_rows[-1]
+        if attribution_rows
+        else None
+    )
 
     return {
         "status": "ok",
@@ -922,32 +1088,69 @@ def view_layer_symbol(symbol: str, limit: int = Query(10000, ge=1, le=10000)):
             "plan_rows": len(plans),
             "order_rows": len(orders),
             "portfolio_snapshot_rows": len(snapshots),
+            "rest_live_attribution_rows": len(attribution_rows),
         },
         "decision_counts": _counter_to_dict(
-            Counter(str(row.get("decision") or "unknown") for row in plans)
+            Counter(
+                str(row.get("decision") or "unknown")
+                for row in plans
+            )
         ),
         "order_side_counts": _counter_to_dict(
-            Counter(str(row.get("side") or "unknown") for row in orders)
+            Counter(
+                str(row.get("side") or "unknown")
+                for row in orders
+            )
         ),
         "order_status_counts": _counter_to_dict(
-            Counter(str(row.get("status") or "unknown") for row in orders)
+            Counter(
+                str(row.get("status") or "unknown")
+                for row in orders
+            )
         ),
         "common_plan_reasons": _counter_to_dict(
-            Counter(str(row.get("reason") or "unknown") for row in plans),
+            Counter(
+                str(row.get("reason") or "unknown")
+                for row in plans
+            ),
             limit=10,
         ),
         "common_order_reasons": _counter_to_dict(
-            Counter(str(row.get("reason") or "unknown") for row in orders),
+            Counter(
+                str(row.get("reason") or "unknown")
+                for row in orders
+            ),
             limit=10,
         ),
         "average_target_weight": (
-            round(sum(target_weights) / len(target_weights), 6)
-            if target_weights else None
+            round(
+                sum(target_weights) / len(target_weights),
+                6,
+            )
+            if target_weights
+            else None
         ),
+
+        # REST-vs-LIVE symbol diagnostics.
+        "rest_live_decision_agreement_counts": _counter_to_dict(
+            Counter(
+                str(row.get("decision_agreement") or "unknown")
+                for row in attribution_rows
+            )
+        ),
+        "rest_live_better_source_counts": _counter_to_dict(
+            Counter(
+                str(row.get("better_source") or "pending")
+                for row in attribution_rows
+            )
+        ),
+
         "latest_snapshot": latest_snapshot,
+        "latest_rest_live_attribution": latest_attribution,
         "recent_plan_rows": plans[-25:],
         "recent_order_rows": orders[-25:],
         "recent_portfolio_snapshot_rows": snapshots[-25:],
+        "recent_rest_live_attribution_rows": attribution_rows[-25:],
     }
 
 

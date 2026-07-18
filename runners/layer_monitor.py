@@ -28,6 +28,7 @@ from layers.layer3_rebalancer import (
     run_layer3_dry_run,
     _get_account_snapshot,
     _get_positions_snapshot,
+    build_layer3_shadow_plan,
 )
 from layers.layer4_executor import execute_layer4_plan
 from layers.layer_csv import (
@@ -42,6 +43,9 @@ from layers.layer_csv import (
     append_layer_strategy_shadow_comparison_row,
     append_layer_strategy_shadow_order_rows,
     append_layer_strategy_shadow_portfolio_rows,
+)
+from layers.layer_rest_live_attribution import (
+    rebuild_rest_live_attribution_csvs,
 )
 
 
@@ -1382,6 +1386,8 @@ def _append_mature_live_strategy_shadow_outcomes(*, market_is_open: bool) -> Non
 
     if matured_rows:
         append_layer_live_strategy_outcome_rows(matured_rows)
+        rebuild_rest_live_attribution_csvs()
+
         logging.info(
             "[LiveStrategyShadow] Appended matured outcome rows | count=%s pending=%s",
             len(matured_rows),
@@ -1478,6 +1484,93 @@ def _initial_shadow_positions_from_plan(layer3_plan: list[dict] | None) -> dict[
             positions[symbol] = qty
 
     return positions
+
+
+def _layer3_positions_snapshot_from_plan(
+    layer3_plan: list[dict] | None,
+) -> dict[str, dict]:
+    """
+    Reconstruct the common current-position snapshot from production plan rows.
+    """
+    positions = {}
+
+    for row in layer3_plan or []:
+        if not isinstance(row, dict):
+            continue
+
+        symbol = str(
+            row.get("symbol") or ""
+        ).upper().strip()
+        qty = safe_float(
+            row.get("current_qty"),
+            0.0,
+        )
+
+        if not symbol or qty <= 0:
+            continue
+
+        price = safe_float(
+            row.get("live_price"),
+            0.0,
+        )
+        market_value = safe_float(
+            row.get("current_value"),
+            0.0,
+        )
+
+        if market_value <= 0 and price > 0:
+            market_value = qty * price
+
+        positions[symbol] = {
+            "symbol": symbol,
+            "qty": qty,
+            "avg_entry_price": price,
+            "current_price": price,
+            "market_value": market_value,
+            "unrealized_plpc": 0.0,
+        }
+
+    return positions
+
+
+def _shadow_portfolio_positions_snapshot(
+    portfolio: dict,
+    prices: dict[str, float],
+) -> dict[str, dict]:
+    """
+    Convert a simulated portfolio into the snapshot shape used by Layer 3.
+    """
+    out = {}
+
+    for raw_symbol, raw_qty in (
+        portfolio.get("positions") or {}
+    ).items():
+        symbol = str(
+            raw_symbol or ""
+        ).upper().strip()
+        qty = safe_float(raw_qty, 0.0)
+        price = safe_float(
+            prices.get(symbol),
+            0.0,
+        )
+
+        if not symbol or qty <= 0:
+            continue
+
+        out[symbol] = {
+            "symbol": symbol,
+            "qty": qty,
+            "avg_entry_price": price,
+            "current_price": price,
+            "market_value": (
+                qty * price
+                if price > 0
+                else 0.0
+            ),
+            "unrealized_plpc": 0.0,
+        }
+
+    return out
 
 
 def _strategy_shadow_portfolio_equity(portfolio: dict, prices: dict[str, float]) -> float:
@@ -1651,6 +1744,7 @@ def _simulate_one_strategy_shadow_portfolio(
     prices: dict[str, float],
     cycle_id: int | None,
     now_iso: str,
+    planner_plan: list[dict] | None = None,
 ) -> tuple[list[dict], list[dict], dict]:
     max_trade_notional_pct = safe_float(
         _execution_setting("strategy_shadow_max_trade_notional_pct", 0.075),
@@ -1670,12 +1764,82 @@ def _simulate_one_strategy_shadow_portfolio(
     equity_before = _strategy_shadow_portfolio_equity(portfolio, prices)
     max_notional = max(0.0, equity_before * max_trade_notional_pct)
 
-    candidates = _build_strategy_shadow_trade_candidates(
-        portfolio=portfolio,
-        target=target,
-        prices=prices,
-        equity=equity_before,
-    )
+    planner_driven = planner_plan is not None
+
+    if planner_driven:
+        candidates = []
+
+        for row in planner_plan or []:
+            if not isinstance(row, dict):
+                continue
+
+            decision = str(
+                row.get("decision") or ""
+            ).upper().strip()
+            requested_qty = safe_float(
+                row.get("planned_qty"),
+                0.0,
+            )
+            price = safe_float(
+                row.get("live_price"),
+                0.0,
+            )
+
+            if (
+                decision not in {"BUY", "SELL"}
+                or requested_qty <= 0
+                or price <= 0
+            ):
+                continue
+
+            candidates.append({
+                "symbol": row.get("symbol"),
+                "decision": decision,
+                "side": decision.lower(),
+                "price": price,
+                "requested_qty": requested_qty,
+                "requested_notional": safe_float(
+                    row.get("planned_notional"),
+                    0.0,
+                ),
+                "current_qty": row.get(
+                    "current_qty"
+                ),
+                "target_qty": row.get(
+                    "target_qty"
+                ),
+                "qty_delta": row.get(
+                    "qty_delta"
+                ),
+                "current_weight": row.get(
+                    "current_weight"
+                ),
+                "target_weight": row.get(
+                    "target_weight"
+                ),
+                "delta_weight": row.get(
+                    "delta_weight"
+                ),
+                "reason": row.get("reason"),
+                "planner_source": row.get(
+                    "planner_source"
+                ),
+                "target_seen_count": row.get(
+                    "target_seen_count"
+                ),
+                "target_absent_count": row.get(
+                    "target_absent_count"
+                ),
+            })
+    else:
+        candidates = (
+            _build_strategy_shadow_trade_candidates(
+                portfolio=portfolio,
+                target=target,
+                prices=prices,
+                equity=equity_before,
+            )
+        )
 
     order_rows = []
     trade_count = 0
@@ -1733,6 +1897,22 @@ def _simulate_one_strategy_shadow_portfolio(
             "equity_before": round(equity_before_row, 2),
             "equity_after": round(equity_after_row, 2),
             "reason": candidate.get("reason"),
+            "planner_source": candidate.get(
+                "planner_source"
+            ),
+            "planner_decision": candidate.get(
+                "decision"
+            ),
+            "planner_target_seen_count": (
+                candidate.get(
+                    "target_seen_count"
+                )
+            ),
+            "planner_target_absent_count": (
+                candidate.get(
+                    "target_absent_count"
+                )
+            ),
         })
 
     for candidate_rank, candidate in enumerate(candidates, start=1):
@@ -1761,7 +1941,11 @@ def _simulate_one_strategy_shadow_portfolio(
             )
             continue
 
-        if trade_count >= max_trades_per_cycle:
+        if (
+            not planner_driven
+            and trade_count
+            >= max_trades_per_cycle
+        ):
             _append_candidate_row(
                 candidate=candidate,
                 candidate_rank=candidate_rank,
@@ -1778,9 +1962,19 @@ def _simulate_one_strategy_shadow_portfolio(
             )
             continue
 
-        capped_qty = min(
-            requested_qty,
-            math.floor(max_notional / price) if max_notional > 0 else requested_qty,
+        capped_qty = (
+            requested_qty
+            if planner_driven
+            else min(
+                requested_qty,
+                (
+                    math.floor(
+                        max_notional / price
+                    )
+                    if max_notional > 0
+                    else requested_qty
+                ),
+            )
         )
         qty = math.floor(capped_qty)
 
@@ -2018,6 +2212,7 @@ def run_strategy_shadow_portfolio_simulation(
     rest_rank_map: dict,
     live_prices: dict,
     rest_bars_by_symbol: dict,
+    live_bar_counts: dict | None,
     layer3_plan: list[dict] | None,
     layer3_summary: dict | None,
 ) -> dict:
@@ -2080,12 +2275,122 @@ def run_strategy_shadow_portfolio_simulation(
         if not isinstance(portfolio, dict):
             continue
 
-        order_rows, portfolio_rows, summary = _simulate_one_strategy_shadow_portfolio(
+        portfolio_equity = (
+            _strategy_shadow_portfolio_equity(
+                portfolio,
+                prices,
+            )
+        )
+
+        positions_snapshot = (
+            _shadow_portfolio_positions_snapshot(
+                portfolio,
+                prices,
+            )
+        )
+
+        account_snapshot = {
+            "source": (
+                f"{strategy_name.lower()}_"
+                "shadow_portfolio"
+            ),
+            "broker_snapshot_ok": True,
+            "account_snapshot_error": None,
+            "equity": portfolio_equity,
+            "cash": safe_float(
+                portfolio.get("cash"),
+                0.0,
+            ),
+            "buying_power": safe_float(
+                portfolio.get("cash"),
+                0.0,
+            ),
+        }
+
+        source_bar_counts = (
+            {
+                symbol: len(
+                    rest_bars_by_symbol.get(
+                        symbol,
+                        [],
+                    ) or []
+                )
+                for symbol in symbols
+            }
+            if strategy_name == "REST"
+            else dict(live_bar_counts or {})
+        )
+
+        rest_warmup_target = (
+            app_state.get("layers", {})
+            .get("last_off_hours_warmup", {})
+            .get("target_portfolio", {})
+        )
+
+        live_warmup_target = (
+            app_state.get("layers", {})
+            .get("live_strategy_shadow", {})
+            .get("last_off_hours_target", {})
+        )
+
+        bootstrap_symbols = _target_symbols(
+            (
+                rest_warmup_target
+                if strategy_name == "REST"
+                else live_warmup_target
+            )
+        )
+
+        planner_result = build_layer3_shadow_plan(
+            planner_source=(
+                f"{strategy_name}_SIM"
+            ),
+            target=(
+                target_by_strategy.get(
+                    strategy_name
+                ) or {}
+            ),
+            account=account_snapshot,
+            positions=positions_snapshot,
+            ranked_prices=prices,
+            planner_state=portfolio.setdefault(
+                "layer3_planner_state",
+                {},
+            ),
+            market_is_open=market_is_open,
+            cycle_id=safe_int(cycle_id, 0),
+            bar_counts=source_bar_counts,
+            bootstrap_eligible_symbols=(
+                bootstrap_symbols
+            ),
+            open_order_symbols=set(),
+            open_order_details={},
+            fail_safe_active=False,
+            last_trade_prices=prices,
+        )
+
+        planner_plan = planner_result.get(
+            "plan",
+            [],
+        )
+
+        (
+            order_rows,
+            portfolio_rows,
+            summary,
+        ) = _simulate_one_strategy_shadow_portfolio(
             portfolio=portfolio,
-            target=target_by_strategy.get(strategy_name),
+            target=target_by_strategy.get(
+                strategy_name
+            ),
             prices=prices,
             cycle_id=cycle_id,
             now_iso=now_iso,
+            planner_plan=planner_plan,
+        )
+
+        summary["planner_summary"] = (
+            planner_result.get("summary", {})
         )
         all_order_rows.extend(order_rows)
         all_portfolio_rows.extend(portfolio_rows)
@@ -2115,6 +2420,26 @@ def run_strategy_shadow_portfolio_simulation(
         "live_cumulative_gross_turnover": round(value("LIVE", "cumulative_gross_turnover"), 2),
         "rest_drawdown_pct": round(value("REST", "drawdown_pct"), 6),
         "live_drawdown_pct": round(value("LIVE", "drawdown_pct"), 6),
+        "rest_planner_status": (
+            (summaries.get("REST") or {})
+            .get("planner_summary", {})
+            .get("status")
+        ),
+        "live_planner_status": (
+            (summaries.get("LIVE") or {})
+            .get("planner_summary", {})
+            .get("status")
+        ),
+        "rest_planner_decision_counts": (
+            (summaries.get("REST") or {})
+            .get("planner_summary", {})
+            .get("decision_counts")
+        ),
+        "live_planner_decision_counts": (
+            (summaries.get("LIVE") or {})
+            .get("planner_summary", {})
+            .get("decision_counts")
+        ),
         "winner_by_equity": _strategy_shadow_comparison_winner(summaries),
         "live_better_than_rest": value("LIVE", "equity") > value("REST", "equity"),
         "rest_top_weights": _top_strategy_shadow_weights(portfolios.get("REST", {}), prices),
@@ -2324,6 +2649,17 @@ def run_live_strategy_shadow_comparison(
             ),
         )
 
+        if not market_is_open:
+            app_state.setdefault(
+                "layers",
+                {},
+            ).setdefault(
+                "live_strategy_shadow",
+                {},
+            )["last_off_hours_target"] = dict(
+                live_target or {}
+            )
+
         live_status = "ok"
 
     except Exception as exc:
@@ -2356,11 +2692,156 @@ def run_live_strategy_shadow_comparison(
 
     equity = safe_float(layer3_summary.get("equity"), 0.0)
 
+    live_layer3_result = {
+        "plan": [],
+        "summary": {
+            "status": "not_estimated",
+            "reason": (
+                "missing_common_account_snapshot"
+            ),
+        },
+    }
+
+    if equity > 0:
+        common_positions = (
+            _layer3_positions_snapshot_from_plan(
+                layer3_plan
+            )
+        )
+
+        common_account = {
+            "source": (
+                "common_broker_snapshot_"
+                "from_rest_plan"
+            ),
+            "broker_snapshot_ok": True,
+            "account_snapshot_error": None,
+            "equity": equity,
+            "cash": safe_float(
+                layer3_summary.get("cash"),
+                0.0,
+            ),
+            "buying_power": safe_float(
+                layer3_summary.get(
+                    "buying_power"
+                ),
+                safe_float(
+                    layer3_summary.get("cash"),
+                    0.0,
+                ),
+            ),
+        }
+
+        common_open_order_symbols = {
+            str(
+                row.get("symbol") or ""
+            ).upper().strip()
+            for row in layer3_plan
+            if (
+                isinstance(row, dict)
+                and row.get(
+                    "open_order_exists"
+                )
+            )
+        }
+
+        common_open_order_details = {
+            str(
+                row.get("symbol") or ""
+            ).upper().strip(): row.get(
+                "open_order_detail"
+            )
+            for row in layer3_plan
+            if (
+                isinstance(row, dict)
+                and row.get(
+                    "open_order_exists"
+                )
+            )
+        }
+
+        shadow_state = (
+            app_state.setdefault(
+                "layers",
+                {},
+            ).setdefault(
+                "live_strategy_shadow",
+                {},
+            )
+        )
+
+        live_layer3_result = (
+            build_layer3_shadow_plan(
+                planner_source="LIVE_COMMON",
+                target=live_target,
+                account=common_account,
+                positions=common_positions,
+                ranked_prices=live_prices,
+                planner_state=(
+                    shadow_state.setdefault(
+                        "layer3_common_"
+                        "planner_state",
+                        {},
+                    )
+                ),
+                market_is_open=market_is_open,
+                cycle_id=safe_int(
+                    cycle_id,
+                    0,
+                ),
+                bar_counts=live_bar_counts,
+                bootstrap_eligible_symbols=(
+                    _target_symbols(
+                        shadow_state.get(
+                            "last_off_hours_target",
+                            {},
+                        )
+                    )
+                ),
+                open_order_symbols=(
+                    common_open_order_symbols
+                ),
+                open_order_details=(
+                    common_open_order_details
+                ),
+                fail_safe_active=bool(
+                    layer3_summary.get(
+                        "fail_safe_active"
+                    )
+                ),
+                last_trade_prices=live_prices,
+            )
+        )
+
+    live_plan = live_layer3_result.get(
+        "plan",
+        [],
+    )
+
+    live_plan_by_symbol = {
+        str(
+            row.get("symbol") or ""
+        ).upper().strip(): row
+        for row in live_plan
+        if (
+            isinstance(row, dict)
+            and row.get("symbol")
+        )
+    }
+
+    live_planner_summary = (
+        live_layer3_result.get(
+            "summary",
+            {},
+        )
+    )
+
     symbols_for_rows = sorted(
         set(str(s or "").upper().strip() for s in symbols or [] if str(s or "").strip())
         | _target_symbols(rest_target)
         | _target_symbols(live_target)
         | set(plan_by_symbol.keys())
+        | set(live_plan_by_symbol.keys())
     )
 
     rows = []
@@ -2389,27 +2870,62 @@ def run_live_strategy_shadow_comparison(
         total_abs_target_diff += abs_target_delta
         max_abs_target_diff = max(max_abs_target_diff, abs_target_delta)
 
-        current_weight = (
-            safe_float(plan_row.get("current_weight"), 0.0)
-            if plan_row else None
+        live_plan_row = (
+            live_plan_by_symbol.get(
+                symbol,
+                {},
+            )
         )
 
-        rest_decision = str(plan_row.get("decision") or "HOLD").upper().strip() if plan_row else "NOT_ESTIMATED"
+        current_weight = (
+            safe_float(
+                plan_row.get("current_weight"),
+                0.0,
+            )
+            if plan_row
+            else (
+                safe_float(
+                    live_plan_row.get(
+                        "current_weight"
+                    ),
+                    0.0,
+                )
+                if live_plan_row
+                else None
+            )
+        )
+
+        rest_decision = (
+            str(
+                plan_row.get(
+                    "decision"
+                ) or "HOLD"
+            ).upper().strip()
+            if plan_row
+            else "NOT_ESTIMATED"
+        )
+
         if rest_decision in rest_decision_counts:
-            rest_decision_counts[rest_decision] += 1
+            rest_decision_counts[
+                rest_decision
+            ] += 1
 
-        if current_weight is None:
-            live_decision = "NOT_ESTIMATED"
-        else:
-            live_delta = live_weight - current_weight
-            if abs(live_delta) < drift_threshold:
-                live_decision = "HOLD"
-            elif live_delta > 0:
-                live_decision = "BUY"
-            else:
-                live_decision = "SELL"
+        live_decision = (
+            str(
+                live_plan_row.get(
+                    "decision"
+                ) or "HOLD"
+            ).upper().strip()
+            if live_plan_row
+            else "NOT_ESTIMATED"
+        )
 
-        live_decision_counts[live_decision] = live_decision_counts.get(live_decision, 0) + 1
+        live_decision_counts[live_decision] = (
+            live_decision_counts.get(
+                live_decision,
+                0,
+            ) + 1
+        )
 
         decision_agreement = (
             rest_decision == live_decision
@@ -2444,8 +2960,13 @@ def run_live_strategy_shadow_comparison(
 
         preference_direction = _live_preference_direction(target_delta)
         live_estimated_notional = (
-            round(abs((live_weight - current_weight) * equity), 2)
-            if current_weight is not None and equity > 0
+            safe_float(
+                live_plan_row.get(
+                    "planned_notional"
+                ),
+                0.0,
+            )
+            if live_plan_row
             else None
         )
 
@@ -2476,11 +2997,48 @@ def run_live_strategy_shadow_comparison(
             "rest_planned_qty": plan_row.get("planned_qty") if plan_row else None,
             "rest_planned_notional": plan_row.get("planned_notional") if plan_row else None,
             "live_shadow_estimated_notional": live_estimated_notional,
+            "live_planner_source": (
+                live_plan_row.get(
+                    "planner_source"
+                )
+                if live_plan_row
+                else None
+            ),
+            "live_planner_status": (
+                live_planner_summary.get(
+                    "status"
+                )
+            ),
+            "live_planner_planned_qty": (
+                live_plan_row.get(
+                    "planned_qty"
+                )
+                if live_plan_row
+                else None
+            ),
+            "live_planner_target_seen_count": (
+                live_plan_row.get(
+                    "target_seen_count"
+                )
+                if live_plan_row
+                else None
+            ),
+            "live_planner_target_absent_count": (
+                live_plan_row.get(
+                    "target_absent_count"
+                )
+                if live_plan_row
+                else None
+            ),
             "rest_price": rest_price if rest_price > 0 else None,
             "live_price": live_price if live_price > 0 else None,
             "live_vs_rest_price_pct": live_vs_rest_price_pct,
             "rest_reason": plan_row.get("reason") if plan_row else None,
-            "live_reason": live_info.get("reason"),
+            "live_reason": (
+                live_plan_row.get("reason")
+                if live_plan_row
+                else None
+            ),
             "rest_top_symbols": rest_top_symbols,
             "live_top_symbols": live_top_symbols,
             "rest_target_summary": target_summary_for_log(rest_target),
@@ -2552,6 +3110,21 @@ def run_live_strategy_shadow_comparison(
         "rest_cash_pct": rest_target.get("CASH") if isinstance(rest_target, dict) else None,
         "live_market_strength": live_meta.get("market_strength"),
         "rest_market_strength": rest_meta.get("market_strength"),
+        "live_planner_status": (
+            live_planner_summary.get(
+                "status"
+            )
+        ),
+        "live_planner_decision_counts": (
+            live_planner_summary.get(
+                "decision_counts"
+            )
+        ),
+        "live_planner_bootstrap_confirmation_applied": (
+            live_planner_summary.get(
+                "bootstrap_confirmation_applied"
+            )
+        ),
         "error": None,
     }
 
@@ -2569,6 +3142,7 @@ def run_live_strategy_shadow_comparison(
             rest_rank_map=rest_rank_map,
             live_prices=live_prices,
             rest_bars_by_symbol=rest_bars_by_symbol,
+            live_bar_counts=live_bar_counts,
             layer3_plan=layer3_plan,
             layer3_summary=layer3_summary,
         )
@@ -2578,6 +3152,8 @@ def run_live_strategy_shadow_comparison(
             cycle_id,
             exc_info=True,
         )
+
+    rebuild_rest_live_attribution_csvs()
 
     logging.info(
         "[LiveStrategyShadow] Complete | cycle_id=%s live_status=%s live_ranked=%s "

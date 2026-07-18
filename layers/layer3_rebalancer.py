@@ -379,83 +379,122 @@ def _get_open_order_symbols() -> tuple[set, dict]:
     return symbols, details
 
 
+def update_layer3_target_stability_state(
+    planner_state: dict,
+    target_weights: dict,
+    positions: dict,
+    *,
+    market_is_open: bool,
+    market_hours_only: bool,
+    log_prefix: str = "Layer3",
+) -> tuple[dict, dict]:
+    """
+    Shared target-membership confirmation state for REST and LIVE planners.
+
+    This intentionally preserves the current cycle-based confirmation behavior.
+    The later five-minute cadence patch will add distinct-bar evidence so a
+    duplicate input bar cannot advance these counters.
+    """
+    seen_counts = planner_state.setdefault("target_seen_counts", {})
+    absent_counts = planner_state.setdefault("target_absent_counts", {})
+
+    target_symbols = set(target_weights.keys())
+    all_symbols = set(target_symbols) | set(positions.keys())
+
+    confirmation_updates_allowed = bool(
+        market_is_open or not market_hours_only
+    )
+
+    planner_state["market_is_open"] = bool(market_is_open)
+    planner_state["confirmation_updates_allowed"] = confirmation_updates_allowed
+    planner_state["confirmation_updates_blocked_reason"] = (
+        None if confirmation_updates_allowed else "market_closed"
+    )
+
+    if not confirmation_updates_allowed:
+        logging.info(
+            "[%s] Confirmation counters frozen because market is closed "
+            "and market-hours-only confirmation is enabled.",
+            log_prefix,
+        )
+        return seen_counts, absent_counts
+
+    for symbol in all_symbols:
+        if symbol in target_symbols:
+            seen_counts[symbol] = safe_int(
+                seen_counts.get(symbol, 0),
+                0,
+            ) + 1
+            absent_counts[symbol] = 0
+        else:
+            absent_counts[symbol] = safe_int(
+                absent_counts.get(symbol, 0),
+                0,
+            ) + 1
+            seen_counts[symbol] = 0
+
+    planner_state["last_confirmation_update_at"] = datetime.now(
+        timezone.utc
+    ).isoformat()
+
+    keep_symbols = all_symbols
+
+    for symbol in list(seen_counts.keys()):
+        if (
+            symbol not in keep_symbols
+            and safe_int(seen_counts.get(symbol, 0), 0) <= 0
+        ):
+            seen_counts.pop(symbol, None)
+
+    for symbol in list(absent_counts.keys()):
+        if (
+            symbol not in keep_symbols
+            and safe_int(absent_counts.get(symbol, 0), 0) <= 0
+        ):
+            absent_counts.pop(symbol, None)
+
+    return seen_counts, absent_counts
+
+
 def _update_target_stability(
     rebalance: dict,
     target_weights: dict,
     positions: dict,
 ) -> tuple[dict, dict]:
     """
-    Track how many consecutive cycles a symbol has appeared in the target,
-    and how many consecutive cycles a held symbol has been absent from the target.
-
-    If LAYER3_MARKET_HOURS_ONLY=true, confirmation counters only advance
-    while the market is open. Layer 3 may still plan/log after hours,
-    but it should not become more confident from closed-market cycles.
+    Production REST wrapper around the shared confirmation-state function.
     """
-    seen_counts = rebalance.setdefault("target_seen_counts", {})
-    absent_counts = rebalance.setdefault("target_absent_counts", {})
-
-    target_symbols = set(target_weights.keys())
-    all_symbols = set(target_symbols) | set(positions.keys())
-
     market_is_open = get_market_is_open(app_state)
     market_hours_only = _layer3_bool_setting(
         "layer3_market_hours_only",
         True,
     )
 
-    confirmation_updates_allowed = (
-        market_is_open or not market_hours_only
+    return update_layer3_target_stability_state(
+        rebalance,
+        target_weights,
+        positions,
+        market_is_open=market_is_open,
+        market_hours_only=market_hours_only,
+        log_prefix="Layer3",
     )
 
-    rebalance["market_is_open"] = market_is_open
-    rebalance["confirmation_updates_allowed"] = confirmation_updates_allowed
-    rebalance["confirmation_updates_blocked_reason"] = (
-        None if confirmation_updates_allowed else "market_closed"
-    )
 
-    if not confirmation_updates_allowed:
-        logging.info(
-            "[Layer3] Confirmation counters frozen because market is closed "
-            "and LAYER3_MARKET_HOURS_ONLY=true."
-        )
-        return seen_counts, absent_counts
-
-    for symbol in all_symbols:
-        if symbol in target_symbols:
-            seen_counts[symbol] = safe_int(seen_counts.get(symbol, 0), 0) + 1
-            absent_counts[symbol] = 0
-        else:
-            absent_counts[symbol] = safe_int(absent_counts.get(symbol, 0), 0) + 1
-            seen_counts[symbol] = 0
-
-    rebalance["last_confirmation_update_at"] = datetime.now(
-        timezone.utc
-    ).isoformat()
-
-    # Optional cleanup so these dicts do not grow forever.
-    keep_symbols = all_symbols
-
-    for symbol in list(seen_counts.keys()):
-        if symbol not in keep_symbols and safe_int(seen_counts.get(symbol, 0), 0) <= 0:
-            seen_counts.pop(symbol, None)
-
-    for symbol in list(absent_counts.keys()):
-        if symbol not in keep_symbols and safe_int(absent_counts.get(symbol, 0), 0) <= 0:
-            absent_counts.pop(symbol, None)
-
-    return seen_counts, absent_counts
-
-
-def _get_price_for_symbol(symbol: str, ranked_prices: dict, position: dict | None) -> tuple[float, str]:
+def get_layer3_price_for_symbol(
+    symbol: str,
+    ranked_prices: dict,
+    position: dict | None,
+    *,
+    last_trade_prices: dict | None = None,
+) -> tuple[float, str]:
     """
-    Choose the best available price for planning.
+    Shared price selection for production REST and shadow LIVE planning.
 
     Priority:
-    1. Layer 1/2 ranked last_price
-    2. Stream last trade price
-    3. Broker position current_price
-    4. Broker position avg_entry_price
+    1. Source-specific ranked/input-bar price
+    2. Optional source-specific latest-trade price map
+    3. Position current price
+    4. Position average entry price
     """
     symbol = _norm_symbol(symbol)
 
@@ -463,7 +502,8 @@ def _get_price_for_symbol(symbol: str, ranked_prices: dict, position: dict | Non
     if price > 0:
         return price, "ranked_last_price"
 
-    price = safe_float(app_state.get("last_trade_price_by_symbol", {}).get(symbol), 0.0)
+    last_trade_prices = last_trade_prices or {}
+    price = safe_float(last_trade_prices.get(symbol), 0.0)
     if price > 0:
         return price, "last_trade_price_by_symbol"
 
@@ -477,6 +517,23 @@ def _get_price_for_symbol(symbol: str, ranked_prices: dict, position: dict | Non
             return price, "position_avg_entry_price"
 
     return 0.0, "missing_price"
+
+
+def _get_price_for_symbol(
+    symbol: str,
+    ranked_prices: dict,
+    position: dict | None,
+) -> tuple[float, str]:
+    """Production wrapper preserving the existing REST price fallbacks."""
+    return get_layer3_price_for_symbol(
+        symbol,
+        ranked_prices,
+        position,
+        last_trade_prices=app_state.get(
+            "last_trade_price_by_symbol",
+            {},
+        ),
+    )
 
 
 def _whole_share_qty(notional: float, price: float) -> float:
@@ -586,6 +643,7 @@ def _target_qty_from_value(target_value: float, price: float) -> float:
 
 def _build_row(
     *,
+    planner_source,
     plan_id,
     row_id,
     plan_created_at,
@@ -622,6 +680,9 @@ def _build_row(
     planned_notional = round(planned_notional, 2)
 
     return {
+        "planner_source": str(
+            planner_source or "REST"
+        ).upper().strip(),
         "plan_id": plan_id,
         "row_id": row_id,
         "plan_created_at": plan_created_at,
@@ -831,6 +892,731 @@ def _cap_planned_notional(decision: str, delta_value: float, current_qty: float,
         return cap, reason
 
     return abs_delta, None
+
+
+def build_layer3_plan_from_snapshots(
+    *,
+    planner_source: str,
+    target: dict,
+    account: dict,
+    positions: dict,
+    ranked_prices: dict,
+    seen_counts: dict,
+    absent_counts: dict,
+    cycle_id: int,
+    plan_id: str,
+    plan_created_at: str,
+    plan_expires_at: str,
+    plan_ttl_seconds: int,
+    open_order_symbols: set | None = None,
+    open_order_details: dict | None = None,
+    fail_safe_active: bool = False,
+    opening_transition: dict | None = None,
+    last_trade_prices: dict | None = None,
+) -> dict:
+    """
+    Shared Layer 3 planning kernel used by REST production and LIVE shadow.
+
+    All source-specific market data, portfolio state, and confirmation state are
+    supplied by the caller. This function does not read broker state, mutate the
+    production Layer 3 handoff, append CSVs, or submit orders.
+    """
+    planner_source = str(
+        planner_source or "REST"
+    ).upper().strip()
+
+    target_weights, target_cash_pct, target_meta = (
+        clean_target_portfolio(target)
+    )
+
+    equity = safe_float(account.get("equity"), 0.0)
+    cash = safe_float(account.get("cash"), 0.0)
+    timestamp = plan_created_at
+
+    open_order_symbols = set(open_order_symbols or set())
+    open_order_details = open_order_details or {}
+    opening_transition = opening_transition or {}
+    last_trade_prices = last_trade_prices or {}
+
+    plan = []
+    symbol_universe = sorted(
+        set(target_weights.keys())
+        | set(positions.keys())
+    )
+
+    for symbol in symbol_universe:
+        position = positions.get(symbol, {})
+        current_qty = safe_float(
+            position.get("qty"),
+            0.0,
+        )
+
+        live_price, price_source = (
+            get_layer3_price_for_symbol(
+                symbol,
+                ranked_prices,
+                position,
+                last_trade_prices=last_trade_prices,
+            )
+        )
+
+        target_weight = safe_float(
+            target_weights.get(symbol),
+            0.0,
+        )
+
+        blocked_by = []
+        open_order_exists = symbol in open_order_symbols
+
+        if open_order_exists:
+            blocked_by.append("open_order_exists")
+
+        if fail_safe_active:
+            blocked_by.append("fail_safe_active")
+
+        if live_price <= 0:
+            current_value = safe_float(
+                position.get("market_value"),
+                0.0,
+            )
+            current_weight = (
+                current_value / equity
+                if equity > 0
+                else 0.0
+            )
+            target_value = target_weight * equity
+            delta_value = target_value - current_value
+            delta_weight = target_weight - current_weight
+
+            row = _build_row(
+                planner_source=planner_source,
+                plan_id=plan_id,
+                row_id=f"{plan_id}:{symbol}",
+                plan_created_at=plan_created_at,
+                plan_expires_at=plan_expires_at,
+                plan_ttl_seconds=plan_ttl_seconds,
+                cycle_id=cycle_id,
+                timestamp=timestamp,
+                symbol=symbol,
+                decision="SKIP",
+                reason="missing_price",
+                target_weight=target_weight,
+                current_weight=current_weight,
+                target_value=target_value,
+                current_value=current_value,
+                delta_value=delta_value,
+                delta_weight=delta_weight,
+                relative_drift=0.0,
+                live_price=0.0,
+                price_source=price_source,
+                current_qty=current_qty,
+                target_qty=0.0,
+                qty_delta=0.0,
+                planned_qty=0.0,
+                planned_notional=0.0,
+                target_seen_count=seen_counts.get(
+                    symbol,
+                    0,
+                ),
+                target_absent_count=absent_counts.get(
+                    symbol,
+                    0,
+                ),
+                open_order_exists=open_order_exists,
+                open_order_detail=open_order_details.get(
+                    symbol
+                ),
+                blocked_by=blocked_by,
+                account=account,
+                target_meta=target_meta,
+            )
+            plan.append(row)
+            continue
+
+        current_value = current_qty * live_price
+        current_weight = (
+            current_value / equity
+            if equity > 0
+            else 0.0
+        )
+
+        target_value = target_weight * equity
+        delta_value = target_value - current_value
+        delta_weight = target_weight - current_weight
+
+        target_qty = _target_qty_from_value(
+            target_value,
+            live_price,
+        )
+        qty_delta = target_qty - current_qty
+
+        relative_drift = abs(delta_value) / max(
+            abs(target_value),
+            abs(current_value),
+            1.0,
+        )
+
+        target_seen_count = int(
+            seen_counts.get(symbol, 0) or 0
+        )
+        target_absent_count = int(
+            absent_counts.get(symbol, 0) or 0
+        )
+
+        decision = "HOLD"
+        reason = "already_aligned"
+        planned_qty = 0.0
+        planned_notional = 0.0
+
+        drift_too_small = (
+            abs(delta_value)
+            < L3_MIN_TRADE_VALUE_DOLLARS
+            or (
+                abs(delta_weight)
+                < L3_MIN_ABS_WEIGHT_DRIFT
+                and relative_drift
+                < L3_MIN_RELATIVE_DRIFT
+            )
+        )
+
+        if open_order_exists:
+            decision = "SKIP"
+            reason = "open_order_exists"
+
+        elif target_weight <= 0 and current_qty > 0:
+            if (
+                target_absent_count
+                < L3_REQUIRE_EXIT_CONFIRMATION_CYCLES
+            ):
+                decision = "HOLD"
+                reason = "exit_not_confirmed"
+            else:
+                decision = "SELL"
+
+                if opening_transition.get("active"):
+                    capped_notional, _ = (
+                        _cap_planned_notional(
+                            decision="SELL",
+                            delta_value=delta_value,
+                            current_qty=current_qty,
+                            equity=equity,
+                        )
+                    )
+
+                    planned_qty = min(
+                        current_qty,
+                        _whole_share_qty(
+                            capped_notional,
+                            live_price,
+                        ),
+                    )
+                    planned_notional = (
+                        planned_qty * live_price
+                    )
+                    reason = (
+                        "opening_target_removed_"
+                        "scale_out_capped"
+                    )
+                else:
+                    reason = "target_removed_confirmed"
+                    planned_qty = (
+                        current_qty
+                        if not L3_WHOLE_SHARES_ONLY
+                        else float(int(current_qty))
+                    )
+                    planned_notional = (
+                        planned_qty * live_price
+                    )
+
+                if planned_qty <= 0:
+                    decision = "HOLD"
+                    reason = "planned_sell_qty_zero"
+
+        elif delta_value > 0:
+            if fail_safe_active:
+                decision = "SKIP"
+                reason = "fail_safe_active_blocks_buy"
+
+            elif (
+                target_seen_count
+                < L3_REQUIRE_TARGET_CONFIRMATION_CYCLES
+            ):
+                decision = "HOLD"
+                reason = "target_not_confirmed"
+
+            elif drift_too_small:
+                decision = "HOLD"
+                reason = "buy_drift_below_threshold"
+
+            else:
+                decision = "BUY"
+                reason = "underweight_vs_target"
+
+                capped_notional, cap_reason = (
+                    _cap_planned_notional(
+                        decision="BUY",
+                        delta_value=delta_value,
+                        current_qty=current_qty,
+                        equity=equity,
+                    )
+                )
+
+                planned_qty = _whole_share_qty(
+                    capped_notional,
+                    live_price,
+                )
+                planned_notional = (
+                    planned_qty * live_price
+                )
+
+                if cap_reason:
+                    reason = cap_reason
+
+                if planned_qty <= 0:
+                    decision = "HOLD"
+                    reason = "planned_buy_qty_zero"
+
+        elif delta_value < 0 and current_qty > 0:
+            if drift_too_small:
+                decision = "HOLD"
+                reason = "sell_drift_below_threshold"
+            else:
+                decision = "SELL"
+                reason = "overweight_vs_target"
+
+                capped_notional, cap_reason = (
+                    _cap_planned_notional(
+                        decision="SELL",
+                        delta_value=delta_value,
+                        current_qty=current_qty,
+                        equity=equity,
+                    )
+                )
+
+                planned_qty = min(
+                    current_qty,
+                    _whole_share_qty(
+                        capped_notional,
+                        live_price,
+                    ),
+                )
+                planned_notional = (
+                    planned_qty * live_price
+                )
+
+                if cap_reason:
+                    reason = cap_reason
+
+                if planned_qty <= 0:
+                    decision = "HOLD"
+                    reason = "planned_sell_qty_zero"
+
+        row = _build_row(
+            planner_source=planner_source,
+            plan_id=plan_id,
+            row_id=f"{plan_id}:{symbol}",
+            plan_created_at=plan_created_at,
+            plan_expires_at=plan_expires_at,
+            plan_ttl_seconds=plan_ttl_seconds,
+            cycle_id=cycle_id,
+            timestamp=timestamp,
+            symbol=symbol,
+            decision=decision,
+            reason=reason,
+            target_weight=target_weight,
+            current_weight=current_weight,
+            target_value=target_value,
+            current_value=current_value,
+            delta_value=delta_value,
+            delta_weight=delta_weight,
+            relative_drift=relative_drift,
+            live_price=live_price,
+            price_source=price_source,
+            current_qty=current_qty,
+            target_qty=target_qty,
+            qty_delta=qty_delta,
+            planned_qty=planned_qty,
+            planned_notional=planned_notional,
+            target_seen_count=target_seen_count,
+            target_absent_count=target_absent_count,
+            open_order_exists=open_order_exists,
+            open_order_detail=open_order_details.get(
+                symbol
+            ),
+            blocked_by=blocked_by,
+            account=account,
+            target_meta=target_meta,
+        )
+
+        plan.append(row)
+
+    plan.sort(key=_plan_priority)
+    plan = _apply_cycle_trade_limits(plan)
+
+    estimated_cash = cash
+
+    for row in plan:
+        row["cash_before_estimate"] = round(
+            estimated_cash,
+            2,
+        )
+
+        if row["decision"] == "SELL":
+            estimated_cash += safe_float(
+                row.get("planned_notional"),
+                0.0,
+            )
+
+        elif row["decision"] == "BUY":
+            planned_notional = safe_float(
+                row.get("planned_notional"),
+                0.0,
+            )
+            live_price = safe_float(
+                row.get("live_price"),
+                0.0,
+            )
+
+            if planned_notional > estimated_cash:
+                adjusted_qty = _whole_share_qty(
+                    estimated_cash,
+                    live_price,
+                )
+                adjusted_notional = (
+                    adjusted_qty * live_price
+                )
+
+                if adjusted_qty <= 0:
+                    row["decision"] = "SKIP"
+                    row["reason"] = "insufficient_cash"
+                    row["planned_qty"] = 0.0
+                    row["planned_notional"] = 0.0
+                    row["blocked_by"] = list(
+                        row.get("blocked_by", [])
+                    ) + ["insufficient_cash"]
+                    _sync_layer4_authorized_aliases(
+                        row
+                    )
+                else:
+                    row["reason"] = (
+                        "underweight_vs_target_"
+                        "cash_adjusted"
+                    )
+                    row["planned_qty"] = round(
+                        adjusted_qty,
+                        6,
+                    )
+                    row["planned_notional"] = round(
+                        adjusted_notional,
+                        2,
+                    )
+                    _sync_layer4_authorized_aliases(
+                        row
+                    )
+                    estimated_cash -= (
+                        adjusted_notional
+                    )
+            else:
+                estimated_cash -= planned_notional
+
+        row["cash_after_estimate"] = round(
+            estimated_cash,
+            2,
+        )
+
+    decision_counts = {}
+
+    for row in plan:
+        row_decision = row.get(
+            "decision",
+            "UNKNOWN",
+        )
+        decision_counts[row_decision] = (
+            decision_counts.get(
+                row_decision,
+                0,
+            ) + 1
+        )
+
+    return {
+        "planner_source": planner_source,
+        "plan": plan,
+        "decision_counts": decision_counts,
+        "estimated_cash_after_plan": round(
+            estimated_cash,
+            2,
+        ),
+        "target_weights": target_weights,
+        "target_cash_pct": target_cash_pct,
+        "target_meta": target_meta,
+    }
+
+
+def build_layer3_shadow_plan(
+    *,
+    planner_source: str,
+    target: dict,
+    account: dict,
+    positions: dict,
+    ranked_prices: dict,
+    planner_state: dict,
+    market_is_open: bool,
+    cycle_id: int,
+    bar_counts: dict | None = None,
+    bootstrap_eligible_symbols: set[str] | None = None,
+    open_order_symbols: set | None = None,
+    open_order_details: dict | None = None,
+    fail_safe_active: bool = False,
+    last_trade_prices: dict | None = None,
+) -> dict:
+    """
+    Build an isolated shadow Layer 3 plan with the production planning kernel.
+
+    The caller owns planner_state, allowing REST and LIVE shadow portfolios to
+    maintain independent confirmation history without touching production state.
+    """
+    planner_source = str(
+        planner_source or "SHADOW"
+    ).upper().strip()
+
+    target_weights, _, _ = clean_target_portfolio(
+        target
+    )
+
+    market_hours_only = _layer3_bool_setting(
+        "layer3_market_hours_only",
+        True,
+    )
+
+    open_session_info = (
+        _prepare_market_open_session_state(
+            planner_state,
+            market_is_open=market_is_open,
+        )
+    )
+    opening_transition = _opening_transition_info(
+        planner_state,
+        market_is_open,
+    )
+
+    seen_counts, absent_counts = (
+        update_layer3_target_stability_state(
+            planner_state,
+            target_weights,
+            positions,
+            market_is_open=market_is_open,
+            market_hours_only=market_hours_only,
+            log_prefix=(
+                f"Layer3Shadow:{planner_source}"
+            ),
+        )
+    )
+
+    bootstrap_enabled = _layer3_bool_setting(
+        "layer3_bootstrap_confirmation_enabled",
+        True,
+    )
+    min_bar_count = _layer3_int_setting(
+        "layer3_bootstrap_min_bar_count",
+        8,
+    )
+    bar_counts = bar_counts or {}
+
+    if (
+        bootstrap_enabled
+        and market_is_open
+        and not planner_state.get(
+            "bootstrap_confirmation_applied"
+        )
+    ):
+        eligible_symbols = set(target_weights)
+
+        if bootstrap_eligible_symbols is not None:
+            eligible_symbols &= {
+                _norm_symbol(symbol)
+                for symbol in bootstrap_eligible_symbols
+                if _norm_symbol(symbol)
+            }
+
+        bootstrapped = []
+
+        for symbol in sorted(eligible_symbols):
+            if (
+                safe_int(
+                    bar_counts.get(symbol, 0),
+                    0,
+                )
+                < min_bar_count
+            ):
+                continue
+
+            seen_counts[symbol] = max(
+                safe_int(
+                    seen_counts.get(symbol, 0),
+                    0,
+                ),
+                L3_REQUIRE_TARGET_CONFIRMATION_CYCLES,
+            )
+            bootstrapped.append(symbol)
+
+        planner_state[
+            "bootstrap_confirmation_applied"
+        ] = True
+        planner_state[
+            "bootstrap_confirmation_symbols"
+        ] = bootstrapped
+
+    created_dt = datetime.now(timezone.utc)
+    safe_source = planner_source.replace(
+        " ",
+        "_",
+    )
+
+    (
+        plan_id,
+        created_at,
+        expires_at,
+        ttl_seconds,
+    ) = _build_plan_ids(
+        cycle_id,
+        created_dt,
+    )
+
+    plan_id = plan_id.replace(
+        "L3-",
+        f"L3S-{safe_source}-",
+        1,
+    )
+
+    built = build_layer3_plan_from_snapshots(
+        planner_source=planner_source,
+        target=target,
+        account=account,
+        positions=positions,
+        ranked_prices=ranked_prices,
+        seen_counts=seen_counts,
+        absent_counts=absent_counts,
+        cycle_id=cycle_id,
+        plan_id=plan_id,
+        plan_created_at=created_at,
+        plan_expires_at=expires_at,
+        plan_ttl_seconds=ttl_seconds,
+        open_order_symbols=open_order_symbols,
+        open_order_details=open_order_details,
+        fail_safe_active=fail_safe_active,
+        opening_transition=opening_transition,
+        last_trade_prices=last_trade_prices,
+    )
+
+    summary = {
+        "status": "ok",
+        "dry_run": True,
+        "shadow_only": True,
+        "planner_source": planner_source,
+        "cycle_id": cycle_id,
+        "plan_id": plan_id,
+        "timestamp": created_at,
+        "plan_created_at": created_at,
+        "plan_expires_at": expires_at,
+        "plan_ttl_seconds": ttl_seconds,
+        "market_is_open": bool(market_is_open),
+        "confirmation_updates_allowed": (
+            planner_state.get(
+                "confirmation_updates_allowed"
+            )
+        ),
+        "confirmation_updates_blocked_reason": (
+            planner_state.get(
+                "confirmation_updates_blocked_reason"
+            )
+        ),
+        "bootstrap_confirmation_applied": (
+            planner_state.get(
+                "bootstrap_confirmation_applied",
+                False,
+            )
+        ),
+        "bootstrap_confirmation_symbols": (
+            planner_state.get(
+                "bootstrap_confirmation_symbols",
+                [],
+            )
+        ),
+        "bootstrap_confirmation_eligible_symbols": (
+            sorted(bootstrap_eligible_symbols)
+            if bootstrap_eligible_symbols
+            is not None
+            else None
+        ),
+        "open_session_date": (
+            open_session_info.get("date")
+        ),
+        "open_session_live_cycle_count": (
+            open_session_info.get(
+                "live_cycle_count"
+            )
+        ),
+        "opening_transition_active": (
+            opening_transition.get("active")
+        ),
+        "opening_transition_cycles": (
+            opening_transition.get(
+                "transition_cycles"
+            )
+        ),
+        "equity": round(
+            safe_float(
+                account.get("equity"),
+                0.0,
+            ),
+            2,
+        ),
+        "cash": round(
+            safe_float(
+                account.get("cash"),
+                0.0,
+            ),
+            2,
+        ),
+        "estimated_cash_after_plan": (
+            built.get(
+                "estimated_cash_after_plan"
+            )
+        ),
+        "target_symbol_count": len(
+            built.get("target_weights", {})
+        ),
+        "target_cash_pct": round(
+            safe_float(
+                built.get("target_cash_pct"),
+                0.0,
+            ),
+            6,
+        ),
+        "decision_counts": built.get(
+            "decision_counts",
+            {},
+        ),
+        "plan_count": len(
+            built.get("plan", [])
+        ),
+        "fail_safe_active": bool(
+            fail_safe_active
+        ),
+    }
+
+    planner_state["last_cycle_id"] = cycle_id
+    planner_state["last_run_at"] = created_at
+    planner_state["last_plan"] = built.get(
+        "plan",
+        [],
+    )
+    planner_state["last_summary"] = summary
+
+    return {
+        "plan": built.get("plan", []),
+        "summary": summary,
+    }
 
 
 def _prepare_market_open_session_state(
@@ -1210,284 +1996,45 @@ def run_layer3_dry_run() -> dict:
             market_is_open=market_is_open,
         )
 
-    fail_safe_active = bool(app_state.get("fail_safes", {}).get("state"))
+    built_plan = build_layer3_plan_from_snapshots(
+        planner_source="REST",
+        target=target,
+        account=account,
+        positions=positions,
+        ranked_prices=ranked_prices,
+        seen_counts=seen_counts,
+        absent_counts=absent_counts,
+        cycle_id=cycle_id,
+        plan_id=plan_id,
+        plan_created_at=plan_created_at,
+        plan_expires_at=plan_expires_at,
+        plan_ttl_seconds=plan_ttl_seconds,
+        open_order_symbols=open_order_symbols,
+        open_order_details=open_order_details,
+        fail_safe_active=fail_safe_active,
+        opening_transition=opening_transition,
+        last_trade_prices=app_state.get(
+            "last_trade_price_by_symbol",
+            {},
+        ),
+    )
 
-    plan = []
-    symbol_universe = sorted(set(target_weights.keys()) | set(positions.keys()))
-
-    for symbol in symbol_universe:
-        position = positions.get(symbol, {})
-        current_qty = safe_float(position.get("qty"), 0.0)
-
-        live_price, price_source = _get_price_for_symbol(symbol, ranked_prices, position)
-
-        target_weight = safe_float(target_weights.get(symbol), 0.0)
-
-        blocked_by = []
-        open_order_exists = symbol in open_order_symbols
-
-        if open_order_exists:
-            blocked_by.append("open_order_exists")
-
-        if fail_safe_active:
-            blocked_by.append("fail_safe_active")
-
-        if live_price <= 0:
-            current_value = safe_float(position.get("market_value"), 0.0)
-            current_weight = current_value / equity if equity > 0 else 0.0
-            target_value = target_weight * equity
-            delta_value = target_value - current_value
-            delta_weight = target_weight - current_weight
-
-            target_qty = 0.0
-            qty_delta = 0.0
-
-            row = _build_row(
-                plan_id=plan_id,
-                row_id=f"{plan_id}:{symbol}",
-                plan_created_at=plan_created_at,
-                plan_expires_at=plan_expires_at,
-                plan_ttl_seconds=plan_ttl_seconds,
-                cycle_id=cycle_id,
-                timestamp=timestamp,
-                symbol=symbol,
-                decision="SKIP",
-                reason="missing_price",
-                target_weight=target_weight,
-                current_weight=current_weight,
-                target_value=target_value,
-                current_value=current_value,
-                delta_value=delta_value,
-                delta_weight=delta_weight,
-                relative_drift=0.0,
-                live_price=0.0,
-                price_source=price_source,
-                current_qty=current_qty,
-                target_qty=target_qty,
-                qty_delta=qty_delta,
-                planned_qty=0.0,
-                planned_notional=0.0,
-                target_seen_count=seen_counts.get(symbol, 0),
-                target_absent_count=absent_counts.get(symbol, 0),
-                open_order_exists=open_order_exists,
-                open_order_detail=open_order_details.get(symbol),
-                blocked_by=blocked_by,
-                account=account,
-                target_meta=target_meta,
-            )
-            plan.append(row)
-            continue
-
-        current_value = current_qty * live_price
-        current_weight = current_value / equity if equity > 0 else 0.0
-
-        target_value = target_weight * equity
-        delta_value = target_value - current_value
-        delta_weight = target_weight - current_weight
-
-        target_qty = _target_qty_from_value(target_value, live_price)
-        qty_delta = target_qty - current_qty
-
-        relative_drift = abs(delta_value) / max(abs(target_value), abs(current_value), 1.0)
-
-        target_seen_count = int(seen_counts.get(symbol, 0) or 0)
-        target_absent_count = int(absent_counts.get(symbol, 0) or 0)
-
-        decision = "HOLD"
-        reason = "already_aligned"
-        planned_qty = 0.0
-        planned_notional = 0.0
-
-        drift_too_small = (
-            abs(delta_value) < L3_MIN_TRADE_VALUE_DOLLARS
-            or (
-                abs(delta_weight) < L3_MIN_ABS_WEIGHT_DRIFT
-                and relative_drift < L3_MIN_RELATIVE_DRIFT
-            )
-        )
-
-        if open_order_exists:
-            decision = "SKIP"
-            reason = "open_order_exists"
-
-        elif target_weight <= 0 and current_qty > 0:
-            # Symbol is held but no longer in Layer 2 target.
-            if target_absent_count < L3_REQUIRE_EXIT_CONFIRMATION_CYCLES:
-                decision = "HOLD"
-                reason = "exit_not_confirmed"
-            else:
-                decision = "SELL"
-
-                if opening_transition.get("active"):
-                    # During the first few executable live cycles, avoid full
-                    # liquidation from one target_removed signal. Still permit
-                    # a controlled scale-out so the portfolio can rotate, just
-                    # not all at once.
-                    capped_notional, _ = _cap_planned_notional(
-                        decision="SELL",
-                        delta_value=delta_value,
-                        current_qty=current_qty,
-                        equity=equity,
-                    )
-                    planned_qty = min(
-                        current_qty,
-                        _whole_share_qty(capped_notional, live_price),
-                    )
-                    planned_notional = planned_qty * live_price
-                    reason = "opening_target_removed_scale_out_capped"
-                else:
-                    reason = "target_removed_confirmed"
-                    planned_qty = current_qty if not L3_WHOLE_SHARES_ONLY else float(int(current_qty))
-                    planned_notional = planned_qty * live_price
-
-                if planned_qty <= 0:
-                    decision = "HOLD"
-                    reason = "planned_sell_qty_zero"
-
-        elif delta_value > 0:
-            # Underweight or new target position.
-            if fail_safe_active:
-                decision = "SKIP"
-                reason = "fail_safe_active_blocks_buy"
-
-            elif target_seen_count < L3_REQUIRE_TARGET_CONFIRMATION_CYCLES:
-                decision = "HOLD"
-                reason = "target_not_confirmed"
-
-            elif drift_too_small:
-                decision = "HOLD"
-                reason = "buy_drift_below_threshold"
-
-            else:
-                decision = "BUY"
-                reason = "underweight_vs_target"
-
-                capped_notional, cap_reason = _cap_planned_notional(
-                    decision="BUY",
-                    delta_value=delta_value,
-                    current_qty=current_qty,
-                    equity=equity,
-                )
-
-                planned_qty = _whole_share_qty(capped_notional, live_price)
-                planned_notional = planned_qty * live_price
-
-                if cap_reason:
-                    reason = cap_reason
-
-                if planned_qty <= 0:
-                    decision = "HOLD"
-                    reason = "planned_buy_qty_zero"
-
-        elif delta_value < 0 and current_qty > 0:
-            # Overweight existing position.
-            if drift_too_small:
-                decision = "HOLD"
-                reason = "sell_drift_below_threshold"
-            else:
-                decision = "SELL"
-                reason = "overweight_vs_target"
-
-                capped_notional, cap_reason = _cap_planned_notional(
-                    decision="SELL",
-                    delta_value=delta_value,
-                    current_qty=current_qty,
-                    equity=equity,
-                )
-
-                planned_qty = min(current_qty, _whole_share_qty(capped_notional, live_price))
-                planned_notional = planned_qty * live_price
-
-                if cap_reason:
-                    reason = cap_reason
-
-                if planned_qty <= 0:
-                    decision = "HOLD"
-                    reason = "planned_sell_qty_zero"
-
-        row = _build_row(
-            plan_id=plan_id,
-            row_id=f"{plan_id}:{symbol}",
-            plan_created_at=plan_created_at,
-            plan_expires_at=plan_expires_at,
-            plan_ttl_seconds=plan_ttl_seconds,
-            cycle_id=cycle_id,
-            timestamp=timestamp,
-            symbol=symbol,
-            decision=decision,
-            reason=reason,
-            target_weight=target_weight,
-            current_weight=current_weight,
-            target_value=target_value,
-            current_value=current_value,
-            delta_value=delta_value,
-            delta_weight=delta_weight,
-            relative_drift=relative_drift,
-            live_price=live_price,
-            price_source=price_source,
-            current_qty=current_qty,
-            target_qty=target_qty,
-            qty_delta=qty_delta,
-            planned_qty=planned_qty,
-            planned_notional=planned_notional,
-            target_seen_count=target_seen_count,
-            target_absent_count=target_absent_count,
-            open_order_exists=open_order_exists,
-            open_order_detail=open_order_details.get(symbol),
-            blocked_by=blocked_by,
-            account=account,
-            target_meta=target_meta,
-        )
-
-        plan.append(row)
-
-    # Sells first, then buys, then holds/skips.
-    plan.sort(key=_plan_priority)
-    plan = _apply_cycle_trade_limits(plan)
-
-    # Cash estimate pass.
-    estimated_cash = cash
-
-    for row in plan:
-        row["cash_before_estimate"] = round(estimated_cash, 2)
-
-        if row["decision"] == "SELL":
-            estimated_cash += safe_float(row.get("planned_notional"), 0.0)
-
-        elif row["decision"] == "BUY":
-            planned_notional = safe_float(row.get("planned_notional"), 0.0)
-            live_price = safe_float(row.get("live_price"), 0.0)
-
-            if planned_notional > estimated_cash:
-                adjusted_qty = _whole_share_qty(estimated_cash, live_price)
-                adjusted_notional = adjusted_qty * live_price
-
-                if adjusted_qty <= 0:
-                    row["decision"] = "SKIP"
-                    row["reason"] = "insufficient_cash"
-                    row["planned_qty"] = 0.0
-                    row["planned_notional"] = 0.0
-                    row["blocked_by"] = list(row.get("blocked_by", [])) + ["insufficient_cash"]
-                    _sync_layer4_authorized_aliases(row)
-                else:
-                    row["reason"] = "underweight_vs_target_cash_adjusted"
-                    row["planned_qty"] = round(adjusted_qty, 6)
-                    row["planned_notional"] = round(adjusted_notional, 2)
-                    _sync_layer4_authorized_aliases(row)
-                    estimated_cash -= adjusted_notional
-            else:
-                estimated_cash -= planned_notional
-
-        row["cash_after_estimate"] = round(estimated_cash, 2)
-
-    decision_counts = {}
-    for row in plan:
-        decision = row.get("decision", "UNKNOWN")
-        decision_counts[decision] = decision_counts.get(decision, 0) + 1
+    plan = built_plan.get("plan", [])
+    decision_counts = built_plan.get(
+        "decision_counts",
+        {},
+    )
+    estimated_cash = safe_float(
+        built_plan.get(
+            "estimated_cash_after_plan"
+        ),
+        cash,
+    )
 
     summary = {
         "status": "ok",
         "dry_run": True,
+        "planner_source": "REST",
         "cycle_id": cycle_id,
         "plan_id": plan_id,
         "timestamp": timestamp,

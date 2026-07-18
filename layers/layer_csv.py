@@ -35,6 +35,10 @@ LAYER_CSV_FILES = {
     "strategy-shadow-portfolios": "layer_strategy_shadow_portfolios.csv",
     "strategy-shadow-comparison": "layer_strategy_shadow_comparison.csv",
 
+    # Derived joined attribution views rebuilt from the existing shadow CSVs.
+    "rest-live-attribution-cycles": "layer_rest_live_attribution_cycles.csv",
+    "rest-live-attribution-symbols": "layer_rest_live_attribution_symbols.csv",
+
     # Opening-delay diagnostics: what live-only/hybrid would have done while
     # the REST production path was blocked by stale bars.
     "opening-shadow-cycles": "layer_opening_shadow_cycles.csv",
@@ -107,6 +111,7 @@ LAYER_CYCLE_FIELDS = [
 
 LAYER3_PLAN_FIELDS = [
     "timestamp",
+    "planner_source",
     "cycle_id",
     "plan_id",
     "row_id",
@@ -326,6 +331,11 @@ LAYER_LIVE_STRATEGY_SHADOW_FIELDS = [
     "rest_planned_qty",
     "rest_planned_notional",
     "live_shadow_estimated_notional",
+    "live_planner_source",
+    "live_planner_status",
+    "live_planner_planned_qty",
+    "live_planner_target_seen_count",
+    "live_planner_target_absent_count",
     "rest_price",
     "live_price",
     "live_vs_rest_price_pct",
@@ -369,6 +379,9 @@ LAYER_LIVE_STRATEGY_SHADOW_CYCLE_FIELDS = [
     "rest_cash_pct",
     "live_market_strength",
     "rest_market_strength",
+    "live_planner_status",
+    "live_planner_decision_counts",
+    "live_planner_bootstrap_confirmation_applied",
     "error",
 ]
 
@@ -435,6 +448,10 @@ LAYER_STRATEGY_SHADOW_ORDER_FIELDS = [
     "cash_after",
     "equity_before",
     "equity_after",
+    "planner_source",
+    "planner_decision",
+    "planner_target_seen_count",
+    "planner_target_absent_count",
     "reason",
 ]
 
@@ -487,6 +504,10 @@ LAYER_STRATEGY_SHADOW_COMPARISON_FIELDS = [
     "live_cumulative_gross_turnover",
     "rest_drawdown_pct",
     "live_drawdown_pct",
+    "rest_planner_status",
+    "live_planner_status",
+    "rest_planner_decision_counts",
+    "live_planner_decision_counts",
     "winner_by_equity",
     "live_better_than_rest",
     "rest_top_weights",
@@ -521,6 +542,84 @@ LAYER_OPENING_SHADOW_CYCLE_FIELDS = [
     "hybrid_block_count",
     "hybrid_buy_count",
     "hybrid_sell_count",
+    "error",
+]
+
+
+LAYER_REST_LIVE_ATTRIBUTION_CYCLE_FIELDS = [
+    "timestamp",
+    "cycle_id",
+    "market_is_open",
+    "rest_status",
+    "live_status",
+    "rest_equity",
+    "live_equity",
+    "live_minus_rest",
+    "rest_cash_target",
+    "live_cash_target",
+    "cash_target_delta_live_minus_rest",
+    "rest_cash_actual",
+    "live_cash_actual",
+    "target_diff_total",
+    "decision_agreement_rate",
+    "top5_overlap_count",
+    "top5_overlap_symbols",
+    "disagreement_count",
+    "top_disagreement_symbols",
+    "avg_abs_score_diff",
+    "attribution_horizon_minutes",
+    "biggest_rest_advantage_symbol",
+    "biggest_rest_advantage_estimated_pl",
+    "biggest_live_advantage_symbol",
+    "biggest_live_advantage_estimated_pl",
+    "attributed_estimated_pl_total",
+    "symbol_count",
+    "symbol_outcome_count",
+    "error",
+]
+
+
+LAYER_REST_LIVE_ATTRIBUTION_SYMBOL_FIELDS = [
+    "timestamp",
+    "outcome_timestamp",
+    "cycle_id",
+    "symbol",
+    "market_is_open",
+    "rest_status",
+    "live_status",
+    "rest_rank",
+    "live_rank",
+    "rank_delta_live_minus_rest",
+    "rest_score",
+    "live_score",
+    "score_delta_live_minus_rest",
+    "rest_target_weight",
+    "live_target_weight",
+    "target_weight_delta_live_minus_rest",
+    "current_weight",
+    "rest_effective_shadow_weight",
+    "live_effective_shadow_weight",
+    "effective_shadow_weight_delta_live_minus_rest",
+    "reference_equity",
+    "rest_decision",
+    "live_implied_decision",
+    "decision_agreement",
+    "start_price",
+    "outcome_price",
+    "forward_return_10m",
+    "forward_return_30m",
+    "forward_return_60m",
+    "estimated_pl_diff_10m",
+    "estimated_pl_diff_30m",
+    "estimated_pl_diff_60m",
+    "better_source_10m",
+    "better_source_30m",
+    "better_source_60m",
+    "better_source",
+    "estimate_basis",
+    "rest_reason",
+    "live_reason",
+    "finalized_reason",
     "error",
 ]
 
@@ -704,6 +803,40 @@ def _append_csv_rows(filename: str, fieldnames: list[str], rows: list[dict]) -> 
                 })
 
 
+def _replace_csv_rows(
+    filename: str,
+    fieldnames: list[str],
+    rows: list[dict],
+) -> None:
+    """
+    Atomically replace one derived CSV with the provided rows.
+
+    The attribution CSVs are derived views, so rebuilding them prevents
+    duplicate source/outcome rows and fills forward returns in place.
+    """
+    path = layer_csv_path(filename)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+
+    with _LAYER_CSV_LOCK:
+        with tmp_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=fieldnames,
+                extrasaction="ignore",
+            )
+            writer.writeheader()
+
+            for row in rows or []:
+                writer.writerow({
+                    key: _csv_value(row.get(key))
+                    for key in fieldnames
+                })
+
+        tmp_path.replace(path)
+
+
 def read_csv_rows(filename: str, limit: int = 1000) -> dict:
     path = layer_csv_path(filename)
 
@@ -748,6 +881,10 @@ def append_layer3_plan_rows(summary: dict | None, plan: list[dict] | None) -> No
 
         rows.append({
             "timestamp": row.get("timestamp") or summary.get("timestamp"),
+            "planner_source": (
+                row.get("planner_source")
+                or summary.get("planner_source")
+            ),
             "cycle_id": row.get("cycle_id") or summary.get("cycle_id"),
             "plan_id": row.get("plan_id") or summary.get("plan_id"),
             "row_id": row.get("row_id"),
@@ -1095,6 +1232,38 @@ def append_layer_strategy_shadow_comparison_row(row: dict | None) -> None:
         )
     except Exception:
         logging.warning("[LayerCSV] Failed to append strategy shadow comparison row.", exc_info=True)
+
+
+def replace_layer_rest_live_attribution_cycle_rows(
+    rows: list[dict] | None,
+) -> None:
+    try:
+        _replace_csv_rows(
+            LAYER_CSV_FILES["rest-live-attribution-cycles"],
+            LAYER_REST_LIVE_ATTRIBUTION_CYCLE_FIELDS,
+            rows or [],
+        )
+    except Exception:
+        logging.warning(
+            "[LayerCSV] Failed to rebuild REST-vs-LIVE attribution cycle CSV.",
+            exc_info=True,
+        )
+
+
+def replace_layer_rest_live_attribution_symbol_rows(
+    rows: list[dict] | None,
+) -> None:
+    try:
+        _replace_csv_rows(
+            LAYER_CSV_FILES["rest-live-attribution-symbols"],
+            LAYER_REST_LIVE_ATTRIBUTION_SYMBOL_FIELDS,
+            rows or [],
+        )
+    except Exception:
+        logging.warning(
+            "[LayerCSV] Failed to rebuild REST-vs-LIVE attribution symbol CSV.",
+            exc_info=True,
+        )
 
 
 def append_layer_opening_shadow_cycle_row(row: dict | None) -> None:
