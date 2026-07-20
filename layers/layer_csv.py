@@ -56,6 +56,43 @@ LAYER_CYCLE_FIELDS = [
     "market_is_open",
     "fresh_count",
     "required_fresh_symbols",
+
+    "rolling_window_seconds",
+    "rolling_trades_used_before",
+    "rolling_buys_used_before",
+    "rolling_sells_used_before",
+    "rolling_buy_notional_used_before",
+    "rolling_sell_notional_used_before",
+    "rolling_gross_notional_used_before",
+
+    "rolling_trade_limit",
+    "rolling_buy_limit",
+    "rolling_sell_limit",
+    "rolling_buy_notional_limit",
+    "rolling_sell_notional_limit",
+    "rolling_gross_notional_limit",
+
+    "rolling_trades_authorized",
+    "rolling_buys_authorized",
+    "rolling_sells_authorized",
+    "rolling_buy_notional_authorized",
+    "rolling_sell_notional_authorized",
+    "rolling_gross_notional_authorized",
+
+    "rolling_limit_adjusted_count",
+    "rolling_limit_deferred_count",
+
+    "rest_bar_gate_status",
+    "rest_bar_candidate_timestamp",
+    "rest_bar_wait_attempts",
+    "rest_bar_wait_seconds",
+    "rest_bar_new_symbol_count",
+    "rest_bar_required_new_symbols",
+    "rest_bar_new_symbols",
+    "rest_bar_duplicate_symbols",
+    "rest_bar_lagging_symbols",
+    "rest_bar_missing_symbols",
+
     "ranked_count",
     "top_symbols",
     "target_summary",
@@ -69,6 +106,16 @@ LAYER_CYCLE_FIELDS = [
 
     "confirmation_updates_allowed",
     "confirmation_updates_blocked_reason",
+
+    "source_bar_timestamp",
+    "source_bar_is_new",
+    "target_hysteresis_enabled",
+    "target_hysteresis_action_counts",
+    "target_hysteresis_pending_symbols",
+    "target_hysteresis_changed_symbols",
+    "target_hysteresis_raw_symbol_count",
+    "target_hysteresis_approved_symbol_count",
+    "target_hysteresis_approved_cash_pct",
 
     "open_session_date",
     "open_session_live_cycle_count",
@@ -121,6 +168,23 @@ LAYER3_PLAN_FIELDS = [
     "blocked_by",
     "current_weight",
     "target_weight",
+
+    "raw_target_weight",
+    "approved_target_weight",
+    "previous_approved_target_weight",
+    "pending_target_weight",
+    "target_candidate_direction",
+    "target_candidate_count",
+    "target_required_count",
+    "target_confirmation_advanced",
+    "target_confirmation_bar_timestamp",
+    "target_confirmation_bar_is_new",
+    "target_hysteresis_action",
+    "target_hysteresis_reset_reason",
+    "target_hysteresis_changed_target",
+    "deferred_target_weight",
+    "deferred_notional",
+
     "delta_weight",
     "relative_drift",
     "current_qty",
@@ -139,6 +203,26 @@ LAYER3_PLAN_FIELDS = [
     "remaining_authorized_notional",
     "cash_before_estimate",
     "cash_after_estimate",
+
+    "rolling_window_seconds",
+    "rolling_trades_used_before",
+    "rolling_buys_used_before",
+    "rolling_sells_used_before",
+    "rolling_buy_notional_used_before",
+    "rolling_sell_notional_used_before",
+    "rolling_gross_notional_used_before",
+
+    "rolling_trade_limit",
+    "rolling_buy_limit",
+    "rolling_sell_limit",
+    "rolling_buy_notional_limit",
+    "rolling_sell_notional_limit",
+    "rolling_gross_notional_limit",
+
+    "rolling_limit_original_planned_notional",
+    "rolling_limit_adjusted",
+    "rolling_limit_blocked_reason",
+
     "target_seen_count",
     "target_absent_count",
 
@@ -336,6 +420,16 @@ LAYER_LIVE_STRATEGY_SHADOW_FIELDS = [
     "live_planner_planned_qty",
     "live_planner_target_seen_count",
     "live_planner_target_absent_count",
+
+    "live_planner_raw_target_weight",
+    "live_planner_approved_target_weight",
+    "live_planner_pending_target_weight",
+    "live_planner_target_candidate_direction",
+    "live_planner_target_candidate_count",
+    "live_planner_target_required_count",
+    "live_planner_target_hysteresis_action",
+    "live_planner_deferred_notional",
+
     "rest_price",
     "live_price",
     "live_vs_rest_price_pct",
@@ -382,6 +476,8 @@ LAYER_LIVE_STRATEGY_SHADOW_CYCLE_FIELDS = [
     "live_planner_status",
     "live_planner_decision_counts",
     "live_planner_bootstrap_confirmation_applied",
+    "live_planner_rolling_trade_limits",
+    "live_planner_target_hysteresis",
     "error",
 ]
 
@@ -452,6 +548,14 @@ LAYER_STRATEGY_SHADOW_ORDER_FIELDS = [
     "planner_decision",
     "planner_target_seen_count",
     "planner_target_absent_count",
+    "planner_raw_target_weight",
+    "planner_approved_target_weight",
+    "planner_pending_target_weight",
+    "planner_target_candidate_direction",
+    "planner_target_candidate_count",
+    "planner_target_required_count",
+    "planner_target_hysteresis_action",
+    "planner_deferred_notional",
     "reason",
 ]
 
@@ -508,6 +612,10 @@ LAYER_STRATEGY_SHADOW_COMPARISON_FIELDS = [
     "live_planner_status",
     "rest_planner_decision_counts",
     "live_planner_decision_counts",
+    "rest_planner_rolling_trade_limits",
+    "live_planner_rolling_trade_limits",
+    "rest_planner_target_hysteresis",
+    "live_planner_target_hysteresis",
     "winner_by_equity",
     "live_better_than_rest",
     "rest_top_weights",
@@ -894,6 +1002,53 @@ def append_layer3_plan_rows(summary: dict | None, plan: list[dict] | None) -> No
             "blocked_by": row.get("blocked_by"),
             "current_weight": row.get("current_weight"),
             "target_weight": row.get("target_weight"),
+
+            "raw_target_weight": row.get(
+                "raw_target_weight"
+            ),
+            "approved_target_weight": row.get(
+                "approved_target_weight"
+            ),
+            "previous_approved_target_weight": row.get(
+                "previous_approved_target_weight"
+            ),
+            "pending_target_weight": row.get(
+                "pending_target_weight"
+            ),
+            "target_candidate_direction": row.get(
+                "target_candidate_direction"
+            ),
+            "target_candidate_count": row.get(
+                "target_candidate_count"
+            ),
+            "target_required_count": row.get(
+                "target_required_count"
+            ),
+            "target_confirmation_advanced": row.get(
+                "target_confirmation_advanced"
+            ),
+            "target_confirmation_bar_timestamp": row.get(
+                "target_confirmation_bar_timestamp"
+            ),
+            "target_confirmation_bar_is_new": row.get(
+                "target_confirmation_bar_is_new"
+            ),
+            "target_hysteresis_action": row.get(
+                "target_hysteresis_action"
+            ),
+            "target_hysteresis_reset_reason": row.get(
+                "target_hysteresis_reset_reason"
+            ),
+            "target_hysteresis_changed_target": row.get(
+                "target_hysteresis_changed_target"
+            ),
+            "deferred_target_weight": row.get(
+                "deferred_target_weight"
+            ),
+            "deferred_notional": row.get(
+                "deferred_notional"
+            ),
+
             "delta_weight": row.get("delta_weight"),
             "relative_drift": row.get("relative_drift"),
             "current_qty": row.get("current_qty"),
@@ -912,6 +1067,56 @@ def append_layer3_plan_rows(summary: dict | None, plan: list[dict] | None) -> No
             "remaining_authorized_notional": row.get("remaining_authorized_notional"),
             "cash_before_estimate": row.get("cash_before_estimate"),
             "cash_after_estimate": row.get("cash_after_estimate"),
+
+            "rolling_window_seconds": row.get(
+                "rolling_window_seconds"
+            ),
+            "rolling_trades_used_before": row.get(
+                "rolling_trades_used_before"
+            ),
+            "rolling_buys_used_before": row.get(
+                "rolling_buys_used_before"
+            ),
+            "rolling_sells_used_before": row.get(
+                "rolling_sells_used_before"
+            ),
+            "rolling_buy_notional_used_before": row.get(
+                "rolling_buy_notional_used_before"
+            ),
+            "rolling_sell_notional_used_before": row.get(
+                "rolling_sell_notional_used_before"
+            ),
+            "rolling_gross_notional_used_before": row.get(
+                "rolling_gross_notional_used_before"
+            ),
+            "rolling_trade_limit": row.get(
+                "rolling_trade_limit"
+            ),
+            "rolling_buy_limit": row.get(
+                "rolling_buy_limit"
+            ),
+            "rolling_sell_limit": row.get(
+                "rolling_sell_limit"
+            ),
+            "rolling_buy_notional_limit": row.get(
+                "rolling_buy_notional_limit"
+            ),
+            "rolling_sell_notional_limit": row.get(
+                "rolling_sell_notional_limit"
+            ),
+            "rolling_gross_notional_limit": row.get(
+                "rolling_gross_notional_limit"
+            ),
+            "rolling_limit_original_planned_notional": row.get(
+                "rolling_limit_original_planned_notional"
+            ),
+            "rolling_limit_adjusted": row.get(
+                "rolling_limit_adjusted"
+            ),
+            "rolling_limit_blocked_reason": row.get(
+                "rolling_limit_blocked_reason"
+            ),
+
             "target_seen_count": row.get("target_seen_count"),
             "target_absent_count": row.get("target_absent_count"),
 
@@ -1319,6 +1524,7 @@ def append_layer_cycle_row(
     market_is_open: bool | None = None,
     fresh_count: int | None = None,
     required_fresh_symbols: int | None = None,
+    rest_bar_gate: dict | None = None,
     ranked_count: int | None = None,
     top_symbols: list[str] | None = None,
     target_summary: dict | None = None,
@@ -1328,7 +1534,39 @@ def append_layer_cycle_row(
     target_summary = target_summary or {}
     layer3_summary = layer3_summary or {}
     layer4_result = layer4_result or {}
+    rest_bar_gate = rest_bar_gate or {}
     layer4_shadow_result = layer4_result.get("shadow_result") or {}
+
+    rolling_limits = (
+        layer3_summary.get(
+            "rolling_trade_limits"
+        )
+        or {}
+    )
+
+    rolling_usage_before = (
+        rolling_limits.get("usage_before")
+        or {}
+    )
+
+    rolling_limit_values = (
+        rolling_limits.get("limits")
+        or {}
+    )
+
+    rolling_authorized = (
+        rolling_limits.get(
+            "authorized_this_cycle"
+        )
+        or {}
+    )
+
+    target_hysteresis = (
+        layer3_summary.get(
+            "target_hysteresis"
+        )
+        or {}
+    )
 
     row = {
         "timestamp": datetime.utcnow().isoformat(),
@@ -1339,6 +1577,158 @@ def append_layer_cycle_row(
         "market_is_open": market_is_open,
         "fresh_count": fresh_count,
         "required_fresh_symbols": required_fresh_symbols,
+
+        "rolling_window_seconds": (
+            rolling_limits.get(
+                "window_seconds"
+            )
+        ),
+        "rolling_trades_used_before": (
+            rolling_usage_before.get(
+                "trades"
+            )
+        ),
+        "rolling_buys_used_before": (
+            rolling_usage_before.get(
+                "buys"
+            )
+        ),
+        "rolling_sells_used_before": (
+            rolling_usage_before.get(
+                "sells"
+            )
+        ),
+        "rolling_buy_notional_used_before": (
+            rolling_usage_before.get(
+                "buy_notional"
+            )
+        ),
+        "rolling_sell_notional_used_before": (
+            rolling_usage_before.get(
+                "sell_notional"
+            )
+        ),
+        "rolling_gross_notional_used_before": (
+            rolling_usage_before.get(
+                "gross_notional"
+            )
+        ),
+
+        "rolling_trade_limit": (
+            rolling_limit_values.get(
+                "max_trades"
+            )
+        ),
+        "rolling_buy_limit": (
+            rolling_limit_values.get(
+                "max_buys"
+            )
+        ),
+        "rolling_sell_limit": (
+            rolling_limit_values.get(
+                "max_sells"
+            )
+        ),
+        "rolling_buy_notional_limit": (
+            rolling_limit_values.get(
+                "max_buy_notional"
+            )
+        ),
+        "rolling_sell_notional_limit": (
+            rolling_limit_values.get(
+                "max_sell_notional"
+            )
+        ),
+        "rolling_gross_notional_limit": (
+            rolling_limit_values.get(
+                "max_gross_notional"
+            )
+        ),
+
+        "rolling_trades_authorized": (
+            rolling_authorized.get(
+                "trades"
+            )
+        ),
+        "rolling_buys_authorized": (
+            rolling_authorized.get(
+                "buys"
+            )
+        ),
+        "rolling_sells_authorized": (
+            rolling_authorized.get(
+                "sells"
+            )
+        ),
+        "rolling_buy_notional_authorized": (
+            rolling_authorized.get(
+                "buy_notional"
+            )
+        ),
+        "rolling_sell_notional_authorized": (
+            rolling_authorized.get(
+                "sell_notional"
+            )
+        ),
+        "rolling_gross_notional_authorized": (
+            rolling_authorized.get(
+                "gross_notional"
+            )
+        ),
+
+        "rolling_limit_adjusted_count": (
+            rolling_limits.get(
+                "adjusted_count"
+            )
+        ),
+        "rolling_limit_deferred_count": (
+            rolling_limits.get(
+                "deferred_count"
+            )
+        ),
+
+        "rest_bar_gate_status": (
+            rest_bar_gate.get("status")
+        ),
+        "rest_bar_candidate_timestamp": (
+            rest_bar_gate.get(
+                "candidate_bar_timestamp"
+            )
+        ),
+        "rest_bar_wait_attempts": (
+            rest_bar_gate.get("attempts")
+        ),
+        "rest_bar_wait_seconds": (
+            rest_bar_gate.get("wait_seconds")
+        ),
+        "rest_bar_new_symbol_count": (
+            rest_bar_gate.get(
+                "new_symbol_count"
+            )
+        ),
+        "rest_bar_required_new_symbols": (
+            rest_bar_gate.get(
+                "required_new_symbols"
+            )
+        ),
+        "rest_bar_new_symbols": (
+            rest_bar_gate.get("new_symbols")
+        ),
+        "rest_bar_duplicate_symbols": (
+            rest_bar_gate.get(
+                "duplicate_symbols"
+            )
+        ),
+        "rest_bar_lagging_symbols": (
+            rest_bar_gate.get(
+                "lagging_symbols"
+            )
+        ),
+        "rest_bar_missing_symbols": (
+            rest_bar_gate.get(
+                "missing_symbols"
+            )
+        ),
         "ranked_count": ranked_count,
         "top_symbols": top_symbols,
         "target_summary": target_summary,
@@ -1352,6 +1742,52 @@ def append_layer_cycle_row(
 
         "confirmation_updates_allowed": layer3_summary.get("confirmation_updates_allowed"),
         "confirmation_updates_blocked_reason": layer3_summary.get("confirmation_updates_blocked_reason"),
+
+        "source_bar_timestamp": (
+            layer3_summary.get(
+                "source_bar_timestamp"
+            )
+        ),
+        "source_bar_is_new": (
+            layer3_summary.get(
+                "source_bar_is_new"
+            )
+        ),
+        "target_hysteresis_enabled": (
+            target_hysteresis.get(
+                "enabled"
+            )
+        ),
+        "target_hysteresis_action_counts": (
+            target_hysteresis.get(
+                "action_counts"
+            )
+        ),
+        "target_hysteresis_pending_symbols": (
+            target_hysteresis.get(
+                "pending_symbols"
+            )
+        ),
+        "target_hysteresis_changed_symbols": (
+            target_hysteresis.get(
+                "changed_symbols"
+            )
+        ),
+        "target_hysteresis_raw_symbol_count": (
+            target_hysteresis.get(
+                "raw_target_symbol_count"
+            )
+        ),
+        "target_hysteresis_approved_symbol_count": (
+            target_hysteresis.get(
+                "approved_target_symbol_count"
+            )
+        ),
+        "target_hysteresis_approved_cash_pct": (
+            target_hysteresis.get(
+                "approved_cash_pct"
+            )
+        ),
 
         "open_session_date": layer3_summary.get("open_session_date"),
         "open_session_live_cycle_count": layer3_summary.get("open_session_live_cycle_count"),

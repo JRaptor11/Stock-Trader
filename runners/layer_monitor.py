@@ -13,6 +13,10 @@ from layers.layer_schedule import (
     normalize_layer_interval_seconds,
     sleep_until_next_layer_boundary,
 )
+from layers.layer_bar_gate import (
+    accept_distinct_bar_report,
+    build_distinct_bar_report,
+)
 from utils.numeric import safe_float, safe_int
 
 from config import runtime_config as config
@@ -292,8 +296,11 @@ def _layer2_evaluation_context(market_is_open: bool, *, count_live_cycle: bool) 
         state["live_evaluation_count"] = 0
 
     transition_cycles = safe_int(
-        _execution_setting("layer2_opening_transition_smoothing_cycles", 3),
-        3,
+        _execution_setting(
+            "layer2_opening_transition_smoothing_cycles",
+            6,
+        ),
+        6,
     )
 
     if market_is_open and count_live_cycle:
@@ -538,6 +545,59 @@ def _bar_epoch_seconds(bar: dict) -> float | None:
     return None
 
 
+def _latest_source_bar_timestamp(
+    bars_by_symbol: dict,
+    symbols: list[str] | None = None,
+) -> str | None:
+    """
+    Return the newest completed input-bar timestamp used by one source.
+    """
+    symbol_list = (
+        symbols
+        or list(
+            (bars_by_symbol or {}).keys()
+        )
+    )
+
+    latest_epoch = None
+
+    for symbol in symbol_list:
+        bars = list(
+            (bars_by_symbol or {}).get(
+                symbol,
+                [],
+            )
+            or []
+        )
+
+        if not bars:
+            continue
+
+        epoch = _bar_epoch_seconds(
+            bars[-1]
+        )
+
+        if epoch is None:
+            continue
+
+        latest_epoch = (
+            epoch
+            if latest_epoch is None
+            else max(
+                latest_epoch,
+                epoch,
+            )
+        )
+
+    if latest_epoch is None:
+        return None
+
+    return datetime.fromtimestamp(
+        latest_epoch,
+        tz=timezone.utc,
+    ).isoformat()
+
+
 def _build_live_bars_by_symbol(
     symbols: list[str],
     *,
@@ -645,8 +705,11 @@ def _live_shadow_evaluation_context(market_is_open: bool, *, count_live_cycle: b
         state["live_evaluation_count"] = 0
 
     transition_cycles = safe_int(
-        _execution_setting("layer2_opening_transition_smoothing_cycles", 3),
-        3,
+        _execution_setting(
+            "layer2_opening_transition_smoothing_cycles",
+            6,
+        ),
+        6,
     )
 
     if market_is_open and count_live_cycle:
@@ -1913,6 +1976,46 @@ def _simulate_one_strategy_shadow_portfolio(
                     "target_absent_count"
                 )
             ),
+            "planner_raw_target_weight": (
+                candidate.get(
+                    "raw_target_weight"
+                )
+            ),
+            "planner_approved_target_weight": (
+                candidate.get(
+                    "approved_target_weight"
+                )
+            ),
+            "planner_pending_target_weight": (
+                candidate.get(
+                    "pending_target_weight"
+                )
+            ),
+            "planner_target_candidate_direction": (
+                candidate.get(
+                    "target_candidate_direction"
+                )
+            ),
+            "planner_target_candidate_count": (
+                candidate.get(
+                    "target_candidate_count"
+                )
+            ),
+            "planner_target_required_count": (
+                candidate.get(
+                    "target_required_count"
+                )
+            ),
+            "planner_target_hysteresis_action": (
+                candidate.get(
+                    "target_hysteresis_action"
+                )
+            ),
+            "planner_deferred_notional": (
+                candidate.get(
+                    "deferred_notional"
+                )
+            ),
         })
 
     for candidate_rank, candidate in enumerate(candidates, start=1):
@@ -2213,6 +2316,12 @@ def run_strategy_shadow_portfolio_simulation(
     live_prices: dict,
     rest_bars_by_symbol: dict,
     live_bar_counts: dict | None,
+    rest_source_bar_timestamp: (
+        str | None
+    ),
+    live_source_bar_timestamp: (
+        str | None
+    ),
     layer3_plan: list[dict] | None,
     layer3_summary: dict | None,
 ) -> dict:
@@ -2367,6 +2476,11 @@ def run_strategy_shadow_portfolio_simulation(
             open_order_details={},
             fail_safe_active=False,
             last_trade_prices=prices,
+            source_bar_timestamp=(
+                rest_source_bar_timestamp
+                if strategy_name == "REST"
+                else live_source_bar_timestamp
+            ),
         )
 
         planner_plan = planner_result.get(
@@ -2439,6 +2553,26 @@ def run_strategy_shadow_portfolio_simulation(
             (summaries.get("LIVE") or {})
             .get("planner_summary", {})
             .get("decision_counts")
+        ),
+        "rest_planner_rolling_trade_limits": (
+            (summaries.get("REST") or {})
+            .get("planner_summary", {})
+            .get("rolling_trade_limits")
+        ),
+        "live_planner_rolling_trade_limits": (
+            (summaries.get("LIVE") or {})
+            .get("planner_summary", {})
+            .get("rolling_trade_limits")
+        ),
+        "rest_planner_target_hysteresis": (
+            (summaries.get("REST") or {})
+            .get("planner_summary", {})
+            .get("target_hysteresis")
+        ),
+        "live_planner_target_hysteresis": (
+            (summaries.get("LIVE") or {})
+            .get("planner_summary", {})
+            .get("target_hysteresis")
         ),
         "winner_by_equity": _strategy_shadow_comparison_winner(summaries),
         "live_better_than_rest": value("LIVE", "equity") > value("REST", "equity"),
@@ -2526,6 +2660,10 @@ def run_live_strategy_shadow_comparison(
     )
 
     rest_bars_by_symbol = rest_bars_by_symbol or {}
+    layer3_plan = layer3_plan or []
+    layer3_summary = (
+        layer3_summary or {}
+    )
 
     rest_bootstrap_enabled = _execution_bool_setting(
         "live_strategy_shadow_rest_bootstrap_enabled",
@@ -2538,6 +2676,23 @@ def run_live_strategy_shadow_comparison(
         limit=live_bar_limit,
         rest_bars_by_symbol=rest_bars_by_symbol,
         rest_bootstrap_enabled=rest_bootstrap_enabled,
+    )
+
+    rest_source_bar_timestamp = (
+        layer3_summary.get(
+            "source_bar_timestamp"
+        )
+        or _latest_source_bar_timestamp(
+            rest_bars_by_symbol,
+            symbols,
+        )
+    )
+
+    live_source_bar_timestamp = (
+        _latest_source_bar_timestamp(
+            live_bars_by_symbol,
+            symbols,
+        )
     )
 
     live_symbols_ready = [
@@ -2681,9 +2836,6 @@ def run_live_strategy_shadow_comparison(
     rest_meta = _target_meta(rest_target)
     live_meta = _target_meta(live_target)
 
-    layer3_plan = layer3_plan or []
-    layer3_summary = layer3_summary or {}
-
     plan_by_symbol = {
         str(row.get("symbol") or "").upper().strip(): row
         for row in layer3_plan
@@ -2810,6 +2962,9 @@ def run_live_strategy_shadow_comparison(
                     )
                 ),
                 last_trade_prices=live_prices,
+                source_bar_timestamp=(
+                    live_source_bar_timestamp
+                ),
             )
         )
 
@@ -3030,6 +3185,62 @@ def run_live_strategy_shadow_comparison(
                 if live_plan_row
                 else None
             ),
+            "live_planner_raw_target_weight": (
+                live_plan_row.get(
+                    "raw_target_weight"
+                )
+                if live_plan_row
+                else None
+            ),
+            "live_planner_approved_target_weight": (
+                live_plan_row.get(
+                    "approved_target_weight"
+                )
+                if live_plan_row
+                else None
+            ),
+            "live_planner_pending_target_weight": (
+                live_plan_row.get(
+                    "pending_target_weight"
+                )
+                if live_plan_row
+                else None
+            ),
+            "live_planner_target_candidate_direction": (
+                live_plan_row.get(
+                    "target_candidate_direction"
+                )
+                if live_plan_row
+                else None
+            ),
+            "live_planner_target_candidate_count": (
+                live_plan_row.get(
+                    "target_candidate_count"
+                )
+                if live_plan_row
+                else None
+            ),
+            "live_planner_target_required_count": (
+                live_plan_row.get(
+                    "target_required_count"
+                )
+                if live_plan_row
+                else None
+            ),
+            "live_planner_target_hysteresis_action": (
+                live_plan_row.get(
+                    "target_hysteresis_action"
+                )
+                if live_plan_row
+                else None
+            ),
+            "live_planner_deferred_notional": (
+                live_plan_row.get(
+                    "deferred_notional"
+                )
+                if live_plan_row
+                else None
+            ),
             "rest_price": rest_price if rest_price > 0 else None,
             "live_price": live_price if live_price > 0 else None,
             "live_vs_rest_price_pct": live_vs_rest_price_pct,
@@ -3125,6 +3336,16 @@ def run_live_strategy_shadow_comparison(
                 "bootstrap_confirmation_applied"
             )
         ),
+        "live_planner_rolling_trade_limits": (
+            live_planner_summary.get(
+                "rolling_trade_limits"
+            )
+        ),
+        "live_planner_target_hysteresis": (
+            live_planner_summary.get(
+                "target_hysteresis"
+            )
+        ),
         "error": None,
     }
 
@@ -3143,6 +3364,12 @@ def run_live_strategy_shadow_comparison(
             live_prices=live_prices,
             rest_bars_by_symbol=rest_bars_by_symbol,
             live_bar_counts=live_bar_counts,
+            rest_source_bar_timestamp=(
+                rest_source_bar_timestamp
+            ),
+            live_source_bar_timestamp=(
+                live_source_bar_timestamp
+            ),
             layer3_plan=layer3_plan,
             layer3_summary=layer3_summary,
         )
@@ -3171,7 +3398,409 @@ def run_live_strategy_shadow_comparison(
     return cycle_row
 
 
-async def run_layer_monitor(interval_seconds: int = 600) -> None:
+async def _sleep_with_shutdown(
+    shutdown_event,
+    seconds: float,
+) -> bool:
+    deadline = (
+        time.monotonic()
+        + max(0.0, float(seconds))
+    )
+
+    while not shutdown_event.is_set():
+        remaining = deadline - time.monotonic()
+
+        if remaining <= 0:
+            return False
+
+        await asyncio.sleep(
+            min(0.5, remaining)
+        )
+
+    return True
+
+
+def _rest_bar_gate_state() -> dict:
+    return (
+        app_state.setdefault("layers", {})
+        .setdefault("bar_gates", {})
+        .setdefault("REST", {})
+    )
+
+
+async def _wait_for_distinct_fresh_rest_bars(
+    *,
+    symbols: list[str],
+    required_fresh_symbols: int,
+    market_is_open_at_start: bool,
+    next_layer3_cycle_id: int | None,
+) -> dict:
+    """
+    Poll REST bars until a fresh, distinct five-minute cohort is available.
+
+    Market-open waits continue until:
+    - a new cohort arrives
+    - shutdown is requested
+    - the market closes
+
+    Off hours perform one check only.
+    """
+    shutdown_event = (
+        app_state["stream"]["shutdown_event"]
+    )
+    gate_state = _rest_bar_gate_state()
+
+    poll_seconds = max(
+        5.0,
+        safe_float(
+            _execution_setting(
+                "layer_monitor_rest_bar_poll_seconds",
+                15.0,
+            ),
+            15.0,
+        ),
+    )
+
+    log_seconds = max(
+        poll_seconds,
+        safe_float(
+            _execution_setting(
+                "layer_monitor_rest_bar_wait_log_seconds",
+                60.0,
+            ),
+            60.0,
+        ),
+    )
+
+    freshness_market_hours_only = (
+        _execution_bool_setting(
+            "bar_freshness_market_hours_only",
+            True,
+        )
+    )
+
+    max_age_minutes = safe_float(
+        _execution_setting(
+            "bar_freshness_max_age_minutes",
+            35.0,
+        ),
+        35.0,
+    )
+
+    started = time.monotonic()
+    next_info_log_at = 0.0
+    attempts = 0
+
+    gate_state["waiting"] = True
+    gate_state["wait_started_at"] = (
+        datetime.now(timezone.utc).isoformat()
+    )
+
+    while not shutdown_event.is_set():
+        attempts += 1
+
+        market_is_open_now = (
+            get_market_is_open(app_state)
+        )
+
+        freshness_required = bool(
+            market_is_open_now
+            or not freshness_market_hours_only
+        )
+
+        bars_by_symbol = (
+            fetch_recent_bars_with_min_count(
+                app_state.get(
+                    "stock_data_client"
+                ),
+                symbols,
+                min_bars=180,
+                timeframe_minutes=5,
+                initial_lookback_hours=96,
+                max_lookback_hours=336,
+                min_ready_symbols=(
+                    required_fresh_symbols
+                ),
+            )
+        )
+
+        (
+            freshness_probe,
+            freshness_report,
+        ) = filter_fresh_bars(
+            bars_by_symbol,
+            symbols,
+            max_age_minutes=max_age_minutes,
+        )
+
+        fresh_bars_by_symbol = (
+            freshness_probe
+            if freshness_required
+            else bars_by_symbol
+        )
+
+        freshness_report.update({
+            "freshness_required": (
+                freshness_required
+            ),
+            "market_is_open": (
+                market_is_open_now
+            ),
+            "required_fresh_symbols": (
+                required_fresh_symbols
+            ),
+        })
+
+        gate_report = build_distinct_bar_report(
+            source="REST",
+            bars_by_symbol=(
+                fresh_bars_by_symbol
+            ),
+            symbols=symbols,
+            last_accepted_timestamp_by_symbol=(
+                gate_state.get(
+                    "last_accepted_timestamp_by_symbol",
+                    {},
+                )
+            ),
+            required_new_symbols=(
+                required_fresh_symbols
+            ),
+        )
+
+        freshness_ready = bool(
+            not freshness_required
+            or freshness_report.get(
+                "fresh_count",
+                0,
+            )
+            >= required_fresh_symbols
+        )
+
+        ready = bool(
+            freshness_ready
+            and gate_report.get("ready")
+        )
+
+        elapsed = round(
+            time.monotonic() - started,
+            3,
+        )
+
+        gate_report.update({
+            "status": (
+                "ready"
+                if ready
+                else "waiting"
+            ),
+            "attempts": attempts,
+            "wait_seconds": elapsed,
+            "poll_seconds": poll_seconds,
+            "freshness_ready": (
+                freshness_ready
+            ),
+            "fresh_count": (
+                freshness_report.get(
+                    "fresh_count",
+                    0,
+                )
+            ),
+            "required_fresh_symbols": (
+                required_fresh_symbols
+            ),
+            "market_is_open": (
+                market_is_open_now
+            ),
+        })
+
+        app_state.setdefault(
+            "layers",
+            {},
+        )["bar_freshness"] = (
+            freshness_report
+        )
+
+        gate_state["last_poll_at"] = (
+            datetime.now(
+                timezone.utc
+            ).isoformat()
+        )
+        gate_state["last_poll_report"] = (
+            dict(gate_report)
+        )
+
+        if ready:
+            gate_state["waiting"] = False
+            gate_state["last_ready_report"] = (
+                dict(gate_report)
+            )
+
+            logging.info(
+                "[RestBarGate] Ready | "
+                "candidate=%s new=%s/%s "
+                "attempts=%s wait_seconds=%.1f "
+                "fresh=%s/%s",
+                gate_report.get(
+                    "candidate_bar_timestamp"
+                ),
+                gate_report.get(
+                    "new_symbol_count"
+                ),
+                gate_report.get(
+                    "required_new_symbols"
+                ),
+                attempts,
+                elapsed,
+                freshness_report.get(
+                    "fresh_count",
+                    0,
+                ),
+                required_fresh_symbols,
+            )
+
+            return {
+                "status": "ready",
+                "market_is_open": (
+                    market_is_open_now
+                ),
+                "bars_by_symbol": (
+                    bars_by_symbol
+                ),
+                "fresh_bars_by_symbol": (
+                    fresh_bars_by_symbol
+                ),
+                "freshness_report": (
+                    freshness_report
+                ),
+                "gate_report": gate_report,
+            }
+
+        logging.debug(
+            "[RestBarGate] "
+            "Duplicate/not-ready | report=%s",
+            gate_report,
+        )
+
+        if elapsed >= next_info_log_at:
+            logging.info(
+                "[RestBarGate] Waiting | "
+                "candidate=%s new=%s/%s "
+                "fresh=%s/%s attempt=%s "
+                "wait_seconds=%.1f lagging=%s "
+                "duplicate=%s",
+                gate_report.get(
+                    "candidate_bar_timestamp"
+                ),
+                gate_report.get(
+                    "new_symbol_count"
+                ),
+                gate_report.get(
+                    "required_new_symbols"
+                ),
+                freshness_report.get(
+                    "fresh_count",
+                    0,
+                ),
+                required_fresh_symbols,
+                attempts,
+                elapsed,
+                gate_report.get(
+                    "lagging_symbols"
+                ),
+                gate_report.get(
+                    "duplicate_symbols"
+                ),
+            )
+
+            next_info_log_at = (
+                elapsed + log_seconds
+            )
+
+            # Keep the opening-delay diagnostic
+            # running while production waits.
+            if market_is_open_now:
+                run_opening_live_fallback_shadow(
+                    symbols=symbols,
+                    cycle_id=(
+                        next_layer3_cycle_id
+                    ),
+                    market_is_open=True,
+                    rest_status=(
+                        "waiting_for_distinct_"
+                        "fresh_rest_bar"
+                    ),
+                    freshness_report=(
+                        freshness_report
+                    ),
+                    required_fresh_symbols=(
+                        required_fresh_symbols
+                    ),
+                    rest_bars_by_symbol=(
+                        bars_by_symbol
+                    ),
+                )
+
+        # Do not poll continuously overnight.
+        if not market_is_open_now:
+            gate_state["waiting"] = False
+
+            status = (
+                "market_closed_while_waiting"
+                if market_is_open_at_start
+                else "no_new_bar_off_hours"
+            )
+
+            gate_report["status"] = status
+
+            return {
+                "status": status,
+                "market_is_open": False,
+                "bars_by_symbol": (
+                    bars_by_symbol
+                ),
+                "fresh_bars_by_symbol": (
+                    fresh_bars_by_symbol
+                ),
+                "freshness_report": (
+                    freshness_report
+                ),
+                "gate_report": gate_report,
+            }
+
+        shutdown_requested = (
+            await _sleep_with_shutdown(
+                shutdown_event,
+                poll_seconds,
+            )
+        )
+
+        if shutdown_requested:
+            break
+
+    gate_state["waiting"] = False
+
+    return {
+        "status": "shutdown",
+        "market_is_open": (
+            get_market_is_open(app_state)
+        ),
+        "bars_by_symbol": {},
+        "fresh_bars_by_symbol": {},
+        "freshness_report": {},
+        "gate_report": {
+            "status": "shutdown",
+            "attempts": attempts,
+            "wait_seconds": round(
+                time.monotonic() - started,
+                3,
+            ),
+        },
+    }
+
+
+async def run_layer_monitor(
+    interval_seconds: int = 300,
+) -> None:
     """
     Runs Layer 1/2 evaluation on a timer.
 
@@ -3181,9 +3810,24 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
     Order execution is controlled by LAYER3_EXECUTION_ENABLED.
     When disabled, Layer 3 remains dry-run only.
     """
+    interval_seconds = (
+        normalize_layer_interval_seconds(
+            safe_int(
+                _execution_setting(
+                    "layer_monitor_interval_seconds",
+                    interval_seconds,
+                ),
+                interval_seconds,
+            )
+        )
+    )
+
     logging.info(
-        "[Layers] Layer monitor started | interval_seconds=%s wall_clock_aligned=True",
-        normalize_layer_interval_seconds(interval_seconds),
+        "[Layers] Layer monitor started | "
+        "interval_seconds=%s "
+        "wall_clock_aligned=True "
+        "distinct_rest_bar_gate=True",
+        interval_seconds,
     )
 
     while not app_state["stream"]["shutdown_event"].is_set():
@@ -3202,8 +3846,11 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
 
                     market_is_open = get_market_is_open(app_state)
 
-                    run_24_7 = bool(
-                        _execution_setting("layer_monitor_run_24_7", True)
+                    run_24_7 = (
+                        _execution_bool_setting(
+                            "layer_monitor_run_24_7",
+                            True,
+                        )
                     )
 
                     if not run_24_7 and not market_is_open:
@@ -3235,182 +3882,194 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
                         }
                         logging.info("[Layers] Tick counts: %s", tick_counts)
 
-                    required_fresh_symbols = _fresh_symbol_requirement(len(symbols))
+                    required_fresh_symbols = (
+                        _fresh_symbol_requirement(
+                            len(symbols)
+                        )
+                    )
 
-                    bars_by_symbol = fetch_recent_bars_with_min_count(
-                        app_state.get("stock_data_client"),
-                        symbols,
-                        min_bars=180,
-                        timeframe_minutes=5,
-                        initial_lookback_hours=96,
-                        max_lookback_hours=336,
-                        min_ready_symbols=required_fresh_symbols,
+                    next_layer3_cycle_id = int(
+                        app_state.get(
+                            "layers",
+                            {},
+                        )
+                        .get(
+                            "rebalance",
+                            {},
+                        )
+                        .get(
+                            "last_cycle_id",
+                            0,
+                        )
+                        or 0
+                    ) + 1
+
+                    bar_gate_result = await (
+                        _wait_for_distinct_fresh_rest_bars(
+                            symbols=symbols,
+                            required_fresh_symbols=(
+                                required_fresh_symbols
+                            ),
+                            market_is_open_at_start=(
+                                market_is_open
+                            ),
+                            next_layer3_cycle_id=(
+                                next_layer3_cycle_id
+                                if market_is_open
+                                else None
+                            ),
+                        )
+                    )
+
+                    if (
+                        bar_gate_result.get("status")
+                        != "ready"
+                    ):
+                        logging.info(
+                            "[RestBarGate] "
+                            "No strategic cycle run | "
+                            "status=%s report=%s",
+                            bar_gate_result.get(
+                                "status"
+                            ),
+                            bar_gate_result.get(
+                                "gate_report"
+                            ),
+                        )
+                        continue
+
+                    market_is_open = bool(
+                        bar_gate_result.get(
+                            "market_is_open"
+                        )
+                    )
+
+                    bars_by_symbol = (
+                        bar_gate_result.get(
+                            "bars_by_symbol",
+                            {},
+                        )
+                    )
+
+                    fresh_bars_by_symbol = (
+                        bar_gate_result.get(
+                            "fresh_bars_by_symbol",
+                            {},
+                        )
+                    )
+
+                    freshness_report = (
+                        bar_gate_result.get(
+                            "freshness_report",
+                            {},
+                        )
+                    )
+
+                    rest_bar_gate_report = (
+                        bar_gate_result.get(
+                            "gate_report",
+                            {},
+                        )
                     )
 
                     if market_is_open:
-                        logging.info("[Layers] Symbols being evaluated: %s", symbols)
+                        logging.info(
+                            "[Layers] "
+                            "Symbols being evaluated: %s",
+                            symbols,
+                        )
                     else:
-                        logging.info("[Layers] Symbols being observed: %s", symbols)
+                        logging.info(
+                            "[Layers] "
+                            "Symbols being observed: %s",
+                            symbols,
+                        )
 
                     bar_counts = {
-                        symbol: len(bars_by_symbol.get(symbol, []))
+                        symbol: len(
+                            bars_by_symbol.get(
+                                symbol,
+                                [],
+                            )
+                        )
                         for symbol in symbols
                     }
-                    logging.info("[Layers] Bar counts: %s", bar_counts)
+
+                    logging.info(
+                        "[Layers] Bar counts: %s",
+                        bar_counts,
+                    )
 
                     symbols_with_60_bars = [
                         symbol
-                        for symbol, count in bar_counts.items()
+                        for symbol, count
+                        in bar_counts.items()
                         if count >= 60
                     ]
 
                     symbols_with_180_bars = [
                         symbol
-                        for symbol, count in bar_counts.items()
+                        for symbol, count
+                        in bar_counts.items()
                         if count >= 180
                     ]
 
                     logging.info(
-                        "[Layers] Bar readiness | >=60 bars=%s/%s >=180 bars=%s/%s",
+                        "[Layers] Bar readiness | "
+                        ">=60 bars=%s/%s "
+                        ">=180 bars=%s/%s",
                         len(symbols_with_60_bars),
                         len(symbols),
                         len(symbols_with_180_bars),
                         len(symbols),
                     )
 
-                    freshness_market_hours_only = bool(
-                        _execution_setting("bar_freshness_market_hours_only", True)
+                    app_state.setdefault(
+                        "layers",
+                        {},
+                    )["bar_freshness"] = (
+                        freshness_report
                     )
-
-                    freshness_required = (
-                        market_is_open or not freshness_market_hours_only
-                    )
-
-                    max_age_minutes = safe_float(
-                        _execution_setting("bar_freshness_max_age_minutes", 35.0),
-                        35.0,
-                    )
-
-                    freshness_probe_bars_by_symbol, freshness_report = filter_fresh_bars(
-                        bars_by_symbol,
-                        symbols,
-                        max_age_minutes=max_age_minutes,
-                    )
-
-                    if freshness_required:
-                        fresh_bars_by_symbol = freshness_probe_bars_by_symbol
-                    else:
-                        # Off-hours freshness is diagnostic only. We still evaluate
-                        # the full bar set for warmup smoothing, but keep the real
-                        # age/fresh/stale report so Layer 3 bootstrap can avoid
-                        # trusting stale warmup symbols at the open.
-                        fresh_bars_by_symbol = bars_by_symbol
-
-                    freshness_report["freshness_required"] = freshness_required
-                    freshness_report["market_is_open"] = market_is_open
-                    freshness_report["required_fresh_symbols"] = required_fresh_symbols
-
-                    app_state.setdefault("layers", {})["bar_freshness"] = freshness_report
-
-                    next_layer3_cycle_id = int(
-                        app_state.get("layers", {})
-                        .get("rebalance", {})
-                        .get("last_cycle_id", 0)
-                        or 0
-                    ) + 1
 
                     _append_live_bar_health_snapshot(
                         symbols=symbols,
-                        rest_bars_by_symbol=bars_by_symbol,
-                        market_is_open=market_is_open,
-                        cycle_id=next_layer3_cycle_id if market_is_open else None,
+                        rest_bars_by_symbol=(
+                            bars_by_symbol
+                        ),
+                        market_is_open=(
+                            market_is_open
+                        ),
+                        cycle_id=(
+                            next_layer3_cycle_id
+                            if market_is_open
+                            else None
+                        ),
                     )
 
-                    if not freshness_required:
-                        logging.info(
-                            "[Bars] Freshness check | required=False market_is_open=%s "
-                            "status=not_enforced fresh=%s/%s stale=%s missing=%s ages=%s "
-                            "max_age_minutes=%s",
-                            market_is_open,
-                            freshness_report.get("fresh_count", 0),
-                            freshness_report.get("total_symbols", len(symbols or [])),
-                            freshness_report.get("stale_symbols", []),
-                            freshness_report.get("missing_symbols", []),
-                            freshness_report.get("latest_bar_ages_minutes", {}),
-                            max_age_minutes,
-                        )
-
-                    else:
-
-                        logging.info(
-                            "[Bars] Freshness check | required=True market_is_open=%s "
-                            "max_age_minutes=%s fresh=%s/%s required_fresh_symbols=%s "
-                            "stale=%s missing=%s ages=%s",
-                            market_is_open,
-                            max_age_minutes,
-                            freshness_report.get("fresh_count", 0),
-                            freshness_report.get("total_symbols", len(symbols or [])),
-                            required_fresh_symbols,
-                            freshness_report.get("stale_symbols", []),
-                            freshness_report.get("missing_symbols", []),
-                            freshness_report.get("latest_bar_ages_minutes", {}),
-                        )
-
-                        if freshness_required and freshness_report["fresh_count"] < required_fresh_symbols:
-                            skip_info = {
-                                "timestamp": datetime.now(timezone.utc).isoformat(),
-                                "reason": "insufficient_fresh_bars",
-                                "market_is_open": market_is_open,
-                                "fresh_count": freshness_report["fresh_count"],
-                                "required_fresh_symbols": required_fresh_symbols,
-                                "stale_symbols": freshness_report["stale_symbols"],
-                                "missing_symbols": freshness_report["missing_symbols"],
-                                "latest_bar_ages_minutes": freshness_report["latest_bar_ages_minutes"],
-                            }
-
-                            app_state.setdefault("layers", {})["last_skipped_evaluation"] = skip_info
-
-                            logging.warning(
-                                "[Layers] Skipping Layer 1/2/3/4 because insufficient fresh bars. "
-                                "skip_info=%s",
-                                skip_info,
-                            )
-
-                            # Even when the REST-bar path skips, run live-bar diagnostics
-                            # so we can measure whether live bars had enough information to produce
-                            # a usable target earlier than delayed REST bars.
-                            run_opening_live_fallback_shadow(
-                                symbols=symbols,
-                                cycle_id=next_layer3_cycle_id,
-                                market_is_open=market_is_open,
-                                rest_status="skipped_insufficient_fresh_bars",
-                                freshness_report=freshness_report,
-                                required_fresh_symbols=required_fresh_symbols,
-                                rest_bars_by_symbol=bars_by_symbol,
-                            )
-
-                            run_live_strategy_shadow_comparison(
-                                symbols=symbols,
-                                cycle_id=next_layer3_cycle_id,
-                                market_is_open=market_is_open,
-                                rest_ranked=[],
-                                rest_target={},
-                                rest_status="skipped_insufficient_fresh_bars",
-                                layer3_plan=[],
-                                layer3_summary={},
-                                rest_bars_by_symbol=bars_by_symbol,
-                            )
-
-                            append_layer_cycle_row(
-                                status="skipped",
-                                reason="insufficient_fresh_bars",
-                                market_is_open=market_is_open,
-                                fresh_count=freshness_report.get("fresh_count"),
-                                required_fresh_symbols=required_fresh_symbols,
-                                ranked_count=0,
-                            )
-
-                            continue
+                    logging.info(
+                        "[Bars] Accepted distinct "
+                        "REST cohort | candidate=%s "
+                        "new=%s/%s fresh=%s/%s "
+                        "ages=%s",
+                        rest_bar_gate_report.get(
+                            "candidate_bar_timestamp"
+                        ),
+                        rest_bar_gate_report.get(
+                            "new_symbol_count"
+                        ),
+                        rest_bar_gate_report.get(
+                            "required_new_symbols"
+                        ),
+                        freshness_report.get(
+                            "fresh_count",
+                            0,
+                        ),
+                        required_fresh_symbols,
+                        freshness_report.get(
+                            "latest_bar_ages_minutes",
+                            {},
+                        ),
+                    )
 
                     evaluation_symbols = list(fresh_bars_by_symbol.keys())
 
@@ -3476,6 +4135,9 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
                             market_is_open=market_is_open,
                             fresh_count=freshness_report.get("fresh_count") if isinstance(freshness_report, dict) else None,
                             required_fresh_symbols=required_fresh_symbols,
+                            rest_bar_gate=(
+                                rest_bar_gate_report
+                            ),
                             ranked_count=len(ranked or []),
                             top_symbols=[
                                 getattr(r, "symbol", None)
@@ -3493,6 +4155,16 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
 
                         _expire_active_plan_for_market_close()
                         _append_mature_live_strategy_shadow_outcomes(market_is_open=False)
+
+                        accept_distinct_bar_report(
+                            _rest_bar_gate_state(),
+                            rest_bar_gate_report,
+                            cycle_id=None,
+                            accepted_reason=(
+                                "market_closed_"
+                                "target_warmup"
+                            ),
+                        )
 
                         continue
 
@@ -3535,7 +4207,15 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
                         target=target,
                     )
 
-                    layer3_result = run_layer3_dry_run()
+                    layer3_result = (
+                        run_layer3_dry_run(
+                            source_bar_timestamp=(
+                                rest_bar_gate_report.get(
+                                    "candidate_bar_timestamp"
+                                )
+                            )
+                        )
+                    )
 
                     if isinstance(layer3_result, dict) and (
                         "plan" in layer3_result or "summary" in layer3_result
@@ -3575,6 +4255,31 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
                         layer3_summary.get("bootstrap_confirmation_warmup_skipped_symbols"),
                     )
 
+                    layer3_summary[
+                        "rest_bar_gate"
+                    ] = dict(
+                        rest_bar_gate_report
+                    )
+
+                    # Layer 3 completed its strategic
+                    # plan for this bar. Mark it accepted
+                    # before diagnostics and execution so
+                    # a downstream error cannot plan the
+                    # same bar twice.
+                    accept_distinct_bar_report(
+                        _rest_bar_gate_state(),
+                        rest_bar_gate_report,
+                        cycle_id=(
+                            layer3_summary.get(
+                                "cycle_id"
+                            )
+                        ),
+                        accepted_reason=(
+                            "market_open_"
+                            "strategic_cycle"
+                        ),
+                    )
+
                     run_live_strategy_shadow_comparison(
                         symbols=evaluation_symbols,
                         cycle_id=next_layer3_cycle_id,
@@ -3606,6 +4311,9 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
                         target_summary=target_summary_for_log(target),
                         layer3_summary=layer3_summary,
                         layer4_result=layer4_execution_result,
+                        rest_bar_gate=(
+                            rest_bar_gate_report
+                        ),
                     )
 
                     logging.info(
@@ -3667,7 +4375,7 @@ async def run_layer_monitor(interval_seconds: int = 600) -> None:
                 await sleep_until_next_layer_boundary(
                     shutdown_event=app_state["stream"]["shutdown_event"],
                     interval_seconds=interval_seconds,
-                    min_spacing_seconds=180.0,
+                    min_spacing_seconds=0.0,
                 )
 
     logging.info("[Layers] Layer monitor exited cleanly.")

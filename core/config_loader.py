@@ -178,6 +178,11 @@ def load_environment_config() -> None:
         8,
     )
 
+    config.LAYER3_OPENING_TRANSITION_CYCLES = get_int_env(
+        "LAYER3_OPENING_TRANSITION_CYCLES",
+        6,
+    )
+
     config.LIVE_STRATEGY_SHADOW_REST_BOOTSTRAP_ENABLED = get_bool_env(
         "LIVE_STRATEGY_SHADOW_REST_BOOTSTRAP_ENABLED",
         True,
@@ -206,6 +211,75 @@ def load_environment_config() -> None:
     config.BAR_FRESHNESS_MIN_FRESH_RATIO = get_float_env(
         "BAR_FRESHNESS_MIN_FRESH_RATIO",
         0.70,
+    )
+    config.LAYER3_ROLLING_TRADE_LIMITS_ENABLED = get_bool_env(
+        "LAYER3_ROLLING_TRADE_LIMITS_ENABLED",
+        True,
+    )
+
+    config.LAYER3_ROLLING_LIMIT_WINDOW_SECONDS = get_int_env(
+        "LAYER3_ROLLING_LIMIT_WINDOW_SECONDS",
+        600,
+    )
+
+    config.LAYER3_MAX_TRADES_PER_ROLLING_WINDOW = get_int_env(
+        "LAYER3_MAX_TRADES_PER_ROLLING_WINDOW",
+        6,
+    )
+
+    config.LAYER3_MAX_BUYS_PER_ROLLING_WINDOW = get_int_env(
+        "LAYER3_MAX_BUYS_PER_ROLLING_WINDOW",
+        3,
+    )
+
+    config.LAYER3_MAX_SELLS_PER_ROLLING_WINDOW = get_int_env(
+        "LAYER3_MAX_SELLS_PER_ROLLING_WINDOW",
+        3,
+    )
+
+    config.LAYER3_MAX_BUY_NOTIONAL_PER_ROLLING_WINDOW = get_float_env(
+        "LAYER3_MAX_BUY_NOTIONAL_PER_ROLLING_WINDOW",
+        22500.0,
+    )
+
+    config.LAYER3_MAX_SELL_NOTIONAL_PER_ROLLING_WINDOW = get_float_env(
+        "LAYER3_MAX_SELL_NOTIONAL_PER_ROLLING_WINDOW",
+        22500.0,
+    )
+
+    config.LAYER3_MAX_GROSS_NOTIONAL_PER_ROLLING_WINDOW = get_float_env(
+        "LAYER3_MAX_GROSS_NOTIONAL_PER_ROLLING_WINDOW",
+        45000.0,
+    )
+
+    config.LAYER3_TARGET_HYSTERESIS_ENABLED = get_bool_env(
+        "LAYER3_TARGET_HYSTERESIS_ENABLED",
+        True,
+    )
+
+    config.LAYER3_TARGET_MATERIAL_CHANGE = get_float_env(
+        "LAYER3_TARGET_MATERIAL_CHANGE",
+        0.025,
+    )
+
+    config.LAYER3_TARGET_CANDIDATE_TOLERANCE = get_float_env(
+        "LAYER3_TARGET_CANDIDATE_TOLERANCE",
+        0.010,
+    )
+
+    config.LAYER3_TARGET_INCREASE_CONFIRMATION_BARS = get_int_env(
+        "LAYER3_TARGET_INCREASE_CONFIRMATION_BARS",
+        2,
+    )
+
+    config.LAYER3_TARGET_DECREASE_CONFIRMATION_BARS = get_int_env(
+        "LAYER3_TARGET_DECREASE_CONFIRMATION_BARS",
+        1,
+    )
+
+    config.LAYER3_TARGET_REMOVAL_CONFIRMATION_BARS = get_int_env(
+        "LAYER3_TARGET_REMOVAL_CONFIRMATION_BARS",
+        2,
     )
 
 
@@ -238,8 +312,67 @@ def apply_runtime_config_to_app_state() -> None:
         config.LAYER3_BOOTSTRAP_MIN_BAR_COUNT
     )
 
+    app_state["execution"]["layer3_opening_transition_cycles"] = (
+        config.LAYER3_OPENING_TRANSITION_CYCLES
+    )
+
     app_state["execution"]["live_strategy_shadow_rest_bootstrap_enabled"] = (
         config.LIVE_STRATEGY_SHADOW_REST_BOOTSTRAP_ENABLED
+    )
+    app_state["execution"]["layer3_rolling_trade_limits_enabled"] = (
+        config.LAYER3_ROLLING_TRADE_LIMITS_ENABLED
+    )
+
+    app_state["execution"]["layer3_rolling_limit_window_seconds"] = (
+        config.LAYER3_ROLLING_LIMIT_WINDOW_SECONDS
+    )
+
+    app_state["execution"]["layer3_max_trades_per_rolling_window"] = (
+        config.LAYER3_MAX_TRADES_PER_ROLLING_WINDOW
+    )
+
+    app_state["execution"]["layer3_max_buys_per_rolling_window"] = (
+        config.LAYER3_MAX_BUYS_PER_ROLLING_WINDOW
+    )
+
+    app_state["execution"]["layer3_max_sells_per_rolling_window"] = (
+        config.LAYER3_MAX_SELLS_PER_ROLLING_WINDOW
+    )
+
+    app_state["execution"]["layer3_max_buy_notional_per_rolling_window"] = (
+        config.LAYER3_MAX_BUY_NOTIONAL_PER_ROLLING_WINDOW
+    )
+
+    app_state["execution"]["layer3_max_sell_notional_per_rolling_window"] = (
+        config.LAYER3_MAX_SELL_NOTIONAL_PER_ROLLING_WINDOW
+    )
+
+    app_state["execution"]["layer3_max_gross_notional_per_rolling_window"] = (
+        config.LAYER3_MAX_GROSS_NOTIONAL_PER_ROLLING_WINDOW
+    )
+
+    app_state["execution"]["layer3_target_hysteresis_enabled"] = (
+        config.LAYER3_TARGET_HYSTERESIS_ENABLED
+    )
+
+    app_state["execution"]["layer3_target_material_change"] = (
+        config.LAYER3_TARGET_MATERIAL_CHANGE
+    )
+
+    app_state["execution"]["layer3_target_candidate_tolerance"] = (
+        config.LAYER3_TARGET_CANDIDATE_TOLERANCE
+    )
+
+    app_state["execution"]["layer3_target_increase_confirmation_bars"] = (
+        config.LAYER3_TARGET_INCREASE_CONFIRMATION_BARS
+    )
+
+    app_state["execution"]["layer3_target_decrease_confirmation_bars"] = (
+        config.LAYER3_TARGET_DECREASE_CONFIRMATION_BARS
+    )
+
+    app_state["execution"]["layer3_target_removal_confirmation_bars"] = (
+        config.LAYER3_TARGET_REMOVAL_CONFIRMATION_BARS
     )
 
     symbol_raw = os.environ.get("SYMBOL", "AAPL").strip()
@@ -302,13 +435,26 @@ def log_runtime_config_status() -> None:
     """
     Log startup execution/config status.
     """
-
     logging.info(
-        "[LayerConfig] layer4_execution_enabled=%s layer3_market_hours_only=%s "
-        "layer_monitor_run_24_7=%s bar_freshness_market_hours_only=%s "
-        "bar_freshness_max_age_minutes=%s bar_freshness_min_fresh_symbols=%s "
-        "bar_freshness_min_fresh_ratio=%s bootstrap_confirmation_enabled=%s "
-        "bootstrap_min_bar_count=%s",
+        "[LayerConfig] "
+        "layer4_execution_enabled=%s "
+        "layer3_market_hours_only=%s "
+        "layer_monitor_run_24_7=%s "
+        "bar_freshness_market_hours_only=%s "
+        "bar_freshness_max_age_minutes=%s "
+        "bar_freshness_min_fresh_symbols=%s "
+        "bar_freshness_min_fresh_ratio=%s "
+        "bootstrap_confirmation_enabled=%s "
+        "bootstrap_min_bar_count=%s "
+        "layer3_opening_transition_cycles=%s "
+        "rolling_limits_enabled=%s "
+        "rolling_window_seconds=%s "
+        "rolling_trade_limits=%s/%s/%s "
+        "rolling_notional_limits=%s/%s/%s "
+        "hysteresis_enabled=%s "
+        "hysteresis_material_change=%s "
+        "hysteresis_candidate_tolerance=%s "
+        "hysteresis_confirmation_bars=%s/%s/%s",
         config.LAYER4_EXECUTION_ENABLED,
         config.LAYER3_MARKET_HOURS_ONLY,
         config.LAYER_MONITOR_RUN_24_7,
@@ -318,6 +464,21 @@ def log_runtime_config_status() -> None:
         config.BAR_FRESHNESS_MIN_FRESH_RATIO,
         config.LAYER3_BOOTSTRAP_CONFIRMATION_ENABLED,
         config.LAYER3_BOOTSTRAP_MIN_BAR_COUNT,
+        config.LAYER3_OPENING_TRANSITION_CYCLES,
+        config.LAYER3_ROLLING_TRADE_LIMITS_ENABLED,
+        config.LAYER3_ROLLING_LIMIT_WINDOW_SECONDS,
+        config.LAYER3_MAX_TRADES_PER_ROLLING_WINDOW,
+        config.LAYER3_MAX_BUYS_PER_ROLLING_WINDOW,
+        config.LAYER3_MAX_SELLS_PER_ROLLING_WINDOW,
+        config.LAYER3_MAX_BUY_NOTIONAL_PER_ROLLING_WINDOW,
+        config.LAYER3_MAX_SELL_NOTIONAL_PER_ROLLING_WINDOW,
+        config.LAYER3_MAX_GROSS_NOTIONAL_PER_ROLLING_WINDOW,
+        config.LAYER3_TARGET_HYSTERESIS_ENABLED,
+        config.LAYER3_TARGET_MATERIAL_CHANGE,
+        config.LAYER3_TARGET_CANDIDATE_TOLERANCE,
+        config.LAYER3_TARGET_INCREASE_CONFIRMATION_BARS,
+        config.LAYER3_TARGET_DECREASE_CONFIRMATION_BARS,
+        config.LAYER3_TARGET_REMOVAL_CONFIRMATION_BARS,
     )
 
     if config.OLD_STREAM_STRATEGY_ENABLED:

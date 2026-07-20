@@ -5,12 +5,23 @@ from core.market_clock import get_market_is_open
 from utils.numeric import safe_float, safe_int, safe_round
 from utils.symbols import normalize_symbol
 
-from core.state import app_state
+from core.state import (
+    app_state,
+    fail_safe_event,
+)
 from config import runtime_config as config
 
 from layers.layer_csv import (
     append_layer3_plan_rows,
     append_layer_portfolio_snapshot_rows,
+)
+from layers.layer3_rolling_limits import (
+    apply_rolling_trade_limits,
+    finalize_rolling_trade_limits,
+)
+from layers.layer3_target_hysteresis import (
+    prepare_confirmation_evidence,
+    resolve_target_hysteresis,
 )
 
 try:
@@ -45,18 +56,58 @@ L3_REQUIRE_EXIT_CONFIRMATION_CYCLES = 2
 L3_WHOLE_SHARES_ONLY = True
 L3_PLAN_TTL_SECONDS = 600
 
+# Preserve the approximate capacity of one former 10-minute cycle.
+L3_ROLLING_LIMIT_WINDOW_SECONDS = 600
+L3_MAX_TRADES_PER_ROLLING_WINDOW = 6
+L3_MAX_BUYS_PER_ROLLING_WINDOW = 3
+L3_MAX_SELLS_PER_ROLLING_WINDOW = 3
+
+L3_MAX_BUY_NOTIONAL_PER_ROLLING_WINDOW = 22500.0
+L3_MAX_SELL_NOTIONAL_PER_ROLLING_WINDOW = 22500.0
+L3_MAX_GROSS_NOTIONAL_PER_ROLLING_WINDOW = 45000.0
+
+# Direction-aware target hysteresis.
+L3_TARGET_HYSTERESIS_ENABLED = True
+L3_TARGET_MATERIAL_CHANGE = 0.025
+L3_TARGET_CANDIDATE_TOLERANCE = 0.010
+L3_TARGET_INCREASE_CONFIRMATION_BARS = 2
+L3_TARGET_DECREASE_CONFIRMATION_BARS = 1
+L3_TARGET_REMOVAL_CONFIRMATION_BARS = 2
+
 
 def _norm_symbol(symbol) -> str:
     return str(symbol or "").upper().strip()
 
 
-def _layer3_bool_setting(name: str, default: bool) -> bool:
-    return bool(
-        app_state.get("execution", {}).get(
-            name,
-            getattr(config, name.upper(), default),
-        )
+def _layer3_bool_setting(
+    name: str,
+    default: bool,
+) -> bool:
+    raw = app_state.get(
+        "execution",
+        {},
+    ).get(
+        name,
+        getattr(
+            config,
+            name.upper(),
+            default,
+        ),
     )
+
+    if isinstance(raw, bool):
+        return raw
+
+    if raw is None:
+        return bool(default)
+
+    return str(raw).strip().lower() in {
+        "true",
+        "1",
+        "yes",
+        "y",
+        "on",
+    }
 
 
 def _layer3_int_setting(name: str, default: int) -> int:
@@ -386,97 +437,175 @@ def update_layer3_target_stability_state(
     *,
     market_is_open: bool,
     market_hours_only: bool,
+    source_bar_timestamp=None,
     log_prefix: str = "Layer3",
-) -> tuple[dict, dict]:
+) -> tuple[dict, dict, dict]:
     """
-    Shared target-membership confirmation state for REST and LIVE planners.
+    Shared membership diagnostics advanced only by a distinct source bar.
 
-    This intentionally preserves the current cycle-based confirmation behavior.
-    The later five-minute cadence patch will add distinct-bar evidence so a
-    duplicate input bar cannot advance these counters.
+    Direction-aware approval is handled separately by target hysteresis, but
+    these counters remain useful for backward-compatible diagnostics.
     """
-    seen_counts = planner_state.setdefault("target_seen_counts", {})
-    absent_counts = planner_state.setdefault("target_absent_counts", {})
-
-    target_symbols = set(target_weights.keys())
-    all_symbols = set(target_symbols) | set(positions.keys())
-
-    confirmation_updates_allowed = bool(
-        market_is_open or not market_hours_only
+    seen_counts = planner_state.setdefault(
+        "target_seen_counts",
+        {},
     )
 
-    planner_state["market_is_open"] = bool(market_is_open)
-    planner_state["confirmation_updates_allowed"] = confirmation_updates_allowed
-    planner_state["confirmation_updates_blocked_reason"] = (
-        None if confirmation_updates_allowed else "market_closed"
+    absent_counts = planner_state.setdefault(
+        "target_absent_counts",
+        {},
     )
 
-    if not confirmation_updates_allowed:
+    evidence = prepare_confirmation_evidence(
+        planner_state=planner_state,
+        source_bar_timestamp=(
+            source_bar_timestamp
+        ),
+        market_is_open=market_is_open,
+        market_hours_only=market_hours_only,
+    )
+
+    if not evidence.get(
+        "updates_allowed"
+    ):
         logging.info(
-            "[%s] Confirmation counters frozen because market is closed "
-            "and market-hours-only confirmation is enabled.",
+            "[%s] Confirmation counters frozen | "
+            "reason=%s source_bar=%s",
             log_prefix,
+            evidence.get("blocked_reason"),
+            evidence.get(
+                "source_bar_timestamp"
+            ),
         )
-        return seen_counts, absent_counts
+
+        return (
+            seen_counts,
+            absent_counts,
+            evidence,
+        )
+
+    target_symbols = set(
+        target_weights.keys()
+    )
+
+    all_symbols = (
+        set(target_symbols)
+        | set(positions.keys())
+    )
 
     for symbol in all_symbols:
         if symbol in target_symbols:
-            seen_counts[symbol] = safe_int(
-                seen_counts.get(symbol, 0),
-                0,
-            ) + 1
-            absent_counts[symbol] = 0
-        else:
-            absent_counts[symbol] = safe_int(
-                absent_counts.get(symbol, 0),
-                0,
-            ) + 1
-            seen_counts[symbol] = 0
+            seen_counts[symbol] = (
+                safe_int(
+                    seen_counts.get(
+                        symbol,
+                        0,
+                    ),
+                    0,
+                )
+                + 1
+            )
 
-    planner_state["last_confirmation_update_at"] = datetime.now(
-        timezone.utc
-    ).isoformat()
+            absent_counts[symbol] = 0
+
+        else:
+            absent_counts[symbol] = (
+                safe_int(
+                    absent_counts.get(
+                        symbol,
+                        0,
+                    ),
+                    0,
+                )
+                + 1
+            )
+
+            seen_counts[symbol] = 0
 
     keep_symbols = all_symbols
 
-    for symbol in list(seen_counts.keys()):
+    for symbol in list(
+        seen_counts.keys()
+    ):
         if (
             symbol not in keep_symbols
-            and safe_int(seen_counts.get(symbol, 0), 0) <= 0
+            and safe_int(
+                seen_counts.get(
+                    symbol,
+                    0,
+                ),
+                0,
+            )
+            <= 0
         ):
-            seen_counts.pop(symbol, None)
+            seen_counts.pop(
+                symbol,
+                None,
+            )
 
-    for symbol in list(absent_counts.keys()):
+    for symbol in list(
+        absent_counts.keys()
+    ):
         if (
             symbol not in keep_symbols
-            and safe_int(absent_counts.get(symbol, 0), 0) <= 0
+            and safe_int(
+                absent_counts.get(
+                    symbol,
+                    0,
+                ),
+                0,
+            )
+            <= 0
         ):
-            absent_counts.pop(symbol, None)
+            absent_counts.pop(
+                symbol,
+                None,
+            )
 
-    return seen_counts, absent_counts
+    return (
+        seen_counts,
+        absent_counts,
+        evidence,
+    )
 
 
 def _update_target_stability(
     rebalance: dict,
     target_weights: dict,
     positions: dict,
-) -> tuple[dict, dict]:
+    *,
+    source_bar_timestamp=None,
+) -> tuple[dict, dict, dict]:
     """
-    Production REST wrapper around the shared confirmation-state function.
+    Production REST wrapper around distinct-bar confirmation state.
     """
-    market_is_open = get_market_is_open(app_state)
-    market_hours_only = _layer3_bool_setting(
-        "layer3_market_hours_only",
-        True,
+    market_is_open = (
+        get_market_is_open(app_state)
     )
 
-    return update_layer3_target_stability_state(
-        rebalance,
-        target_weights,
-        positions,
-        market_is_open=market_is_open,
-        market_hours_only=market_hours_only,
-        log_prefix="Layer3",
+    market_hours_only = (
+        _layer3_bool_setting(
+            "layer3_market_hours_only",
+            True,
+        )
+    )
+
+    return (
+        update_layer3_target_stability_state(
+            rebalance,
+            target_weights,
+            positions,
+            market_is_open=(
+                market_is_open
+            ),
+            market_hours_only=(
+                market_hours_only
+            ),
+            source_bar_timestamp=(
+                source_bar_timestamp
+            ),
+            log_prefix="Layer3",
+        )
     )
 
 
@@ -675,9 +804,13 @@ def _build_row(
     blocked_by,
     account,
     target_meta,
+    target_hysteresis=None,
 ):
     planned_qty = round(planned_qty, 6)
     planned_notional = round(planned_notional, 2)
+    target_hysteresis = (
+        target_hysteresis or {}
+    )
 
     return {
         "planner_source": str(
@@ -711,6 +844,91 @@ def _build_row(
 
         "target_weight": round(target_weight, 6),
         "target_value": round(target_value, 2),
+
+        "raw_target_weight": (
+            target_hysteresis.get(
+                "raw_target_weight",
+                round(target_weight, 6),
+            )
+        ),
+        "approved_target_weight": (
+            target_hysteresis.get(
+                "approved_target_weight",
+                round(target_weight, 6),
+            )
+        ),
+        "previous_approved_target_weight": (
+            target_hysteresis.get(
+                "previous_approved_target_weight"
+            )
+        ),
+        "pending_target_weight": (
+            target_hysteresis.get(
+                "pending_target_weight"
+            )
+        ),
+        "target_candidate_direction": (
+            target_hysteresis.get(
+                "target_candidate_direction"
+            )
+        ),
+        "target_candidate_count": (
+            target_hysteresis.get(
+                "target_candidate_count",
+                0,
+            )
+        ),
+        "target_required_count": (
+            target_hysteresis.get(
+                "target_required_count",
+                0,
+            )
+        ),
+        "target_confirmation_advanced": (
+            target_hysteresis.get(
+                "target_confirmation_advanced",
+                False,
+            )
+        ),
+        "target_confirmation_bar_timestamp": (
+            target_hysteresis.get(
+                "target_confirmation_bar_timestamp"
+            )
+        ),
+        "target_confirmation_bar_is_new": (
+            target_hysteresis.get(
+                "target_confirmation_bar_is_new",
+                False,
+            )
+        ),
+        "target_hysteresis_action": (
+            target_hysteresis.get(
+                "target_hysteresis_action"
+            )
+        ),
+        "target_hysteresis_reset_reason": (
+            target_hysteresis.get(
+                "target_hysteresis_reset_reason"
+            )
+        ),
+        "target_hysteresis_changed_target": (
+            target_hysteresis.get(
+                "target_hysteresis_changed_target",
+                False,
+            )
+        ),
+        "deferred_target_weight": (
+            target_hysteresis.get(
+                "deferred_target_weight",
+                0.0,
+            )
+        ),
+        "deferred_notional": (
+            target_hysteresis.get(
+                "deferred_notional",
+                0.0,
+            )
+        ),
 
         "delta_value": round(delta_value, 2),
         "delta_weight": round(delta_weight, 6),
@@ -894,6 +1112,108 @@ def _cap_planned_notional(decision: str, delta_value: float, current_qty: float,
     return abs_delta, None
 
 
+def _rolling_trade_limit_settings() -> dict:
+    return {
+        "enabled": _layer3_bool_setting(
+            "layer3_rolling_trade_limits_enabled",
+            True,
+        ),
+        "window_seconds": max(
+            60,
+            _layer3_int_setting(
+                "layer3_rolling_limit_window_seconds",
+                L3_ROLLING_LIMIT_WINDOW_SECONDS,
+            ),
+        ),
+        "max_trades": max(
+            0,
+            _layer3_int_setting(
+                "layer3_max_trades_per_rolling_window",
+                L3_MAX_TRADES_PER_ROLLING_WINDOW,
+            ),
+        ),
+        "max_buys": max(
+            0,
+            _layer3_int_setting(
+                "layer3_max_buys_per_rolling_window",
+                L3_MAX_BUYS_PER_ROLLING_WINDOW,
+            ),
+        ),
+        "max_sells": max(
+            0,
+            _layer3_int_setting(
+                "layer3_max_sells_per_rolling_window",
+                L3_MAX_SELLS_PER_ROLLING_WINDOW,
+            ),
+        ),
+        "max_buy_notional": max(
+            0.0,
+            _layer3_float_setting(
+                "layer3_max_buy_notional_per_rolling_window",
+                L3_MAX_BUY_NOTIONAL_PER_ROLLING_WINDOW,
+            ),
+        ),
+        "max_sell_notional": max(
+            0.0,
+            _layer3_float_setting(
+                "layer3_max_sell_notional_per_rolling_window",
+                L3_MAX_SELL_NOTIONAL_PER_ROLLING_WINDOW,
+            ),
+        ),
+        "max_gross_notional": max(
+            0.0,
+            _layer3_float_setting(
+                "layer3_max_gross_notional_per_rolling_window",
+                L3_MAX_GROSS_NOTIONAL_PER_ROLLING_WINDOW,
+            ),
+        ),
+    }
+
+
+def _target_hysteresis_settings() -> dict:
+    return {
+        "enabled": _layer3_bool_setting(
+            "layer3_target_hysteresis_enabled",
+            L3_TARGET_HYSTERESIS_ENABLED,
+        ),
+        "material_change": max(
+            0.0,
+            _layer3_float_setting(
+                "layer3_target_material_change",
+                L3_TARGET_MATERIAL_CHANGE,
+            ),
+        ),
+        "candidate_tolerance": max(
+            0.0,
+            _layer3_float_setting(
+                "layer3_target_candidate_tolerance",
+                L3_TARGET_CANDIDATE_TOLERANCE,
+            ),
+        ),
+        "increase_required_count": max(
+            1,
+            _layer3_int_setting(
+                "layer3_target_increase_confirmation_bars",
+                L3_TARGET_INCREASE_CONFIRMATION_BARS,
+            ),
+        ),
+        "decrease_required_count": max(
+            1,
+            _layer3_int_setting(
+                "layer3_target_decrease_confirmation_bars",
+                L3_TARGET_DECREASE_CONFIRMATION_BARS,
+            ),
+        ),
+        "removal_required_count": max(
+            1,
+            _layer3_int_setting(
+                "layer3_target_removal_confirmation_bars",
+                L3_TARGET_REMOVAL_CONFIRMATION_BARS,
+            ),
+        ),
+    }
+
+
 def build_layer3_plan_from_snapshots(
     *,
     planner_source: str,
@@ -913,6 +1233,11 @@ def build_layer3_plan_from_snapshots(
     fail_safe_active: bool = False,
     opening_transition: dict | None = None,
     last_trade_prices: dict | None = None,
+    planner_state: dict | None = None,
+    rolling_limits_active: bool = True,
+    target_hysteresis_by_symbol: (
+        dict | None
+    ) = None,
 ) -> dict:
     """
     Shared Layer 3 planning kernel used by REST production and LIVE shadow.
@@ -938,10 +1263,28 @@ def build_layer3_plan_from_snapshots(
     opening_transition = opening_transition or {}
     last_trade_prices = last_trade_prices or {}
 
+    planner_state = (
+        planner_state
+        if isinstance(planner_state, dict)
+        else {}
+    )
+
+    target_hysteresis_by_symbol = (
+        target_hysteresis_by_symbol
+        if isinstance(
+            target_hysteresis_by_symbol,
+            dict,
+        )
+        else {}
+    )
+
     plan = []
     symbol_universe = sorted(
         set(target_weights.keys())
         | set(positions.keys())
+        | set(
+            target_hysteresis_by_symbol.keys()
+        )
     )
 
     for symbol in symbol_universe:
@@ -963,6 +1306,14 @@ def build_layer3_plan_from_snapshots(
         target_weight = safe_float(
             target_weights.get(symbol),
             0.0,
+        )
+
+        target_hysteresis = (
+            target_hysteresis_by_symbol.get(
+                symbol,
+                {},
+            )
+            or {}
         )
 
         blocked_by = []
@@ -1029,6 +1380,9 @@ def build_layer3_plan_from_snapshots(
                 blocked_by=blocked_by,
                 account=account,
                 target_meta=target_meta,
+                target_hysteresis=(
+                    target_hysteresis
+                ),
             )
             plan.append(row)
             continue
@@ -1138,11 +1492,29 @@ def build_layer3_plan_from_snapshots(
                 reason = "fail_safe_active_blocks_buy"
 
             elif (
-                target_seen_count
-                < L3_REQUIRE_TARGET_CONFIRMATION_CYCLES
+                str(
+                    target_hysteresis.get(
+                        "target_candidate_direction"
+                    )
+                    or ""
+                ).upper()
+                in {
+                    "DECREASE",
+                    "REMOVE",
+                }
+                and safe_int(
+                    target_hysteresis.get(
+                        "target_candidate_count"
+                    ),
+                    0,
+                )
+                > 0
             ):
                 decision = "HOLD"
-                reason = "target_not_confirmed"
+                reason = (
+                    "target_decrease_or_"
+                    "removal_pending_blocks_buy"
+                )
 
             elif drift_too_small:
                 decision = "HOLD"
@@ -1246,12 +1618,57 @@ def build_layer3_plan_from_snapshots(
             blocked_by=blocked_by,
             account=account,
             target_meta=target_meta,
+            target_hysteresis=(
+                target_hysteresis
+            ),
         )
 
         plan.append(row)
 
     plan.sort(key=_plan_priority)
     plan = _apply_cycle_trade_limits(plan)
+
+    rolling_settings = (
+        _rolling_trade_limit_settings()
+    )
+
+    (
+        plan,
+        rolling_trade_limits,
+    ) = apply_rolling_trade_limits(
+        plan,
+        planner_state=planner_state,
+        plan_created_at=plan_created_at,
+        enabled=rolling_settings["enabled"],
+        active=bool(rolling_limits_active),
+        window_seconds=rolling_settings[
+            "window_seconds"
+        ],
+        max_trades=rolling_settings[
+            "max_trades"
+        ],
+        max_buys=rolling_settings[
+            "max_buys"
+        ],
+        max_sells=rolling_settings[
+            "max_sells"
+        ],
+        max_buy_notional=rolling_settings[
+            "max_buy_notional"
+        ],
+        max_sell_notional=rolling_settings[
+            "max_sell_notional"
+        ],
+        max_gross_notional=rolling_settings[
+            "max_gross_notional"
+        ],
+        min_trade_value=(
+            L3_MIN_TRADE_VALUE_DOLLARS
+        ),
+        whole_shares_only=(
+            L3_WHOLE_SHARES_ONLY
+        ),
+    )
 
     estimated_cash = cash
 
@@ -1324,6 +1741,24 @@ def build_layer3_plan_from_snapshots(
             2,
         )
 
+    rolling_trade_limits = (
+        finalize_rolling_trade_limits(
+            planner_state=planner_state,
+            plan=plan,
+            plan_created_at=plan_created_at,
+            cycle_id=cycle_id,
+            plan_id=plan_id,
+            planner_source=planner_source,
+            record_history=bool(
+                rolling_limits_active
+                and rolling_trade_limits.get(
+                    "enabled"
+                )
+            ),
+            diagnostics=rolling_trade_limits,
+        )
+    )
+
     decision_counts = {}
 
     for row in plan:
@@ -1349,6 +1784,12 @@ def build_layer3_plan_from_snapshots(
         "target_weights": target_weights,
         "target_cash_pct": target_cash_pct,
         "target_meta": target_meta,
+        "target_hysteresis_by_symbol": (
+            target_hysteresis_by_symbol
+        ),
+        "rolling_trade_limits": (
+            rolling_trade_limits
+        ),
     }
 
 
@@ -1368,6 +1809,7 @@ def build_layer3_shadow_plan(
     open_order_details: dict | None = None,
     fail_safe_active: bool = False,
     last_trade_prices: dict | None = None,
+    source_bar_timestamp=None,
 ) -> dict:
     """
     Build an isolated shadow Layer 3 plan with the production planning kernel.
@@ -1399,17 +1841,22 @@ def build_layer3_shadow_plan(
         market_is_open,
     )
 
-    seen_counts, absent_counts = (
-        update_layer3_target_stability_state(
-            planner_state,
-            target_weights,
-            positions,
-            market_is_open=market_is_open,
-            market_hours_only=market_hours_only,
-            log_prefix=(
-                f"Layer3Shadow:{planner_source}"
-            ),
-        )
+    (
+        seen_counts,
+        absent_counts,
+        confirmation_evidence,
+    ) = update_layer3_target_stability_state(
+        planner_state,
+        target_weights,
+        positions,
+        market_is_open=market_is_open,
+        market_hours_only=market_hours_only,
+        source_bar_timestamp=(
+            source_bar_timestamp
+        ),
+        log_prefix=(
+            f"Layer3Shadow:{planner_source}"
+        ),
     )
 
     bootstrap_enabled = _layer3_bool_setting(
@@ -1466,6 +1913,70 @@ def build_layer3_shadow_plan(
             "bootstrap_confirmation_symbols"
         ] = bootstrapped
 
+    hysteresis_settings = (
+        _target_hysteresis_settings()
+    )
+
+    hysteresis_result = (
+        resolve_target_hysteresis(
+            planner_state=planner_state,
+            raw_target=target,
+            raw_target_weights=(
+                target_weights
+            ),
+            positions=positions,
+            equity=safe_float(
+                account.get("equity"),
+                0.0,
+            ),
+            evidence=(
+                confirmation_evidence
+            ),
+            enabled=(
+                hysteresis_settings[
+                    "enabled"
+                ]
+            ),
+            material_change=(
+                hysteresis_settings[
+                    "material_change"
+                ]
+            ),
+            candidate_tolerance=(
+                hysteresis_settings[
+                    "candidate_tolerance"
+                ]
+            ),
+            increase_required_count=(
+                hysteresis_settings[
+                    "increase_required_count"
+                ]
+            ),
+            decrease_required_count=(
+                hysteresis_settings[
+                    "decrease_required_count"
+                ]
+            ),
+            removal_required_count=(
+                hysteresis_settings[
+                    "removal_required_count"
+                ]
+            ),
+            bootstrap_accepted_symbols=set(
+                planner_state.get(
+                    "bootstrap_confirmation_symbols",
+                    [],
+                )
+            ),
+        )
+    )
+
+    effective_target = (
+        hysteresis_result[
+            "effective_target"
+        ]
+    )
+
     created_dt = datetime.now(timezone.utc)
     safe_source = planner_source.replace(
         " ",
@@ -1490,7 +2001,7 @@ def build_layer3_shadow_plan(
 
     built = build_layer3_plan_from_snapshots(
         planner_source=planner_source,
-        target=target,
+        target=effective_target,
         account=account,
         positions=positions,
         ranked_prices=ranked_prices,
@@ -1506,6 +2017,15 @@ def build_layer3_shadow_plan(
         fail_safe_active=fail_safe_active,
         opening_transition=opening_transition,
         last_trade_prices=last_trade_prices,
+        planner_state=planner_state,
+        rolling_limits_active=bool(
+            market_is_open
+        ),
+        target_hysteresis_by_symbol=(
+            hysteresis_result[
+                "diagnostics_by_symbol"
+            ]
+        ),
     )
 
     summary = {
@@ -1528,6 +2048,22 @@ def build_layer3_shadow_plan(
         "confirmation_updates_blocked_reason": (
             planner_state.get(
                 "confirmation_updates_blocked_reason"
+            )
+        ),
+        "source_bar_timestamp": (
+            confirmation_evidence.get(
+                "source_bar_timestamp"
+            )
+        ),
+        "source_bar_is_new": bool(
+            confirmation_evidence.get(
+                "bar_is_new"
+            )
+        ),
+        "target_hysteresis": (
+            hysteresis_result.get(
+                "summary",
+                {},
             )
         ),
         "bootstrap_confirmation_applied": (
@@ -1602,6 +2138,10 @@ def build_layer3_shadow_plan(
         ),
         "fail_safe_active": bool(
             fail_safe_active
+        ),
+        "rolling_trade_limits": built.get(
+            "rolling_trade_limits",
+            {},
         ),
     }
 
@@ -1706,7 +2246,7 @@ def _prepare_market_open_session_state(
 def _opening_transition_info(rebalance: dict, market_is_open: bool) -> dict:
     transition_cycles = _layer3_int_setting(
         "layer3_opening_transition_cycles",
-        3,
+        6,
     )
     open_session = (
         rebalance.get("open_session", {})
@@ -1866,7 +2406,10 @@ def _maybe_bootstrap_layer3_confirmation(
     return bootstrapped_symbols
 
 
-def run_layer3_dry_run() -> dict:
+def run_layer3_dry_run(
+    *,
+    source_bar_timestamp=None,
+) -> dict:
     """
     Broker-aware Layer 3 dry-run planner.
 
@@ -1975,10 +2518,17 @@ def run_layer3_dry_run() -> dict:
         market_is_open_now,
     )
 
-    seen_counts, absent_counts = _update_target_stability(
+    (
+        seen_counts,
+        absent_counts,
+        confirmation_evidence,
+    ) = _update_target_stability(
         rebalance,
         target_weights,
         positions,
+        source_bar_timestamp=(
+            source_bar_timestamp
+        ),
     )
 
     market_is_open = bool(rebalance.get("market_is_open", market_is_open_now))
@@ -1996,9 +2546,78 @@ def run_layer3_dry_run() -> dict:
             market_is_open=market_is_open,
         )
 
+    hysteresis_settings = (
+        _target_hysteresis_settings()
+    )
+
+    hysteresis_result = (
+        resolve_target_hysteresis(
+            planner_state=rebalance,
+            raw_target=target,
+            raw_target_weights=(
+                target_weights
+            ),
+            positions=positions,
+            equity=equity,
+            evidence=(
+                confirmation_evidence
+            ),
+            enabled=(
+                hysteresis_settings[
+                    "enabled"
+                ]
+            ),
+            material_change=(
+                hysteresis_settings[
+                    "material_change"
+                ]
+            ),
+            candidate_tolerance=(
+                hysteresis_settings[
+                    "candidate_tolerance"
+                ]
+            ),
+            increase_required_count=(
+                hysteresis_settings[
+                    "increase_required_count"
+                ]
+            ),
+            decrease_required_count=(
+                hysteresis_settings[
+                    "decrease_required_count"
+                ]
+            ),
+            removal_required_count=(
+                hysteresis_settings[
+                    "removal_required_count"
+                ]
+            ),
+            bootstrap_accepted_symbols=set(
+                rebalance.get(
+                    "bootstrap_confirmation_symbols",
+                    [],
+                )
+            ),
+        )
+    )
+
+    effective_target = (
+        hysteresis_result[
+            "effective_target"
+        ]
+    )
+
+    fail_safe_active = bool(
+        fail_safe_event.is_set()
+        or app_state.get(
+            "fail_safes",
+            {},
+        ).get("state")
+    )
+
     built_plan = build_layer3_plan_from_snapshots(
         planner_source="REST",
-        target=target,
+        target=effective_target,
         account=account,
         positions=positions,
         ranked_prices=ranked_prices,
@@ -2016,6 +2635,15 @@ def run_layer3_dry_run() -> dict:
         last_trade_prices=app_state.get(
             "last_trade_price_by_symbol",
             {},
+        ),
+        planner_state=rebalance,
+        rolling_limits_active=bool(
+            market_is_open
+        ),
+        target_hysteresis_by_symbol=(
+            hysteresis_result[
+                "diagnostics_by_symbol"
+            ]
         ),
     )
 
@@ -2055,6 +2683,22 @@ def run_layer3_dry_run() -> dict:
         "confirmation_updates_allowed": confirmation_updates_allowed,
         "confirmation_updates_blocked_reason": rebalance.get(
             "confirmation_updates_blocked_reason"
+        ),
+        "source_bar_timestamp": (
+            confirmation_evidence.get(
+                "source_bar_timestamp"
+            )
+        ),
+        "source_bar_is_new": bool(
+            confirmation_evidence.get(
+                "bar_is_new"
+            )
+        ),
+        "target_hysteresis": (
+            hysteresis_result.get(
+                "summary",
+                {},
+            )
         ),
         "bootstrap_confirmation_applied": rebalance.get(
             "bootstrap_confirmation_applied",
@@ -2099,8 +2743,27 @@ def run_layer3_dry_run() -> dict:
             [],
         ),
 
-        "target_symbol_count": len(target_weights),
-        "target_cash_pct": round(target_cash_pct, 6),
+        "target_symbol_count": len(
+            target_weights
+        ),
+        "approved_target_symbol_count": len(
+            hysteresis_result.get(
+                "approved_target_weights",
+                {},
+            )
+        ),
+        "target_cash_pct": round(
+            target_cash_pct,
+            6,
+        ),
+        "approved_target_cash_pct": (
+            hysteresis_result.get(
+                "summary",
+                {},
+            ).get(
+                "approved_cash_pct"
+            )
+        ),
         "target_total_weight": round(sum(target_weights.values()), 6),
         "market_strength": target_meta.get("market_strength"),
 
@@ -2116,6 +2779,12 @@ def run_layer3_dry_run() -> dict:
 
         "plan_count": len(plan),
         "decision_counts": decision_counts,
+        "rolling_trade_limits": (
+            built_plan.get(
+                "rolling_trade_limits",
+                {},
+            )
+        ),
         "fail_safe_active": fail_safe_active,
 
         "cycle_trade_limits": {

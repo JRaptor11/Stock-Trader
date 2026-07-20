@@ -30,6 +30,10 @@ def ensure_app_state_structure() -> None:
     execution.setdefault("layer3_market_hours_only", True)
     execution.setdefault("layer3_bootstrap_confirmation_enabled", True)
     execution.setdefault("layer3_bootstrap_min_bar_count", 8)
+    execution.setdefault(
+        "layer3_opening_transition_cycles",
+        6,
+    )
     execution.setdefault("live_strategy_shadow_rest_bootstrap_enabled", True)
 
     execution.setdefault("layer_monitor_run_24_7", True)
@@ -38,6 +42,73 @@ def ensure_app_state_structure() -> None:
     execution.setdefault("bar_freshness_max_age_minutes", 35.0)
     execution.setdefault("bar_freshness_min_fresh_symbols", 5)
     execution.setdefault("bar_freshness_min_fresh_ratio", 0.70)
+
+    #
+
+    execution.setdefault(
+        "layer3_rolling_trade_limits_enabled",
+        True,
+    )
+    execution.setdefault(
+        "layer3_rolling_limit_window_seconds",
+        600,
+    )
+    execution.setdefault(
+        "layer3_max_trades_per_rolling_window",
+        6,
+    )
+    execution.setdefault(
+        "layer3_max_buys_per_rolling_window",
+        3,
+    )
+    execution.setdefault(
+        "layer3_max_sells_per_rolling_window",
+        3,
+    )
+    execution.setdefault(
+        "layer3_max_buy_notional_per_rolling_window",
+        22500.0,
+    )
+    execution.setdefault(
+        "layer3_max_sell_notional_per_rolling_window",
+        22500.0,
+    )
+    execution.setdefault(
+        "layer3_max_gross_notional_per_rolling_window",
+        45000.0,
+    )
+
+    execution.setdefault(
+        "layer3_target_hysteresis_enabled",
+        True,
+    )
+
+    execution.setdefault(
+        "layer3_target_material_change",
+        0.025,
+    )
+
+    execution.setdefault(
+        "layer3_target_candidate_tolerance",
+        0.010,
+    )
+
+    execution.setdefault(
+        "layer3_target_increase_confirmation_bars",
+        2,
+    )
+
+    execution.setdefault(
+        "layer3_target_decrease_confirmation_bars",
+        1,
+    )
+
+    execution.setdefault(
+        "layer3_target_removal_confirmation_bars",
+        2,
+    )
+
+    #
 
     layers = app_state.setdefault("layers", {})
     layers.setdefault("paper_portfolio", None)
