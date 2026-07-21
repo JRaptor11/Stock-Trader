@@ -95,7 +95,10 @@ def _prune_history(
             continue
 
         item_dt = _parse_utc_datetime(
-            item.get("timestamp")
+            item.get(
+                "source_bar_timestamp"
+            )
+            or item.get("timestamp")
         )
 
         # An authorization exactly one full window old
@@ -227,6 +230,7 @@ def apply_rolling_trade_limits(
     *,
     planner_state: dict,
     plan_created_at: str,
+    source_bar_timestamp=None,
     enabled: bool,
     active: bool,
     window_seconds: int,
@@ -271,13 +275,24 @@ def apply_rolling_trade_limits(
         int(window_seconds),
     )
 
-    now_dt = _parse_utc_datetime(
-        plan_created_at
+    rolling_anchor_value = (
+        source_bar_timestamp
+        or plan_created_at
+    )
+
+    rolling_anchor_dt = (
+        _parse_utc_datetime(
+            rolling_anchor_value
+        )
+    )
+
+    rolling_anchor_timestamp = (
+        rolling_anchor_dt.isoformat()
     )
 
     history = _prune_history(
         planner_state,
-        now_dt=now_dt,
+        now_dt=rolling_anchor_dt,
         window_seconds=window_seconds,
     )
 
@@ -288,6 +303,14 @@ def apply_rolling_trade_limits(
         "enabled": bool(enabled),
         "active": bool(enabled and active),
         "window_seconds": window_seconds,
+        "rolling_anchor_timestamp": (
+            rolling_anchor_timestamp
+        ),
+        "rolling_anchor_source": (
+            "source_bar_timestamp"
+            if source_bar_timestamp
+            else "plan_created_at_fallback"
+        ),
         "limits": dict(limits),
         "usage_before": dict(usage_before),
         "history_entry_count_before": len(
@@ -496,6 +519,7 @@ def finalize_rolling_trade_limits(
     planner_state: dict,
     plan: list[dict],
     plan_created_at: str,
+    source_bar_timestamp=None,
     cycle_id: int,
     plan_id: str,
     planner_source: str,
@@ -553,6 +577,21 @@ def finalize_rolling_trade_limits(
             2,
         )
 
+    rolling_anchor_value = (
+        source_bar_timestamp
+        or plan_created_at
+    )
+
+    rolling_anchor_dt = (
+        _parse_utc_datetime(
+            rolling_anchor_value
+        )
+    )
+
+    rolling_anchor_timestamp = (
+        rolling_anchor_dt.isoformat()
+    )
+
     history = planner_state.setdefault(
         "rolling_trade_limit_history",
         [],
@@ -563,7 +602,15 @@ def finalize_rolling_trade_limits(
         and authorized["trades"] > 0
     ):
         history.append({
-            "timestamp": plan_created_at,
+            "timestamp": (
+                rolling_anchor_timestamp
+            ),
+            "source_bar_timestamp": (
+                rolling_anchor_timestamp
+            ),
+            "plan_created_at": (
+                plan_created_at
+            ),
             "cycle_id": cycle_id,
             "plan_id": plan_id,
             "planner_source": planner_source,
@@ -572,15 +619,25 @@ def finalize_rolling_trade_limits(
 
     history = _prune_history(
         planner_state,
-        now_dt=_parse_utc_datetime(
-            plan_created_at
-        ),
+        now_dt=rolling_anchor_dt,
         window_seconds=safe_int(
             diagnostics.get(
                 "window_seconds"
             ),
             600,
         ),
+    )
+
+    diagnostics[
+        "rolling_anchor_timestamp"
+    ] = rolling_anchor_timestamp
+
+    diagnostics[
+        "rolling_anchor_source"
+    ] = (
+        "source_bar_timestamp"
+        if source_bar_timestamp
+        else "plan_created_at_fallback"
     )
 
     diagnostics[

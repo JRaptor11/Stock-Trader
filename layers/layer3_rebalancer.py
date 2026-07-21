@@ -1228,6 +1228,7 @@ def build_layer3_plan_from_snapshots(
     plan_created_at: str,
     plan_expires_at: str,
     plan_ttl_seconds: int,
+    source_bar_timestamp=None,
     open_order_symbols: set | None = None,
     open_order_details: dict | None = None,
     fail_safe_active: bool = False,
@@ -1639,6 +1640,9 @@ def build_layer3_plan_from_snapshots(
         plan,
         planner_state=planner_state,
         plan_created_at=plan_created_at,
+        source_bar_timestamp=(
+            source_bar_timestamp
+        ),
         enabled=rolling_settings["enabled"],
         active=bool(rolling_limits_active),
         window_seconds=rolling_settings[
@@ -1746,6 +1750,9 @@ def build_layer3_plan_from_snapshots(
             planner_state=planner_state,
             plan=plan,
             plan_created_at=plan_created_at,
+            source_bar_timestamp=(
+                source_bar_timestamp
+            ),
             cycle_id=cycle_id,
             plan_id=plan_id,
             planner_source=planner_source,
@@ -2012,6 +2019,11 @@ def build_layer3_shadow_plan(
         plan_created_at=created_at,
         plan_expires_at=expires_at,
         plan_ttl_seconds=ttl_seconds,
+        source_bar_timestamp=(
+            confirmation_evidence.get(
+                "source_bar_timestamp"
+            )
+        ),
         open_order_symbols=open_order_symbols,
         open_order_details=open_order_details,
         fail_safe_active=fail_safe_active,
@@ -2628,6 +2640,11 @@ def run_layer3_dry_run(
         plan_created_at=plan_created_at,
         plan_expires_at=plan_expires_at,
         plan_ttl_seconds=plan_ttl_seconds,
+        source_bar_timestamp=(
+            confirmation_evidence.get(
+                "source_bar_timestamp"
+            )
+        ),
         open_order_symbols=open_order_symbols,
         open_order_details=open_order_details,
         fail_safe_active=fail_safe_active,
