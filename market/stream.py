@@ -61,9 +61,15 @@ def _old_stream_strategy_enabled() -> bool:
 class FakeTrade:
     """ Helper for generating test trade objects """
     def __init__(self, price, symbol):
-        self.price = float(f"{price:.2f}")
+        self.price = float(
+            f"{price:.2f}"
+        )
         self.size = 100
         self.symbol = symbol
+        self.timestamp = datetime.now(
+            timezone.utc
+        )
+        self.id = None
 
     def __repr__(self):
         return f"<FakeTrade symbol={self.symbol} price={self.price} size={self.size}>"
@@ -175,7 +181,29 @@ class ThreadedAlpacaStream:
                     for symbol in self.symbols:
                         self._stream.subscribe_trades(self._handle_trade, symbol)
 
-                    logging.info(f"✅ Subscribed to trades for: {self.symbols}")
+                    logging.info(
+                        f"✅ Subscribed to trades for: {self.symbols}"
+                    )
+
+                    md = (
+                        app_state.get(
+                            "market_data",
+                            {},
+                        )
+                        .get(
+                            "buffer"
+                        )
+                    )
+
+                    if (
+                        md is not None
+                        and hasattr(
+                            md,
+                            "mark_stream_connected",
+                        )
+                    ):
+                        md.mark_stream_connected()
+
                     self.heartbeat.beat()
                     reconnect_delay = 5
 
@@ -201,6 +229,25 @@ class ThreadedAlpacaStream:
                         if self._shutdown_event.is_set():
                             break
                         await asyncio.sleep(0.1)
+                finally:
+                    md = (
+                        app_state.get(
+                            "market_data",
+                            {},
+                        )
+                        .get(
+                            "buffer"
+                        )
+                    )
+
+                    if (
+                        md is not None
+                        and hasattr(
+                            md,
+                            "mark_stream_disconnected",
+                        )
+                    ):
+                        md.mark_stream_disconnected()
 
         finally:
             with self._connection_lock:
@@ -214,8 +261,17 @@ class ThreadedAlpacaStream:
             self._update_debug_snapshot("status", "stopped")
         
     async def _handle_trade(self, trade):
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        now = time.time()
+        received_at = datetime.now(
+            timezone.utc
+        )
+
+        timestamp = received_at.strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+
+        receipt_epoch = (
+            received_at.timestamp()
+        )
 
         if active_handle_trade.get():
             logging.warning(f"[{timestamp}] 🔁 Recursive call to handle_trade blocked.")
@@ -232,11 +288,85 @@ class ThreadedAlpacaStream:
             symbol = trade.symbol
             volume = trade.size
 
+            raw_event_timestamp = getattr(
+                trade,
+                "timestamp",
+                None,
+            )
+
+            event_timestamp_source = (
+                "trade.timestamp"
+            )
+
+            try:
+                if isinstance(
+                    raw_event_timestamp,
+                    datetime,
+                ):
+                    event_datetime = (
+                        raw_event_timestamp
+                    )
+
+                    if (
+                        event_datetime.tzinfo
+                        is None
+                    ):
+                        event_datetime = (
+                            event_datetime.replace(
+                                tzinfo=timezone.utc
+                            )
+                        )
+                    else:
+                        event_datetime = (
+                            event_datetime.astimezone(
+                                timezone.utc
+                            )
+                        )
+
+                    event_epoch = (
+                        event_datetime.timestamp()
+                    )
+
+                elif raw_event_timestamp is not None:
+                    event_epoch = float(
+                        raw_event_timestamp
+                    )
+
+                else:
+                    raise ValueError(
+                        "missing trade timestamp"
+                    )
+
+            except Exception:
+                event_epoch = receipt_epoch
+
+                event_timestamp_source = (
+                    "receipt_fallback"
+                )
+
+            trade_id = getattr(
+                trade,
+                "id",
+                None,
+            )
+
             # === 📈 Price/Time Tracking for VolatilityScorer
             # === 📈 Market data tracking (per-symbol) ===
             md = app_state.get("market_data", {}).get("buffer")
             if md is not None:
-                md.update_tick(symbol, price_raw, volume=volume, timestamp=now)
+                update_result = md.update_tick(
+                    symbol,
+                    price_raw,
+                    volume=volume,
+                    timestamp=event_epoch,
+                    receipt_timestamp=(
+                        receipt_epoch
+                    ),
+                    trade_id=trade_id,
+                    event_timestamp_source=(
+                        event_timestamp_source
+                    ),
+                )
 
                 # old log line used global recent_prices; now log this symbol’s tail
                 tail = md.get_recent_prices(symbol, limit=5)
@@ -244,10 +374,44 @@ class ThreadedAlpacaStream:
             else:
                 logging.warning("[MarketDataBuffer] Missing app_state['market_data']['buffer']; skipping update.")
 
+            if (
+                md is not None
+                and not bool(
+                    update_result.get(
+                        "accepted_for_latest_price",
+                        True,
+                    )
+                )
+            ):
+                logging.debug(
+                    "[MarketDataBuffer] %s trade accepted for bar diagnostics "
+                    "but not as latest price | reason=%s event=%s received=%s",
+                    symbol,
+                    update_result.get(
+                        "reason"
+                    ),
+                    event_epoch,
+                    receipt_epoch,
+                )
+
+                return
+
             # === Latest price/debug tracking remains active even when legacy strategy is disabled ===
             price = float(f"{price_raw:.2f}")
 
-            app_state.setdefault("last_trade_price_by_symbol", {})[symbol] = price
+            if (
+                md is None
+                or bool(
+                    update_result.get(
+                        "accepted_for_latest_price",
+                        True,
+                    )
+                )
+            ):
+                app_state.setdefault(
+                    "last_trade_price_by_symbol",
+                    {},
+                )[symbol] = price
 
             self._last_trade_handled = {
                 "symbol": symbol,

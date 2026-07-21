@@ -872,24 +872,94 @@ def _latest_live_price_for_symbol(md, symbol: str, live_bars: list[dict] | None 
     return 0.0
 
 
-def _live_bar_is_complete(bar: dict, timeframe_seconds: int, now_epoch: float) -> bool:
+def _live_bar_is_complete(
+    bar: dict,
+    timeframe_seconds: int,
+    now_epoch: float,
+) -> bool:
     """
-    Return True only for completed local live bars.
+    Return True only for strategy-eligible local bars.
 
-    This keeps the live-shadow strategy apples-to-apples with Alpaca REST bars:
-    both paths should use completed 5-minute bars, not an in-progress partial bar.
+    Local bars must:
+    - have passed the lateness grace period
+    - be sealed
+    - have continuous full-interval stream coverage
+    - contain no receipt-time timestamp fallbacks
     """
     try:
-        bucket_start = safe_float(_bar_value(bar, "bucket_start"), 0.0)
+        bucket_start = safe_float(
+            _bar_value(
+                bar,
+                "bucket_start",
+            ),
+            0.0,
+        )
+
         if bucket_start > 0:
-            return (bucket_start + timeframe_seconds) <= now_epoch
+            strategy_eligible_at = (
+                safe_float(
+                    _bar_value(
+                        bar,
+                        "strategy_eligible_at_epoch",
+                    ),
+                    (
+                        bucket_start
+                        + timeframe_seconds
+                    ),
+                )
+            )
+
+            if now_epoch < strategy_eligible_at:
+                return False
+
+            if not bool(
+                _bar_value(
+                    bar,
+                    "sealed",
+                )
+            ):
+                return False
+
+            capture_quality = str(
+                _bar_value(
+                    bar,
+                    "capture_quality",
+                )
+                or ""
+            ).upper().strip()
+
+            if (
+                capture_quality
+                != "FULL_CAPTURE_CANDIDATE"
+            ):
+                return False
+
+            if safe_int(
+                _bar_value(
+                    bar,
+                    "event_timestamp_fallback_count",
+                ),
+                0,
+            ) > 0:
+                return False
+
+            return True
+
     except Exception:
         pass
 
+    # REST bootstrap bars do not contain local construction metadata.
     try:
-        ts = _latest_rest_bar_timestamp(bar)
+        ts = _latest_rest_bar_timestamp(
+            bar
+        )
+
         if ts is not None:
-            return (ts.timestamp() + timeframe_seconds) <= now_epoch
+            return (
+                ts.timestamp()
+                + timeframe_seconds
+            ) <= now_epoch
+
     except Exception:
         pass
 
