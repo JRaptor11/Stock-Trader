@@ -378,47 +378,419 @@ def store_latest_layer_result(symbols, bar_counts, ranked, target):
     )
 
 
-def store_off_hours_layer_warmup_result(symbols, bar_counts, ranked, target, freshness_report):
+def store_off_hours_layer_warmup_result(
+    symbols,
+    bar_counts,
+    ranked,
+    target,
+    freshness_report,
+    *,
+    reason: str = "market_closed_target_warmup",
+    rest_bar_gate: dict | None = None,
+):
     """
-    Store a non-executable Layer 1/2 warmup target while the market is closed.
+    Store a non-executable Layer 1/2 warmup target.
 
     This intentionally does not update app_state["layers"]["latest"], because
-    that object is the Layer 3 handoff used for executable planning. The warmup
-    still matters because layer_engine.evaluate() updates Layer 2's internal
-    previous_target_portfolio, so the first market-open target can be smoothed
-    against an existing target instead of becoming a brand-new first_target.
+    that object is the Layer 3 handoff used for executable planning.
+
+    The warmup still matters because layer_engine.evaluate() updates Layer 2's
+    internal previous_target_portfolio, allowing the first executable target
+    to be smoothed against an existing strategic baseline.
     """
-    layers = app_state.setdefault("layers", {})
+    layers = app_state.setdefault(
+        "layers",
+        {},
+    )
 
     ranked_snapshot = []
-    for r in ranked or []:
+
+    for row in ranked or []:
         ranked_snapshot.append({
-            "symbol": getattr(r, "symbol", None),
-            "score": float(getattr(r, "score", 0.0) or 0.0),
-            "last_price": float(getattr(r, "last_price", 0.0) or 0.0),
-            "reason": getattr(r, "reason", ""),
+            "symbol": getattr(
+                row,
+                "symbol",
+                None,
+            ),
+            "score": float(
+                getattr(
+                    row,
+                    "score",
+                    0.0,
+                )
+                or 0.0
+            ),
+            "last_price": float(
+                getattr(
+                    row,
+                    "last_price",
+                    0.0,
+                )
+                or 0.0
+            ),
+            "reason": getattr(
+                row,
+                "reason",
+                "",
+            ),
         })
 
     target = target or {}
-    target_meta = target.get("_meta", {}) if isinstance(target, dict) else {}
+
+    target_meta = (
+        target.get(
+            "_meta",
+            {},
+        )
+        if isinstance(
+            target,
+            dict,
+        )
+        else {}
+    )
 
     layers["last_off_hours_warmup"] = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "reason": "market_closed_target_warmup",
+        "timestamp": datetime.now(
+            timezone.utc
+        ).isoformat(),
+        "reason": reason,
         "executable": False,
-        "symbols_evaluated": list(symbols or []),
-        "bar_counts": dict(bar_counts or {}),
+        "symbols_evaluated": list(
+            symbols or []
+        ),
+        "bar_counts": dict(
+            bar_counts or {}
+        ),
         "ranked": ranked_snapshot,
-        "target_portfolio": dict(target),
-        "target_meta": dict(target_meta),
-        "freshness_report": dict(freshness_report or {}),
+        "target_portfolio": dict(
+            target
+        ),
+        "target_meta": dict(
+            target_meta
+        ),
+        "freshness_report": dict(
+            freshness_report or {}
+        ),
+        "rest_bar_gate": dict(
+            rest_bar_gate or {}
+        ),
     }
 
     logging.info(
-        "[Layers] Stored off-hours Layer 1/2 warmup target | ranked_count=%s target_summary=%s",
+        "[Layers] Stored non-executable Layer 1/2 warmup target | "
+        "reason=%s ranked_count=%s target_summary=%s",
+        reason,
         len(ranked_snapshot),
-        target_summary_for_log(target),
+        target_summary_for_log(
+            target
+        ),
     )
+
+
+def _warmup_target_available() -> bool:
+    warmup = (
+        app_state.get(
+            "layers",
+            {},
+        )
+        .get(
+            "last_off_hours_warmup"
+        )
+    )
+
+    if not isinstance(
+        warmup,
+        dict,
+    ):
+        return False
+
+    target = warmup.get(
+        "target_portfolio"
+    )
+
+    return bool(
+        isinstance(
+            target,
+            dict,
+        )
+        and target
+    )
+
+
+def _try_store_rest_snapshot_warmup(
+    *,
+    symbols: list[str],
+    bars_by_symbol: dict,
+    freshness_report: dict | None,
+    required_symbols: int,
+    reason: str,
+    rest_bar_gate: dict | None = None,
+) -> dict:
+    """
+    Build one non-executable Layer 1/2 baseline when no warmup exists.
+
+    This fallback intentionally does not:
+
+    - update the executable Layer 1/2 handoff
+    - call Layer 3
+    - call Layer 4
+    - accept the REST bar gate
+    - increment the opening live-cycle count
+
+    It only seeds Layer 2 smoothing and stores a warmup snapshot.
+    """
+    if _warmup_target_available():
+        return {
+            "status": (
+                "existing_warmup_kept"
+            ),
+            "stored": False,
+        }
+
+    layer_engine = (
+        app_state.get(
+            "layers",
+            {},
+        )
+        .get(
+            "engine"
+        )
+    )
+
+    if layer_engine is None:
+        return {
+            "status": (
+                "missing_layer_engine"
+            ),
+            "stored": False,
+        }
+
+    minimum_bars = max(
+        1,
+        safe_int(
+            _execution_setting(
+                "layer_warmup_snapshot_min_bars",
+                180,
+            ),
+            180,
+        ),
+    )
+
+    eligible_symbols = [
+        str(
+            symbol or ""
+        ).upper().strip()
+        for symbol in symbols or []
+        if (
+            str(
+                symbol or ""
+            ).upper().strip()
+            and len(
+                list(
+                    (
+                        bars_by_symbol
+                        or {}
+                    ).get(
+                        str(
+                            symbol or ""
+                        ).upper().strip(),
+                        [],
+                    )
+                    or []
+                )
+            )
+            >= minimum_bars
+        )
+    ]
+
+    required_symbols = max(
+        1,
+        min(
+            len(
+                symbols or []
+            ),
+            safe_int(
+                required_symbols,
+                1,
+            ),
+        ),
+    )
+
+    if (
+        len(
+            eligible_symbols
+        )
+        < required_symbols
+    ):
+        return {
+            "status": (
+                "insufficient_snapshot_bars"
+            ),
+            "stored": False,
+            "eligible_symbol_count": len(
+                eligible_symbols
+            ),
+            "required_symbol_count": (
+                required_symbols
+            ),
+            "minimum_bars": (
+                minimum_bars
+            ),
+        }
+
+    evaluation_bars = {
+        symbol: list(
+            (
+                bars_by_symbol
+                or {}
+            ).get(
+                symbol,
+                [],
+            )
+            or []
+        )
+        for symbol in eligible_symbols
+    }
+
+    result = layer_engine.evaluate(
+        eligible_symbols,
+        bars_by_symbol=(
+            evaluation_bars
+        ),
+        context=(
+            _layer2_evaluation_context(
+                market_is_open=False,
+                count_live_cycle=False,
+            )
+        ),
+    )
+
+    ranked = result.get(
+        "ranked",
+        [],
+    )
+
+    target = result.get(
+        "target_portfolio",
+        {},
+    )
+
+    if (
+        not isinstance(
+            target,
+            dict,
+        )
+        or not target
+    ):
+        return {
+            "status": (
+                "snapshot_evaluation_no_target"
+            ),
+            "stored": False,
+            "eligible_symbol_count": len(
+                eligible_symbols
+            ),
+        }
+
+    stored_freshness_report = dict(
+        freshness_report or {}
+    )
+
+    stored_freshness_report.update({
+        "warmup_snapshot_fallback": True,
+        "warmup_snapshot_reason": (
+            reason
+        ),
+        "warmup_snapshot_min_bars": (
+            minimum_bars
+        ),
+        "warmup_snapshot_gate_status": (
+            (
+                rest_bar_gate
+                or {}
+            ).get(
+                "status"
+            )
+        ),
+    })
+
+    bar_counts = {
+        symbol: len(
+            evaluation_bars.get(
+                symbol,
+                [],
+            )
+        )
+        for symbol in eligible_symbols
+    }
+
+    store_off_hours_layer_warmup_result(
+        symbols=eligible_symbols,
+        bar_counts=bar_counts,
+        ranked=ranked,
+        target=target,
+        freshness_report=(
+            stored_freshness_report
+        ),
+        reason=reason,
+        rest_bar_gate=(
+            rest_bar_gate
+        ),
+    )
+
+    app_state.setdefault(
+        "layers",
+        {},
+    )[
+        "last_rest_snapshot_warmup_fallback"
+    ] = {
+        "timestamp": datetime.now(
+            timezone.utc
+        ).isoformat(),
+        "reason": reason,
+        "eligible_symbols": list(
+            eligible_symbols
+        ),
+        "minimum_bars": (
+            minimum_bars
+        ),
+        "gate_status": (
+            (
+                rest_bar_gate
+                or {}
+            ).get(
+                "status"
+            )
+        ),
+    }
+
+    logging.info(
+        "[Layers] REST snapshot warmup fallback stored | "
+        "reason=%s eligible=%s/%s min_bars=%s",
+        reason,
+        len(
+            eligible_symbols
+        ),
+        len(
+            symbols or []
+        ),
+        minimum_bars,
+    )
+
+    return {
+        "status": "stored",
+        "stored": True,
+        "reason": reason,
+        "eligible_symbol_count": len(
+            eligible_symbols
+        ),
+        "required_symbol_count": (
+            required_symbols
+        ),
+        "minimum_bars": (
+            minimum_bars
+        ),
+    }
 
 
 # ================================================================
@@ -3625,6 +3997,52 @@ async def _wait_for_distinct_fresh_rest_bars(
                 timezone.utc
             ).isoformat()
         )
+
+        if not ready:
+            fallback_reason = (
+                "market_open_rest_snapshot_fallback"
+                if market_is_open_now
+                else
+                "market_closed_rest_snapshot_fallback"
+            )
+
+            warmup_fallback = (
+                _try_store_rest_snapshot_warmup(
+                    symbols=symbols,
+                    bars_by_symbol=(
+                        bars_by_symbol
+                    ),
+                    freshness_report=(
+                        freshness_report
+                    ),
+                    required_symbols=(
+                        required_fresh_symbols
+                    ),
+                    reason=(
+                        fallback_reason
+                    ),
+                    rest_bar_gate=(
+                        gate_report
+                    ),
+                )
+            )
+
+            gate_report.update({
+                "warmup_fallback_status": (
+                    warmup_fallback.get(
+                        "status"
+                    )
+                ),
+                "warmup_fallback_stored": bool(
+                    warmup_fallback.get(
+                        "stored"
+                    )
+                ),
+                "warmup_fallback_reason": (
+                    fallback_reason
+                ),
+            })
+
         gate_state["last_poll_report"] = (
             dict(gate_report)
         )
@@ -4108,11 +4526,23 @@ async def run_layer_monitor(
                         }
 
                         store_off_hours_layer_warmup_result(
-                            symbols=evaluation_symbols,
-                            bar_counts=fresh_bar_counts,
+                            symbols=(
+                                evaluation_symbols
+                            ),
+                            bar_counts=(
+                                fresh_bar_counts
+                            ),
                             ranked=ranked,
                             target=target,
-                            freshness_report=freshness_report,
+                            freshness_report=(
+                                freshness_report
+                            ),
+                            reason=(
+                                "market_closed_target_warmup"
+                            ),
+                            rest_bar_gate=(
+                                rest_bar_gate_report
+                            ),
                         )
 
                         run_live_strategy_shadow_comparison(
