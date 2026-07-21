@@ -1065,6 +1065,295 @@ def _build_live_bars_by_symbol(
     return bars_by_symbol, bar_counts, live_prices
 
 
+def _latest_completed_live_cohort(
+    bars_by_symbol: dict,
+    *,
+    timeframe_seconds: int,
+    required_symbols: int,
+) -> dict:
+    """
+    Find the newest completed local-live bar bucket shared by enough symbols.
+
+    Only bars containing bucket_start count as internally constructed LIVE
+    bars. REST bootstrap bars are intentionally ignored when selecting the
+    cohort, although they may remain in the historical ranking inputs.
+    """
+    required_symbols = max(
+        1,
+        safe_int(
+            required_symbols,
+            1,
+        ),
+    )
+
+    count_by_epoch: dict[float, int] = {}
+    symbols_by_epoch: dict[float, list[str]] = {}
+
+    for raw_symbol, bars in (
+        bars_by_symbol or {}
+    ).items():
+        symbol = str(
+            raw_symbol or ""
+        ).upper().strip()
+
+        if not symbol:
+            continue
+
+        # Count each symbol no more than once for a given bucket.
+        symbol_epochs = set()
+
+        for bar in bars or []:
+            bucket_start = safe_float(
+                _bar_value(
+                    bar,
+                    "bucket_start",
+                ),
+                0.0,
+            )
+
+            if bucket_start > 0:
+                symbol_epochs.add(
+                    float(bucket_start)
+                )
+
+        for bucket_start in symbol_epochs:
+            count_by_epoch[bucket_start] = (
+                count_by_epoch.get(
+                    bucket_start,
+                    0,
+                )
+                + 1
+            )
+
+            symbols_by_epoch.setdefault(
+                bucket_start,
+                [],
+            ).append(symbol)
+
+    eligible_epochs = [
+        bucket_start
+        for bucket_start, symbol_count
+        in count_by_epoch.items()
+        if symbol_count >= required_symbols
+    ]
+
+    if not eligible_epochs:
+        return {
+            "status": (
+                "waiting_for_completed_live_cohort"
+            ),
+            "required_symbol_count": (
+                required_symbols
+            ),
+            "available_cohort_counts": {
+                datetime.fromtimestamp(
+                    bucket_start,
+                    tz=timezone.utc,
+                ).isoformat(): symbol_count
+                for bucket_start, symbol_count
+                in sorted(
+                    count_by_epoch.items()
+                )
+            },
+        }
+
+    bucket_start_epoch = max(
+        eligible_epochs
+    )
+
+    bucket_end_epoch = (
+        bucket_start_epoch
+        + max(
+            1,
+            safe_int(
+                timeframe_seconds,
+                300,
+            ),
+        )
+    )
+
+    cohort_symbols = sorted(
+        symbols_by_epoch.get(
+            bucket_start_epoch,
+            [],
+        )
+    )
+
+    return {
+        "status": "ready",
+        "bucket_start_epoch": (
+            bucket_start_epoch
+        ),
+        "bucket_end_epoch": (
+            bucket_end_epoch
+        ),
+        "bucket_start_timestamp": (
+            datetime.fromtimestamp(
+                bucket_start_epoch,
+                tz=timezone.utc,
+            ).isoformat()
+        ),
+        "bucket_end_timestamp": (
+            datetime.fromtimestamp(
+                bucket_end_epoch,
+                tz=timezone.utc,
+            ).isoformat()
+        ),
+        "symbol_count": len(
+            cohort_symbols
+        ),
+        "symbols": cohort_symbols,
+        "required_symbol_count": (
+            required_symbols
+        ),
+    }
+
+
+def _trim_live_inputs_to_cohort(
+    bars_by_symbol: dict,
+    *,
+    cohort_start_epoch: float,
+) -> tuple[dict, dict, dict]:
+    """
+    Trim every strategy input to the selected completed LIVE cohort.
+
+    This prevents one symbol from being ranked through 09:40 while another
+    symbol is only ranked through 09:35. Historical REST bootstrap bars remain
+    available, but nothing newer than the chosen LIVE cohort is included.
+    """
+    trimmed_bars_by_symbol = {}
+    trimmed_bar_counts = {}
+    trimmed_prices = {}
+
+    cohort_start_epoch = safe_float(
+        cohort_start_epoch,
+        0.0,
+    )
+
+    for raw_symbol, bars in (
+        bars_by_symbol or {}
+    ).items():
+        symbol = str(
+            raw_symbol or ""
+        ).upper().strip()
+
+        if not symbol:
+            continue
+
+        trimmed_bars = []
+
+        for bar in bars or []:
+            bar_epoch = (
+                _bar_epoch_seconds(
+                    bar
+                )
+            )
+
+            if bar_epoch is None:
+                continue
+
+            if (
+                bar_epoch
+                <= cohort_start_epoch + 1e-6
+            ):
+                trimmed_bars.append(
+                    bar
+                )
+
+        trimmed_bars_by_symbol[symbol] = (
+            trimmed_bars
+        )
+
+        trimmed_bar_counts[symbol] = len(
+            trimmed_bars
+        )
+
+        if trimmed_bars:
+            trimmed_prices[symbol] = (
+                safe_float(
+                    _bar_value(
+                        trimmed_bars[-1],
+                        "close",
+                    ),
+                    0.0,
+                )
+            )
+        else:
+            trimmed_prices[symbol] = 0.0
+
+    return (
+        trimmed_bars_by_symbol,
+        trimmed_bar_counts,
+        trimmed_prices,
+    )
+
+
+def _opening_live_cohort_dedupe_state(
+    *,
+    session_date: str,
+    timeframe_seconds: int,
+) -> dict:
+    """
+    Return daily opening-shadow cohort state.
+
+    Pending outcome rows are kept separately and are not cleared when the
+    cohort-dedupe state rolls to a new session.
+    """
+    shadow = (
+        app_state
+        .setdefault(
+            "layers",
+            {},
+        )
+        .setdefault(
+            "opening_live_shadow",
+            {},
+        )
+    )
+
+    state = shadow.setdefault(
+        "cohort_dedupe",
+        {},
+    )
+
+    timeframe_seconds = max(
+        1,
+        safe_int(
+            timeframe_seconds,
+            300,
+        ),
+    )
+
+    if (
+        state.get(
+            "session_date"
+        )
+        != session_date
+        or safe_int(
+            state.get(
+                "timeframe_seconds"
+            ),
+            0,
+        )
+        != timeframe_seconds
+    ):
+        state.clear()
+
+        state.update({
+            "session_date": (
+                session_date
+            ),
+            "timeframe_seconds": (
+                timeframe_seconds
+            ),
+            "last_evaluated_live_cohort_timestamp": (
+                None
+            ),
+        })
+
+    return state
+
+
 def _live_shadow_evaluation_context(market_is_open: bool, *, count_live_cycle: bool) -> dict:
     layers = app_state.setdefault("layers", {})
     shadow = layers.setdefault("live_strategy_shadow", {})
@@ -1432,11 +1721,38 @@ def run_opening_live_fallback_shadow(
 
     live_symbols_ready = [
         symbol
-        for symbol, count in live_bar_counts.items()
+        for symbol, count
+        in live_bar_counts.items()
         if count >= min_live_bars
     ]
 
-    warmup = _warmup_shadow_context()
+    warmup = (
+        _warmup_shadow_context()
+    )
+
+    live_cohort = (
+        _latest_completed_live_cohort(
+            live_bars_by_symbol,
+            timeframe_seconds=(
+                timeframe_seconds
+            ),
+            required_symbols=(
+                required_live_symbols
+            ),
+        )
+    )
+
+    cohort_start_timestamp = (
+        live_cohort.get(
+            "bucket_start_timestamp"
+        )
+    )
+
+    cohort_end_timestamp = (
+        live_cohort.get(
+            "bucket_end_timestamp"
+        )
+    )
 
     cycle_base = {
         "timestamp": now_iso,
@@ -1446,6 +1762,26 @@ def run_opening_live_fallback_shadow(
         "rest_fresh_count": (freshness_report or {}).get("fresh_count"),
         "required_fresh_symbols": required_fresh_symbols,
         "live_symbols_ready_count": len(live_symbols_ready),
+        "live_source_bar_timestamp": (
+            cohort_start_timestamp
+        ),
+        "live_source_bar_end_timestamp": (
+            cohort_end_timestamp
+        ),
+        "live_source_bar_symbol_count": (
+            live_cohort.get(
+                "symbol_count",
+                0,
+            )
+        ),
+        "live_source_bar_symbols": (
+            live_cohort.get(
+                "symbols",
+                [],
+            )
+        ),
+        "live_cohort_advanced": False,
+        "duplicate_live_cohort": False,
         "symbol_count": len(symbols or []),
         "warmup_available": warmup.get("available"),
         "warmup_age_minutes": warmup.get("age_minutes"),
@@ -1466,6 +1802,152 @@ def run_opening_live_fallback_shadow(
             required_live_symbols,
             live_bar_counts,
         )
+        return row
+
+    if (
+        live_cohort.get(
+            "status"
+        )
+        != "ready"
+    ):
+        row = {
+            **cycle_base,
+            "live_status": (
+                "waiting_for_completed_live_cohort"
+            ),
+            "live_ranked_count": 0,
+            "error": (
+                live_cohort.get(
+                    "available_cohort_counts"
+                )
+            ),
+        }
+
+        append_layer_opening_shadow_cycle_row(
+            row
+        )
+
+        logging.info(
+            "[OpeningLiveShadow] Waiting for completed LIVE cohort | "
+            "ready_symbols=%s required=%s cohort_counts=%s",
+            len(
+                live_symbols_ready
+            ),
+            required_live_symbols,
+            live_cohort.get(
+                "available_cohort_counts"
+            ),
+        )
+
+        return row
+
+    cohort_state = (
+        _opening_live_cohort_dedupe_state(
+            session_date=(
+                now.date().isoformat()
+            ),
+            timeframe_seconds=(
+                timeframe_seconds
+            ),
+        )
+    )
+
+    last_evaluated_cohort = (
+        cohort_state.get(
+            "last_evaluated_live_cohort_timestamp"
+        )
+    )
+
+    if (
+        cohort_start_timestamp
+        and cohort_start_timestamp
+        == last_evaluated_cohort
+    ):
+        row = {
+            **cycle_base,
+            "live_status": (
+                "duplicate_live_cohort_skipped"
+            ),
+            "live_ranked_count": 0,
+            "duplicate_live_cohort": True,
+            "error": None,
+        }
+
+        append_layer_opening_shadow_cycle_row(
+            row
+        )
+
+        logging.info(
+            "[OpeningLiveShadow] Duplicate completed LIVE cohort skipped | "
+            "cycle_id=%s cohort=%s",
+            cycle_id,
+            cohort_start_timestamp,
+        )
+
+        return row
+
+    (
+        live_bars_by_symbol,
+        live_bar_counts,
+        live_prices,
+    ) = _trim_live_inputs_to_cohort(
+        live_bars_by_symbol,
+        cohort_start_epoch=(
+            live_cohort[
+                "bucket_start_epoch"
+            ]
+        ),
+    )
+
+    live_symbols_ready = [
+        symbol
+        for symbol, count
+        in live_bar_counts.items()
+        if count >= min_live_bars
+    ]
+
+    cycle_base.update({
+        "live_symbols_ready_count": len(
+            live_symbols_ready
+        ),
+        "live_cohort_advanced": True,
+        "duplicate_live_cohort": False,
+    })
+
+    if (
+        len(
+            live_symbols_ready
+        )
+        < required_live_symbols
+    ):
+        row = {
+            **cycle_base,
+            "live_status": (
+                "insufficient_bars_after_cohort_trim"
+            ),
+            "live_ranked_count": 0,
+            "error": (
+                f"ready={len(live_symbols_ready)} "
+                f"required={required_live_symbols} "
+                f"counts={live_bar_counts}"
+            ),
+        }
+
+        append_layer_opening_shadow_cycle_row(
+            row
+        )
+
+        logging.info(
+            "[OpeningLiveShadow] Cohort trim left insufficient strategy history | "
+            "cohort=%s ready=%s required=%s counts=%s",
+            cohort_start_timestamp,
+            len(
+                live_symbols_ready
+            ),
+            required_live_symbols,
+            live_bar_counts,
+        )
+
         return row
 
     try:
@@ -1617,7 +2099,17 @@ def run_opening_live_fallback_shadow(
             "rest_fresh_count": (freshness_report or {}).get("fresh_count"),
             "required_fresh_symbols": required_fresh_symbols,
             "live_status": live_status,
-            "live_bar_count": live_bar_counts.get(symbol),
+            "live_source_bar_timestamp": (
+                cohort_start_timestamp
+            ),
+            "live_source_bar_end_timestamp": (
+                cohort_end_timestamp
+            ),
+            "live_bar_count": (
+                live_bar_counts.get(
+                    symbol
+                )
+            ),
             "current_qty": current_qty,
             "current_weight": round(current_weight, 6),
             "live_target_weight": round(live_weight, 6),
@@ -1654,8 +2146,14 @@ def run_opening_live_fallback_shadow(
                     continue
 
                 pending_rows.append({
-                    "created_epoch": now_epoch,
-                    "source_timestamp": now_iso,
+                    "created_epoch": (
+                        live_cohort[
+                            "bucket_end_epoch"
+                        ]
+                    ),
+                    "source_timestamp": (
+                        cohort_end_timestamp
+                    ),
                     "cycle_id": cycle_id,
                     "symbol": symbol,
                     "strategy_name": strategy_name,
@@ -1695,12 +2193,31 @@ def run_opening_live_fallback_shadow(
         "hybrid_sell_count": hybrid_counts.get("SELL", 0),
         "error": None,
     }
-    append_layer_opening_shadow_cycle_row(cycle_row)
+    append_layer_opening_shadow_cycle_row(
+        cycle_row
+    )
+
+    cohort_state.update({
+        "last_evaluated_live_cohort_timestamp": (
+            cohort_start_timestamp
+        ),
+        "last_evaluated_live_cohort_end_timestamp": (
+            cohort_end_timestamp
+        ),
+        "last_evaluated_at": (
+            now_iso
+        ),
+        "last_evaluated_cycle_id": (
+            cycle_id
+        ),
+    })
 
     logging.info(
-        "[OpeningLiveShadow] Complete | cycle_id=%s rest_status=%s live_status=%s "
-        "live_only_buy=%s live_only_sell=%s hybrid_execute=%s hybrid_delay=%s pending=%s",
+        "[OpeningLiveShadow] Complete | cycle_id=%s cohort=%s "
+        "rest_status=%s live_status=%s live_only_buy=%s "
+        "live_only_sell=%s hybrid_execute=%s hybrid_delay=%s pending=%s",
         cycle_id,
+        cohort_start_timestamp,
         rest_status,
         live_status,
         live_only_counts.get("BUY", 0),
