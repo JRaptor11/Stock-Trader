@@ -345,6 +345,398 @@ def _advance_candidate(
     return advanced, reset_reason
 
 
+def _build_feasible_effective_targets(
+    *,
+    approved: dict[str, float],
+    diagnostics: dict[str, dict],
+    states: dict,
+    equity: float,
+    max_stock_weight: float = 1.0,
+) -> dict:
+    """
+    Convert strategic approved targets into a feasible Layer 3 target.
+
+    Priority order:
+    1. Current held weight, up to the strategic approved target.
+    2. Previously feasible target commitments that have not yet filled.
+    3. Newly approved or newly available incremental target weight.
+
+    Strategic accepted targets remain unchanged. Only the effective target
+    passed to Layer 3 is capped, so portfolio feasibility does not rewrite
+    hysteresis history.
+    """
+    limit = min(
+        1.0,
+        max(
+            0.0,
+            safe_float(
+                max_stock_weight,
+                1.0,
+            ),
+        ),
+    )
+
+    symbols = sorted(
+        set(approved)
+        | set(diagnostics)
+        | set(states)
+    )
+
+    accepted_by_symbol: dict[str, float] = {}
+    current_floor_by_symbol: dict[str, float] = {}
+    previous_commitment_by_symbol: dict[str, float] = {}
+    new_request_by_symbol: dict[str, float] = {}
+
+    for symbol in symbols:
+        accepted = max(
+            0.0,
+            safe_float(
+                approved.get(symbol),
+                0.0,
+            ),
+        )
+
+        diagnostic = diagnostics.get(
+            symbol,
+            {},
+        )
+
+        current = max(
+            0.0,
+            safe_float(
+                diagnostic.get(
+                    "current_weight_at_confirmation"
+                ),
+                0.0,
+            ),
+        )
+
+        state = states.setdefault(
+            symbol,
+            {},
+        )
+
+        previous_effective = max(
+            0.0,
+            safe_float(
+                state.get(
+                    "last_effective_target_weight"
+                ),
+                0.0,
+            ),
+        )
+
+        # Protect the amount already held, but never protect more than
+        # the strategically approved target.
+        current_floor = min(
+            accepted,
+            current,
+        )
+
+        # Preserve effective allocation that was already authorized on
+        # an earlier cycle but may not yet be fully represented in the
+        # broker position.
+        previous_commitment = max(
+            0.0,
+            min(
+                accepted,
+                previous_effective,
+            )
+            - current_floor,
+        )
+
+        # Everything beyond the held floor and previous commitment is a
+        # newly requested increment and receives the lowest priority.
+        new_request = max(
+            0.0,
+            accepted
+            - current_floor
+            - previous_commitment,
+        )
+
+        accepted_by_symbol[symbol] = (
+            accepted
+        )
+
+        current_floor_by_symbol[symbol] = (
+            current_floor
+        )
+
+        previous_commitment_by_symbol[symbol] = (
+            previous_commitment
+        )
+
+        new_request_by_symbol[symbol] = (
+            new_request
+        )
+
+    effective_by_symbol = {
+        symbol: 0.0
+        for symbol in symbols
+    }
+
+    def _allocate_proportionally(
+        requests: dict[str, float],
+        remaining: float,
+    ) -> tuple[dict[str, float], float]:
+        positive = {
+            symbol: max(
+                0.0,
+                safe_float(weight, 0.0),
+            )
+            for symbol, weight in requests.items()
+            if safe_float(weight, 0.0) > 1e-12
+        }
+
+        requested_total = sum(
+            positive.values()
+        )
+
+        if (
+            requested_total <= 1e-12
+            or remaining <= 1e-12
+        ):
+            return (
+                {
+                    symbol: 0.0
+                    for symbol in requests
+                },
+                max(
+                    0.0,
+                    remaining,
+                ),
+            )
+
+        scale = min(
+            1.0,
+            remaining / requested_total,
+        )
+
+        allocated = {
+            symbol: (
+                positive.get(symbol, 0.0)
+                * scale
+            )
+            for symbol in requests
+        }
+
+        allocated_total = sum(
+            allocated.values()
+        )
+
+        return (
+            allocated,
+            max(
+                0.0,
+                remaining - allocated_total,
+            ),
+        )
+
+    current_floor_total = sum(
+        current_floor_by_symbol.values()
+    )
+
+    current_floor_scaled = bool(
+        current_floor_total
+        > limit + 1e-12
+    )
+
+    if current_floor_scaled:
+        # This should be rare for the long-only paper portfolio. It is
+        # retained as a final safety fallback for leverage, malformed
+        # broker data, or extreme rounding conditions.
+        floor_scale = (
+            limit / current_floor_total
+            if current_floor_total > 0
+            else 0.0
+        )
+
+        for symbol in symbols:
+            effective_by_symbol[symbol] = (
+                current_floor_by_symbol[symbol]
+                * floor_scale
+            )
+
+        remaining = 0.0
+
+        previous_allocated = {
+            symbol: 0.0
+            for symbol in symbols
+        }
+
+        new_allocated = {
+            symbol: 0.0
+            for symbol in symbols
+        }
+
+    else:
+        for symbol in symbols:
+            effective_by_symbol[symbol] = (
+                current_floor_by_symbol[symbol]
+            )
+
+        remaining = max(
+            0.0,
+            limit - current_floor_total,
+        )
+
+        (
+            previous_allocated,
+            remaining,
+        ) = _allocate_proportionally(
+            previous_commitment_by_symbol,
+            remaining,
+        )
+
+        for symbol, weight in (
+            previous_allocated.items()
+        ):
+            effective_by_symbol[symbol] += (
+                weight
+            )
+
+        (
+            new_allocated,
+            remaining,
+        ) = _allocate_proportionally(
+            new_request_by_symbol,
+            remaining,
+        )
+
+        for symbol, weight in (
+            new_allocated.items()
+        ):
+            effective_by_symbol[symbol] += (
+                weight
+            )
+
+    approved_total = sum(
+        accepted_by_symbol.values()
+    )
+
+    deferred_by_symbol: dict[str, float] = {}
+
+    now_iso = datetime.now(
+        timezone.utc
+    ).isoformat()
+
+    for symbol in symbols:
+        accepted = accepted_by_symbol[symbol]
+
+        effective = min(
+            accepted,
+            max(
+                0.0,
+                effective_by_symbol[symbol],
+            ),
+        )
+
+        deferred = max(
+            0.0,
+            accepted - effective,
+        )
+
+        effective_by_symbol[symbol] = (
+            effective
+        )
+
+        deferred_by_symbol[symbol] = (
+            deferred
+        )
+
+        state = states.setdefault(
+            symbol,
+            {},
+        )
+
+        state.update({
+            "last_effective_target_weight": (
+                effective
+            ),
+            "last_allocation_cap_deferred_weight": (
+                deferred
+            ),
+            "last_effective_target_updated_at": (
+                now_iso
+            ),
+        })
+
+        diagnostic = diagnostics.setdefault(
+            symbol,
+            {},
+        )
+
+        diagnostic.update({
+            "effective_target_weight": round(
+                effective,
+                6,
+            ),
+            "allocation_cap_applied": bool(
+                deferred > 1e-12
+            ),
+            "allocation_cap_deferred_weight": round(
+                deferred,
+                6,
+            ),
+            "allocation_cap_deferred_notional": round(
+                deferred * equity,
+                2,
+            ),
+            "allocation_current_floor_weight": round(
+                current_floor_by_symbol[symbol],
+                6,
+            ),
+            "allocation_previous_commitment_weight": round(
+                previous_commitment_by_symbol[symbol],
+                6,
+            ),
+            "allocation_new_request_weight": round(
+                new_request_by_symbol[symbol],
+                6,
+            ),
+        })
+
+    feasible_weights = {
+        symbol: weight
+        for symbol, weight in (
+            effective_by_symbol.items()
+        )
+        if weight > 1e-12
+    }
+
+    deferred_total = sum(
+        deferred_by_symbol.values()
+    )
+
+    return {
+        "weights": feasible_weights,
+        "approved_total": approved_total,
+        "effective_total": sum(
+            feasible_weights.values()
+        ),
+        "deferred_total": deferred_total,
+        "cap_applied": bool(
+            deferred_total > 1e-12
+        ),
+        "current_floor_total": (
+            current_floor_total
+        ),
+        "previous_commitment_total": sum(
+            previous_commitment_by_symbol.values()
+        ),
+        "new_request_total": sum(
+            new_request_by_symbol.values()
+        ),
+        "current_floor_scaled": (
+            current_floor_scaled
+        ),
+        "remaining_capacity": max(
+            0.0,
+            remaining,
+        ),
+    }
+
+
 def resolve_target_hysteresis(
     *,
     planner_state: dict,
@@ -923,15 +1315,37 @@ def resolve_target_hysteresis(
 
         actions[action] += 1
 
-    effective_target = dict(approved)
+    allocation_result = (
+        _build_feasible_effective_targets(
+            approved=approved,
+            diagnostics=diagnostics,
+            states=states,
+            equity=equity,
+            max_stock_weight=1.0,
+        )
+    )
 
-    approved_total = sum(
-        approved.values()
+    effective_target = dict(
+        allocation_result["weights"]
+    )
+
+    approved_total = safe_float(
+        allocation_result.get(
+            "approved_total"
+        ),
+        0.0,
+    )
+
+    effective_total = safe_float(
+        allocation_result.get(
+            "effective_total"
+        ),
+        0.0,
     )
 
     effective_target["CASH"] = max(
         0.0,
-        1.0 - approved_total,
+        1.0 - effective_total,
     )
 
     raw_meta = (
@@ -952,6 +1366,25 @@ def resolve_target_hysteresis(
             ),
             "approved_cash_pct": (
                 effective_target["CASH"]
+            ),
+            "strategic_approved_stock_weight_total": (
+                approved_total
+            ),
+            "effective_stock_weight_total": (
+                effective_total
+            ),
+            "allocation_cap_applied": bool(
+                allocation_result.get(
+                    "cap_applied"
+                )
+            ),
+            "allocation_cap_deferred_weight_total": (
+                safe_float(
+                    allocation_result.get(
+                        "deferred_total"
+                    ),
+                    0.0,
+                )
             ),
         }
 
@@ -1008,6 +1441,56 @@ def resolve_target_hysteresis(
         "approved_stock_weight_total": round(
             approved_total,
             6,
+        ),
+        "effective_stock_weight_total": round(
+            effective_total,
+            6,
+        ),
+        "allocation_cap_applied": bool(
+            allocation_result.get(
+                "cap_applied"
+            )
+        ),
+        "allocation_cap_deferred_weight_total": round(
+            safe_float(
+                allocation_result.get(
+                    "deferred_total"
+                ),
+                0.0,
+            ),
+            6,
+        ),
+        "allocation_current_floor_total": round(
+            safe_float(
+                allocation_result.get(
+                    "current_floor_total"
+                ),
+                0.0,
+            ),
+            6,
+        ),
+        "allocation_previous_commitment_total": round(
+            safe_float(
+                allocation_result.get(
+                    "previous_commitment_total"
+                ),
+                0.0,
+            ),
+            6,
+        ),
+        "allocation_new_request_total": round(
+            safe_float(
+                allocation_result.get(
+                    "new_request_total"
+                ),
+                0.0,
+            ),
+            6,
+        ),
+        "allocation_current_floor_scaled": bool(
+            allocation_result.get(
+                "current_floor_scaled"
+            )
         ),
         "approved_cash_pct": round(
             effective_target["CASH"],
