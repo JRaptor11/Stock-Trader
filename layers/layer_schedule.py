@@ -5,21 +5,36 @@ from datetime import datetime, timezone, timedelta
 
 
 def normalize_layer_interval_seconds(interval_seconds: int) -> int:
+    default_interval_seconds = 300
+
     try:
         interval_seconds = int(interval_seconds)
     except Exception:
-        interval_seconds = 600
+        logging.warning(
+            "[Layers] Invalid interval_seconds=%r. "
+            "Defaulting to %s seconds for wall-clock alignment.",
+            interval_seconds,
+            default_interval_seconds,
+        )
+        return default_interval_seconds
 
     if interval_seconds <= 0:
-        return 600
+        logging.warning(
+            "[Layers] interval_seconds=%s must be positive. "
+            "Defaulting to %s seconds for wall-clock alignment.",
+            interval_seconds,
+            default_interval_seconds,
+        )
+        return default_interval_seconds
 
     if 3600 % interval_seconds != 0:
         logging.warning(
             "[Layers] interval_seconds=%s does not divide evenly into 1 hour. "
-            "Defaulting to 600 seconds for wall-clock alignment.",
+            "Defaulting to %s seconds for wall-clock alignment.",
             interval_seconds,
+            default_interval_seconds,
         )
-        return 600
+        return default_interval_seconds
 
     return interval_seconds
 
