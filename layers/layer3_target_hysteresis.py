@@ -204,6 +204,34 @@ def _clear_pending(
     })
 
 
+def _direction_family(
+    direction: str | None,
+) -> str:
+    """
+    Group target changes by strategic direction.
+
+    INCREASE belongs to the UP family.
+
+    DECREASE and REMOVE both belong to the DOWN family so confirmation
+    can carry across a partial reduction becoming a full removal, or a
+    proposed removal becoming a partial reduction.
+    """
+    direction = str(
+        direction or ""
+    ).upper().strip()
+
+    if direction == "INCREASE":
+        return "UP"
+
+    if direction in {
+        "DECREASE",
+        "REMOVE",
+    }:
+        return "DOWN"
+
+    return ""
+
+
 def _advance_candidate(
     state: dict,
     *,
@@ -213,69 +241,100 @@ def _advance_candidate(
     tolerance: float,
     evidence: dict,
 ) -> tuple[bool, str | None]:
+    """
+    Advance confirmation by strategic direction rather than exact weight.
+
+    A newer target in the same directional family preserves the existing
+    confirmation count, updates the pending target and subtype, and applies
+    the newest subtype's required confirmation count.
+
+    Examples:
+    - INCREASE -> larger INCREASE keeps its count.
+    - DECREASE -> REMOVE keeps its count.
+    - REMOVE -> DECREASE keeps its count.
+    - INCREASE -> DECREASE resets because the direction reversed.
+
+    candidate_tolerance remains accepted for configuration and diagnostic
+    compatibility, but it no longer resets persistent same-direction
+    evidence.
+    """
     old_direction = str(
-        state.get("pending_direction")
+        state.get(
+            "pending_direction"
+        )
         or ""
     ).upper()
 
-    old_weight = state.get(
-        "pending_target_weight"
+    old_family = _direction_family(
+        old_direction
     )
 
-    same_candidate = bool(
-        old_direction == direction
-        and old_weight is not None
-        and abs(
-            safe_float(old_weight, 0.0)
-            - raw_weight
-        )
-        <= tolerance
+    new_family = _direction_family(
+        direction
+    )
+
+    same_direction_family = bool(
+        old_family
+        and old_family == new_family
+        and state.get(
+            "pending_target_weight"
+        ) is not None
     )
 
     reset_reason = None
 
-    if not same_candidate:
-        if (
-            old_direction
-            and old_direction != direction
-        ):
-            reset_reason = "direction_reversed"
-
-        elif old_weight is not None:
+    if not same_direction_family:
+        if old_family and new_family:
             reset_reason = (
-                "candidate_outside_tolerance"
+                "direction_reversed"
+            )
+        else:
+            reset_reason = (
+                "new_candidate"
             )
 
-        else:
-            reset_reason = "new_candidate"
+        state["pending_count"] = 0
 
-        state.update({
-            "pending_target_weight": (
-                raw_weight
-            ),
-            "pending_direction": direction,
-            "pending_count": 0,
-            "pending_required_count": (
-                required
-            ),
-        })
+    state["last_reset_reason"] = (
+        reset_reason
+    )
+
+    # Always store the newest proposed destination and subtype.
+    #
+    # This allows:
+    # - DECREASE -> REMOVE
+    # - REMOVE -> DECREASE
+    # - a target moving farther in the same direction
+    #
+    # without discarding prior same-direction confirmation.
+    state.update({
+        "pending_target_weight": (
+            raw_weight
+        ),
+        "pending_direction": (
+            direction
+        ),
+        "pending_required_count": (
+            required
+        ),
+    })
 
     advanced = bool(
-        evidence.get("updates_allowed")
+        evidence.get(
+            "updates_allowed"
+        )
     )
 
     if advanced:
         state["pending_count"] = (
             safe_int(
-                state.get("pending_count"),
+                state.get(
+                    "pending_count"
+                ),
                 0,
             )
             + 1
         )
-
-        state[
-            "pending_target_weight"
-        ] = raw_weight
 
         state[
             "last_candidate_bar_timestamp"
