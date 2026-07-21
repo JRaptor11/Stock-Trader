@@ -183,6 +183,16 @@ def load_environment_config() -> None:
         6,
     )
 
+    config.LAYER3_RESTART_RECOVERY_ENABLED = get_bool_env(
+        "LAYER3_RESTART_RECOVERY_ENABLED",
+        True,
+    )
+
+    config.LAYER3_RESTART_RECOVERY_BARS = get_int_env(
+        "LAYER3_RESTART_RECOVERY_BARS",
+        2,
+    )
+
     config.LIVE_STRATEGY_SHADOW_REST_BOOTSTRAP_ENABLED = get_bool_env(
         "LIVE_STRATEGY_SHADOW_REST_BOOTSTRAP_ENABLED",
         True,
@@ -316,6 +326,14 @@ def apply_runtime_config_to_app_state() -> None:
         config.LAYER3_OPENING_TRANSITION_CYCLES
     )
 
+    app_state["execution"]["layer3_restart_recovery_enabled"] = (
+        config.LAYER3_RESTART_RECOVERY_ENABLED
+    )
+
+    app_state["execution"]["layer3_restart_recovery_bars"] = (
+        config.LAYER3_RESTART_RECOVERY_BARS
+    )
+
     app_state["execution"]["live_strategy_shadow_rest_bootstrap_enabled"] = (
         config.LIVE_STRATEGY_SHADOW_REST_BOOTSTRAP_ENABLED
     )
@@ -447,6 +465,8 @@ def log_runtime_config_status() -> None:
         "bootstrap_confirmation_enabled=%s "
         "bootstrap_min_bar_count=%s "
         "layer3_opening_transition_cycles=%s "
+        "restart_recovery_enabled=%s "
+        "restart_recovery_bars=%s "
         "rolling_limits_enabled=%s "
         "rolling_window_seconds=%s "
         "rolling_trade_limits=%s/%s/%s "
@@ -465,6 +485,8 @@ def log_runtime_config_status() -> None:
         config.LAYER3_BOOTSTRAP_CONFIRMATION_ENABLED,
         config.LAYER3_BOOTSTRAP_MIN_BAR_COUNT,
         config.LAYER3_OPENING_TRANSITION_CYCLES,
+        config.LAYER3_RESTART_RECOVERY_ENABLED,
+        config.LAYER3_RESTART_RECOVERY_BARS,
         config.LAYER3_ROLLING_TRADE_LIMITS_ENABLED,
         config.LAYER3_ROLLING_LIMIT_WINDOW_SECONDS,
         config.LAYER3_MAX_TRADES_PER_ROLLING_WINDOW,

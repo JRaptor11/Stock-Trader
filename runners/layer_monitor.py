@@ -33,6 +33,7 @@ from layers.layer3_rebalancer import (
     _get_account_snapshot,
     _get_positions_snapshot,
     build_layer3_shadow_plan,
+    source_bar_market_session_info,
 )
 from layers.layer4_executor import execute_layer4_plan
 from layers.layer_csv import (
@@ -277,23 +278,27 @@ def _fresh_symbol_requirement(symbol_count: int) -> int:
     return max(1, min(symbol_count, max(min_symbols, ratio_required)))
 
 
-def _layer2_evaluation_context(market_is_open: bool, *, count_live_cycle: bool) -> dict:
+def _layer2_evaluation_context(
+    market_is_open: bool,
+    *,
+    count_live_cycle: bool,
+    source_bar_timestamp=None,
+) -> dict:
     """
-    Build context passed into Layer 2 smoothing.
+    Build Layer 2 smoothing context from the accepted source bar.
 
-    We count only executable market-open Layer 1/2 evaluations, not skipped
-    freshness cycles and not closed-market warmups. This lets Layer 2 damp
-    large target shocks for the first few real live cycles after the open.
+    Opening transition is a market-data phase, not a process-lifetime counter.
+    A mid-session restart therefore cannot restart opening smoothing at cycle 1.
     """
-    layers = app_state.setdefault("layers", {})
-    state = layers.setdefault("opening_transition", {})
+    layers = app_state.setdefault(
+        "layers",
+        {},
+    )
 
-    today = datetime.now(timezone.utc).date().isoformat()
-
-    if state.get("date") != today:
-        state.clear()
-        state["date"] = today
-        state["live_evaluation_count"] = 0
+    state = layers.setdefault(
+        "opening_transition",
+        {},
+    )
 
     transition_cycles = safe_int(
         _execution_setting(
@@ -303,25 +308,427 @@ def _layer2_evaluation_context(market_is_open: bool, *, count_live_cycle: bool) 
         6,
     )
 
-    if market_is_open and count_live_cycle:
-        state["live_evaluation_count"] = safe_int(
-            state.get("live_evaluation_count", 0),
-            0,
-        ) + 1
+    session_info = source_bar_market_session_info(
+        source_bar_timestamp,
+        transition_cycles=transition_cycles,
+    )
 
-    live_cycle = safe_int(state.get("live_evaluation_count", 0), 0)
-    active = bool(market_is_open and live_cycle > 0 and live_cycle <= transition_cycles)
+    active = bool(
+        market_is_open
+        and session_info.get(
+            "opening_transition_active"
+        )
+    )
 
-    state["transition_cycles"] = transition_cycles
-    state["active"] = active
-    state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    state.update({
+        "date": session_info.get(
+            "session_date"
+        ),
+        "source_bar_timestamp": session_info.get(
+            "source_bar_timestamp"
+        ),
+        "source_bar_market_time": session_info.get(
+            "source_bar_market_time"
+        ),
+        "source_phase": session_info.get(
+            "phase"
+        ),
+        "source_opening_cycle": session_info.get(
+            "opening_transition_cycle"
+        ),
+        "transition_cycles": transition_cycles,
+        "active": active,
+        "updated_at": datetime.now(
+            timezone.utc
+        ).isoformat(),
+    })
 
     return {
-        "market_is_open": bool(market_is_open),
+        "market_is_open": bool(
+            market_is_open
+        ),
         "opening_transition_active": active,
-        "opening_transition_cycle": live_cycle if market_is_open else None,
+        "opening_transition_cycle": session_info.get(
+            "opening_transition_cycle"
+        ),
         "opening_transition_cycles": transition_cycles,
+        "opening_transition_phase": session_info.get(
+            "phase"
+        ),
+        "opening_transition_source_market_time": (
+            session_info.get(
+                "source_bar_market_time"
+            )
+        ),
     }
+
+
+def _usable_off_hours_warmup_available() -> bool:
+    warmup = app_state.get(
+        "layers",
+        {},
+    ).get(
+        "last_off_hours_warmup"
+    )
+
+    if not isinstance(
+        warmup,
+        dict,
+    ):
+        return False
+
+    target = warmup.get(
+        "target_portfolio"
+    )
+
+    return bool(
+        warmup.get("reason")
+        == "market_closed_target_warmup"
+        and isinstance(
+            target,
+            dict,
+        )
+        and bool(target)
+    )
+
+
+def _restart_recovery_context(
+    *,
+    market_is_open: bool,
+    source_bar_timestamp=None,
+    advance: bool = False,
+) -> dict:
+    """
+    Require two successfully planned distinct cohorts after a cold restart.
+
+    The preview call (advance=False) determines whether the current cohort must
+    be blocked without consuming recovery evidence. After Layer 3 completes
+    successfully, advance=True commits that source cohort. Failed evaluations
+    therefore cannot accidentally satisfy the recovery window.
+    """
+    enabled = _execution_bool_setting(
+        "layer3_restart_recovery_enabled",
+        True,
+    )
+
+    required_bars = max(
+        1,
+        safe_int(
+            _execution_setting(
+                "layer3_restart_recovery_bars",
+                2,
+            ),
+            2,
+        ),
+    )
+
+    transition_cycles = safe_int(
+        _execution_setting(
+            "layer3_opening_transition_cycles",
+            6,
+        ),
+        6,
+    )
+
+    session_info = source_bar_market_session_info(
+        source_bar_timestamp,
+        transition_cycles=transition_cycles,
+    )
+
+    layers = app_state.setdefault(
+        "layers",
+        {},
+    )
+
+    state = layers.setdefault(
+        "restart_recovery",
+        {},
+    )
+
+    if not market_is_open:
+        return {
+            "enabled": enabled,
+            "required": False,
+            "active": False,
+            "execution_blocked": False,
+            "reason": "market_closed",
+            "required_bars": required_bars,
+            "observed_bars": safe_int(
+                state.get(
+                    "observed_bars",
+                    0,
+                ),
+                0,
+            ),
+            "source_timestamps": list(
+                state.get(
+                    "source_timestamps",
+                    [],
+                )
+                or []
+            ),
+            "source_session": session_info,
+        }
+
+    session_date = (
+        session_info.get(
+            "session_date"
+        )
+        or datetime.now(
+            timezone.utc
+        ).date().isoformat()
+    )
+
+    if state.get(
+        "session_date"
+    ) != session_date:
+        warmup_available = (
+            _usable_off_hours_warmup_available()
+        )
+
+        required = bool(
+            enabled
+            and not warmup_available
+        )
+
+        state.clear()
+        state.update({
+            "session_date": session_date,
+            "enabled": enabled,
+            "required": required,
+            "reason": (
+                "missing_off_hours_warmup"
+                if required
+                else (
+                    "warmup_available"
+                    if warmup_available
+                    else "restart_recovery_disabled"
+                )
+            ),
+            "warmup_available": (
+                warmup_available
+            ),
+            "required_bars": required_bars,
+            "observed_bars": 0,
+            "source_timestamps": [],
+            "completed": not required,
+            "started_at": datetime.now(
+                timezone.utc
+            ).isoformat(),
+            "completed_at": None,
+            "ready_after_source_bar": None,
+        })
+
+        logging.warning(
+            "[Layer3Recovery] Session recovery initialized | "
+            "session_date=%s required=%s reason=%s required_bars=%s "
+            "source_phase=%s source_opening_cycle=%s",
+            session_date,
+            required,
+            state.get("reason"),
+            required_bars,
+            session_info.get("phase"),
+            session_info.get(
+                "opening_transition_cycle"
+            ),
+        )
+
+    required = bool(
+        state.get("required")
+    )
+
+    completed_before_cycle = bool(
+        state.get("completed")
+    )
+
+    source_timestamp = session_info.get(
+        "source_bar_timestamp"
+    )
+
+    committed_timestamps = list(
+        state.get(
+            "source_timestamps",
+            [],
+        )
+        or []
+    )
+
+    source_is_new = bool(
+        source_timestamp
+        and source_timestamp
+        not in committed_timestamps
+    )
+
+    blocked_this_cycle = bool(
+        required
+        and not completed_before_cycle
+    )
+
+    prospective_timestamps = list(
+        committed_timestamps
+    )
+
+    if (
+        blocked_this_cycle
+        and source_is_new
+    ):
+        prospective_timestamps.append(
+            source_timestamp
+        )
+
+    prospective_timestamps = (
+        prospective_timestamps[
+            -required_bars:
+        ]
+    )
+
+    prospective_observed = len(
+        prospective_timestamps
+    )
+
+    if (
+        advance
+        and blocked_this_cycle
+        and source_is_new
+    ):
+        state["source_timestamps"] = (
+            prospective_timestamps
+        )
+
+        state["observed_bars"] = (
+            prospective_observed
+        )
+
+        state[
+            "last_committed_source_bar_timestamp"
+        ] = source_timestamp
+
+        state["last_committed_at"] = (
+            datetime.now(
+                timezone.utc
+            ).isoformat()
+        )
+
+        if (
+            prospective_observed
+            >= required_bars
+        ):
+            state["completed"] = True
+            state["completed_at"] = (
+                datetime.now(
+                    timezone.utc
+                ).isoformat()
+            )
+            state[
+                "ready_after_source_bar"
+            ] = source_timestamp
+
+            logging.warning(
+                "[Layer3Recovery] Recovery evidence complete; "
+                "ordinary execution remains blocked for this cohort and "
+                "resumes on the next distinct source bar | "
+                "observed=%s/%s ready_after=%s",
+                prospective_observed,
+                required_bars,
+                source_timestamp,
+            )
+
+    state[
+        "last_source_bar_timestamp"
+    ] = source_timestamp
+
+    state["last_source_phase"] = (
+        session_info.get("phase")
+    )
+
+    state["updated_at"] = (
+        datetime.now(
+            timezone.utc
+        ).isoformat()
+    )
+
+    observed_for_context = (
+        prospective_observed
+        if blocked_this_cycle
+        else safe_int(
+            state.get(
+                "observed_bars",
+                0,
+            ),
+            0,
+        )
+    )
+
+    timestamps_for_context = (
+        prospective_timestamps
+        if blocked_this_cycle
+        else list(
+            state.get(
+                "source_timestamps",
+                [],
+            )
+            or []
+        )
+    )
+
+    context = {
+        "enabled": bool(
+            state.get("enabled")
+        ),
+        "required": required,
+        "active": blocked_this_cycle,
+        "execution_blocked": (
+            blocked_this_cycle
+        ),
+        "reason": state.get("reason"),
+        "warmup_available": bool(
+            state.get(
+                "warmup_available"
+            )
+        ),
+        "required_bars": safe_int(
+            state.get(
+                "required_bars",
+                required_bars,
+            ),
+            required_bars,
+        ),
+        "observed_bars": (
+            observed_for_context
+        ),
+        "source_timestamps": (
+            timestamps_for_context
+        ),
+        "source_bar_is_new": (
+            source_is_new
+        ),
+        "evidence_committed": bool(
+            advance
+            and source_is_new
+        ),
+        "completed": bool(
+            state.get("completed")
+        ),
+        "ready_after_source_bar": state.get(
+            "ready_after_source_bar"
+        ),
+        "source_session": session_info,
+    }
+
+    if (
+        blocked_this_cycle
+        and not advance
+    ):
+        logging.warning(
+            "[Layer3Recovery] Ordinary strategy execution blocked | "
+            "prospective_observed=%s/%s source=%s phase=%s",
+            observed_for_context,
+            required_bars,
+            source_timestamp,
+            session_info.get("phase"),
+        )
+
+    return context
 
 
 def store_latest_layer_result(symbols, bar_counts, ranked, target):
@@ -5076,7 +5483,15 @@ async def run_layer_monitor(
                         ),
                     )
 
-                    evaluation_symbols = list(fresh_bars_by_symbol.keys())
+                    evaluation_symbols = list(
+                        fresh_bars_by_symbol.keys()
+                    )
+
+                    rest_source_bar_timestamp = (
+                        rest_bar_gate_report.get(
+                            "candidate_bar_timestamp"
+                        )
+                    )
 
                     if not evaluation_symbols:
                         logging.warning(
@@ -5101,6 +5516,9 @@ async def run_layer_monitor(
                             context=_layer2_evaluation_context(
                                 market_is_open=False,
                                 count_live_cycle=False,
+                                source_bar_timestamp=(
+                                    rest_source_bar_timestamp
+                                ),
                             ),
                         )
 
@@ -5185,12 +5603,24 @@ async def run_layer_monitor(
 
                         continue
 
+                    restart_recovery = (
+                        _restart_recovery_context(
+                            market_is_open=True,
+                            source_bar_timestamp=(
+                                rest_source_bar_timestamp
+                            ),
+                        )
+                    )
+
                     result = layer_engine.evaluate(
                         evaluation_symbols,
                         bars_by_symbol=fresh_bars_by_symbol,
                         context=_layer2_evaluation_context(
                             market_is_open=True,
                             count_live_cycle=True,
+                            source_bar_timestamp=(
+                                rest_source_bar_timestamp
+                            ),
                         ),
                     )
 
@@ -5227,10 +5657,11 @@ async def run_layer_monitor(
                     layer3_result = (
                         run_layer3_dry_run(
                             source_bar_timestamp=(
-                                rest_bar_gate_report.get(
-                                    "candidate_bar_timestamp"
-                                )
-                            )
+                                rest_source_bar_timestamp
+                            ),
+                            restart_recovery=(
+                                restart_recovery
+                            ),
                         )
                     )
 
@@ -5247,14 +5678,66 @@ async def run_layer_monitor(
                         layer3_plan = rebalance.get("last_plan", [])
                         layer3_summary = (
                             layer3_result
-                            if isinstance(layer3_result, dict)
-                            else rebalance.get("last_summary", {})
+                            if isinstance(
+                                layer3_result,
+                                dict,
+                            )
+                            else rebalance.get(
+                                "last_summary",
+                                {},
+                            )
                         )
+
+                    if (
+                        layer3_summary.get(
+                            "status"
+                        )
+                        == "ok"
+                    ):
+                        committed_recovery = (
+                            _restart_recovery_context(
+                                market_is_open=True,
+                                source_bar_timestamp=(
+                                    rest_source_bar_timestamp
+                                ),
+                                advance=True,
+                            )
+                        )
+
+                        layer3_summary.update({
+                            "restart_recovery_observed_bars": (
+                                committed_recovery.get(
+                                    "observed_bars"
+                                )
+                            ),
+                            "restart_recovery_source_timestamps": (
+                                committed_recovery.get(
+                                    "source_timestamps"
+                                )
+                            ),
+                            "restart_recovery_ready_after_source_bar": (
+                                committed_recovery.get(
+                                    "ready_after_source_bar"
+                                )
+                            ),
+                            "restart_recovery_completed": bool(
+                                committed_recovery.get(
+                                    "completed"
+                                )
+                            ),
+                            "restart_recovery_evidence_committed": bool(
+                                committed_recovery.get(
+                                    "evidence_committed"
+                                )
+                            ),
+                        })
 
                     logging.info(
                         "[Layer3] Plan summary | cycle_id=%s plan_id=%s status=%s decisions=%s "
                         "equity=$%s cash=$%s target_symbols=%s target_cash_pct=%s "
-                        "open_orders=%s fail_safe_active=%s opening_transition=%s open_cycle=%s "
+                        "open_orders=%s fail_safe_active=%s opening_transition=%s "
+                        "source_open_cycle=%s observed_open_cycles=%s "
+                        "restart_recovery=%s recovery_bars=%s/%s execution_blocked=%s "
                         "warmup_stale=%s warmup_skipped=%s",
                         layer3_summary.get("cycle_id"),
                         layer3_summary.get("plan_id"),
@@ -5267,7 +5750,12 @@ async def run_layer_monitor(
                         layer3_summary.get("open_order_count"),
                         layer3_summary.get("fail_safe_active"),
                         layer3_summary.get("opening_transition_active"),
+                        layer3_summary.get("opening_transition_cycle"),
                         layer3_summary.get("open_session_live_cycle_count"),
+                        layer3_summary.get("restart_recovery_required"),
+                        layer3_summary.get("restart_recovery_observed_bars"),
+                        layer3_summary.get("restart_recovery_required_bars"),
+                        layer3_summary.get("restart_recovery_execution_blocked"),
                         layer3_summary.get("bootstrap_confirmation_warmup_stale_symbols"),
                         layer3_summary.get("bootstrap_confirmation_warmup_skipped_symbols"),
                     )

@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 
 from core.market_clock import get_market_is_open
 from utils.numeric import safe_float, safe_int, safe_round
@@ -73,6 +74,148 @@ L3_TARGET_CANDIDATE_TOLERANCE = 0.010
 L3_TARGET_INCREASE_CONFIRMATION_BARS = 2
 L3_TARGET_DECREASE_CONFIRMATION_BARS = 1
 L3_TARGET_REMOVAL_CONFIRMATION_BARS = 2
+
+MARKET_TIMEZONE = ZoneInfo("America/New_York")
+REGULAR_SESSION_OPEN_HOUR = 9
+REGULAR_SESSION_OPEN_MINUTE = 30
+REGULAR_BAR_TIMEFRAME_SECONDS = 300
+
+
+def _source_bar_datetime(value) -> datetime | None:
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        return (
+            value.replace(tzinfo=timezone.utc)
+            if value.tzinfo is None
+            else value.astimezone(timezone.utc)
+        )
+
+    try:
+        parsed = datetime.fromisoformat(
+            str(value).replace("Z", "+00:00")
+        )
+    except Exception:
+        return None
+
+    return (
+        parsed.replace(tzinfo=timezone.utc)
+        if parsed.tzinfo is None
+        else parsed.astimezone(timezone.utc)
+    )
+
+
+def source_bar_market_session_info(
+    source_bar_timestamp,
+    *,
+    timeframe_seconds: int = REGULAR_BAR_TIMEFRAME_SECONDS,
+    transition_cycles: int = 6,
+) -> dict:
+    """
+    Derive the real market-session phase from a source bar timestamp.
+
+    The source timestamp is treated as the bar start. A regular-session
+    09:30 ET bar is opening cycle 1, 09:55 ET is cycle 6, and 10:00 ET is
+    cycle 7. Process startup time never affects this result.
+    """
+    source_dt = _source_bar_datetime(
+        source_bar_timestamp
+    )
+
+    if source_dt is None:
+        return {
+            "valid": False,
+            "source_bar_timestamp": None,
+            "session_date": None,
+            "source_bar_market_time": None,
+            "seconds_since_open": None,
+            "opening_transition_cycle": None,
+            "opening_transition_active": False,
+            "phase": "missing_source_bar_timestamp",
+        }
+
+    timeframe_seconds = max(
+        1,
+        int(
+            timeframe_seconds
+            or REGULAR_BAR_TIMEFRAME_SECONDS
+        ),
+    )
+
+    transition_cycles = max(
+        0,
+        int(
+            transition_cycles
+            or 0
+        ),
+    )
+
+    market_dt = source_dt.astimezone(
+        MARKET_TIMEZONE
+    )
+
+    session_open = market_dt.replace(
+        hour=REGULAR_SESSION_OPEN_HOUR,
+        minute=REGULAR_SESSION_OPEN_MINUTE,
+        second=0,
+        microsecond=0,
+    )
+
+    seconds_since_open = (
+        market_dt - session_open
+    ).total_seconds()
+
+    opening_cycle = None
+    active = False
+
+    if seconds_since_open >= 0:
+        opening_cycle = (
+            int(
+                seconds_since_open
+                // timeframe_seconds
+            )
+            + 1
+        )
+
+        active = bool(
+            transition_cycles > 0
+            and opening_cycle
+            <= transition_cycles
+        )
+
+    if seconds_since_open < 0:
+        phase = "pre_open_source_bar"
+    elif active:
+        phase = "opening_transition"
+    else:
+        phase = "regular_session"
+
+    return {
+        "valid": True,
+        "source_bar_timestamp": (
+            source_dt.isoformat()
+        ),
+        "session_date": (
+            market_dt.date().isoformat()
+        ),
+        "source_bar_market_time": (
+            market_dt.isoformat()
+        ),
+        "session_open_market_time": (
+            session_open.isoformat()
+        ),
+        "seconds_since_open": (
+            seconds_since_open
+        ),
+        "opening_transition_cycle": (
+            opening_cycle
+        ),
+        "opening_transition_active": (
+            active
+        ),
+        "phase": phase,
+    }
 
 
 def _norm_symbol(symbol) -> str:
@@ -1841,11 +1984,17 @@ def build_layer3_shadow_plan(
         _prepare_market_open_session_state(
             planner_state,
             market_is_open=market_is_open,
+            source_bar_timestamp=(
+                source_bar_timestamp
+            ),
         )
     )
     opening_transition = _opening_transition_info(
         planner_state,
         market_is_open,
+        source_bar_timestamp=(
+            source_bar_timestamp
+        ),
     )
 
     (
@@ -2175,16 +2324,38 @@ def _prepare_market_open_session_state(
     rebalance: dict,
     *,
     market_is_open: bool,
+    source_bar_timestamp=None,
 ) -> dict:
     """
-    Reset stale confirmation/bootstrap state once per market-open session.
+    Reset stale confirmation/bootstrap state once per source-bar session.
 
-    This prevents yesterday's target_seen/target_absent counters from instantly
-    confirming buys/exits on the first live cycle of a new day.
+    The session date comes from the accepted source bar in New York time, not
+    from process startup time or UTC midnight.
     """
-    today = datetime.now(timezone.utc).date().isoformat()
+    transition_cycles = _layer3_int_setting(
+        "layer3_opening_transition_cycles",
+        6,
+    )
 
-    state = rebalance.setdefault("open_session", {})
+    session_info = source_bar_market_session_info(
+        source_bar_timestamp,
+        transition_cycles=transition_cycles,
+    )
+
+    fallback_date = datetime.now(
+        MARKET_TIMEZONE
+    ).date().isoformat()
+
+    session_date = (
+        session_info.get("session_date")
+        or fallback_date
+    )
+
+    state = rebalance.setdefault(
+        "open_session",
+        {},
+    )
+
     reset_seen_symbols = []
     reset_absent_symbols = []
 
@@ -2192,90 +2363,385 @@ def _prepare_market_open_session_state(
         return {
             "date": state.get("date"),
             "is_new_session": False,
-            "reset_seen_symbols": reset_seen_symbols,
-            "reset_absent_symbols": reset_absent_symbols,
-            "live_cycle_count": safe_int(state.get("live_cycle_count", 0), 0),
+            "reset_seen_symbols": (
+                reset_seen_symbols
+            ),
+            "reset_absent_symbols": (
+                reset_absent_symbols
+            ),
+            "live_cycle_count": safe_int(
+                state.get(
+                    "live_cycle_count",
+                    0,
+                ),
+                0,
+            ),
+            "source_session": session_info,
         }
 
-    if state.get("date") != today:
-        seen_counts = rebalance.setdefault("target_seen_counts", {})
-        absent_counts = rebalance.setdefault("target_absent_counts", {})
+    if state.get("date") != session_date:
+        seen_counts = rebalance.setdefault(
+            "target_seen_counts",
+            {},
+        )
+
+        absent_counts = rebalance.setdefault(
+            "target_absent_counts",
+            {},
+        )
 
         reset_seen_symbols = sorted([
             symbol
-            for symbol, count in seen_counts.items()
+            for symbol, count
+            in seen_counts.items()
             if safe_int(count, 0) != 0
         ])
+
         reset_absent_symbols = sorted([
             symbol
-            for symbol, count in absent_counts.items()
+            for symbol, count
+            in absent_counts.items()
             if safe_int(count, 0) != 0
         ])
 
-        for symbol in list(seen_counts.keys()):
+        for symbol in list(
+            seen_counts.keys()
+        ):
             seen_counts[symbol] = 0
 
-        for symbol in list(absent_counts.keys()):
+        for symbol in list(
+            absent_counts.keys()
+        ):
             absent_counts[symbol] = 0
 
-        rebalance["bootstrap_confirmation_applied"] = False
-        rebalance["bootstrap_confirmation_symbols"] = []
-        rebalance["bootstrap_confirmation_warmup_filter_applied"] = False
-        rebalance["bootstrap_confirmation_warmup_symbols"] = []
-        rebalance["bootstrap_confirmation_warmup_skipped_symbols"] = []
-        rebalance["bootstrap_confirmation_warmup_stale_symbols"] = []
-        rebalance["bootstrap_confirmation_warmup_missing_age_symbols"] = []
+        rebalance[
+            "bootstrap_confirmation_applied"
+        ] = False
+
+        rebalance[
+            "bootstrap_confirmation_symbols"
+        ] = []
+
+        rebalance[
+            "bootstrap_confirmation_blocked_reason"
+        ] = None
+
+        rebalance[
+            "bootstrap_confirmation_warmup_filter_applied"
+        ] = False
+
+        rebalance[
+            "bootstrap_confirmation_warmup_symbols"
+        ] = []
+
+        rebalance[
+            "bootstrap_confirmation_warmup_skipped_symbols"
+        ] = []
+
+        rebalance[
+            "bootstrap_confirmation_warmup_stale_symbols"
+        ] = []
+
+        rebalance[
+            "bootstrap_confirmation_warmup_missing_age_symbols"
+        ] = []
+
+        rebalance.pop(
+            "restart_recovery_baseline_seeded",
+            None,
+        )
+
+        rebalance.pop(
+            "restart_recovery_baseline_symbols",
+            None,
+        )
 
         state.clear()
-        state["date"] = today
+        state["date"] = session_date
         state["live_cycle_count"] = 0
-        state["opened_at"] = datetime.now(timezone.utc).isoformat()
+        state["opened_at"] = datetime.now(
+            timezone.utc
+        ).isoformat()
 
         logging.info(
             "[Layer3Bootstrap] Prepared new open-session confirmation state | "
-            "date=%s reset_seen_symbols=%s reset_absent_symbols=%s",
-            today,
+            "date=%s reset_seen_symbols=%s reset_absent_symbols=%s "
+            "source_phase=%s source_opening_cycle=%s",
+            session_date,
             reset_seen_symbols,
             reset_absent_symbols,
+            session_info.get("phase"),
+            session_info.get(
+                "opening_transition_cycle"
+            ),
         )
 
-    state["live_cycle_count"] = safe_int(state.get("live_cycle_count", 0), 0) + 1
-    state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    state["live_cycle_count"] = safe_int(
+        state.get(
+            "live_cycle_count",
+            0,
+        ),
+        0,
+    ) + 1
+
+    state["last_source_bar_timestamp"] = (
+        session_info.get(
+            "source_bar_timestamp"
+        )
+    )
+
+    state["updated_at"] = datetime.now(
+        timezone.utc
+    ).isoformat()
 
     return {
         "date": state.get("date"),
         "is_new_session": bool(
             reset_seen_symbols
             or reset_absent_symbols
-            or state.get("live_cycle_count") == 1
+            or state.get(
+                "live_cycle_count"
+            ) == 1
         ),
-        "reset_seen_symbols": reset_seen_symbols,
-        "reset_absent_symbols": reset_absent_symbols,
-        "live_cycle_count": safe_int(state.get("live_cycle_count", 0), 0),
+        "reset_seen_symbols": (
+            reset_seen_symbols
+        ),
+        "reset_absent_symbols": (
+            reset_absent_symbols
+        ),
+        "live_cycle_count": safe_int(
+            state.get(
+                "live_cycle_count",
+                0,
+            ),
+            0,
+        ),
+        "source_session": session_info,
     }
 
 
-def _opening_transition_info(rebalance: dict, market_is_open: bool) -> dict:
+def _opening_transition_info(
+    rebalance: dict,
+    market_is_open: bool,
+    source_bar_timestamp=None,
+) -> dict:
     transition_cycles = _layer3_int_setting(
         "layer3_opening_transition_cycles",
         6,
     )
-    open_session = (
-        rebalance.get("open_session", {})
-        if isinstance(rebalance.get("open_session"), dict)
-        else {}
+
+    session_info = source_bar_market_session_info(
+        source_bar_timestamp,
+        transition_cycles=transition_cycles,
     )
-    live_cycle_count = safe_int(open_session.get("live_cycle_count", 0), 0)
+
     active = bool(
         market_is_open
-        and transition_cycles > 0
-        and 1 <= live_cycle_count <= transition_cycles
+        and session_info.get(
+            "opening_transition_active"
+        )
     )
 
     return {
         "active": active,
-        "live_cycle_count": live_cycle_count,
-        "transition_cycles": transition_cycles,
+        "live_cycle_count": (
+            session_info.get(
+                "opening_transition_cycle"
+            )
+        ),
+        "transition_cycles": (
+            transition_cycles
+        ),
+        "source_bar_timestamp": (
+            session_info.get(
+                "source_bar_timestamp"
+            )
+        ),
+        "source_bar_market_time": (
+            session_info.get(
+                "source_bar_market_time"
+            )
+        ),
+        "session_date": (
+            session_info.get(
+                "session_date"
+            )
+        ),
+        "phase": session_info.get(
+            "phase"
+        ),
+    }
+
+
+def _seed_restart_recovery_hysteresis_baseline(
+    *,
+    rebalance: dict,
+    positions: dict,
+    equity: float,
+    restart_recovery: dict | None,
+) -> dict:
+    """
+    Seed accepted Layer 3 targets from the broker portfolio once after a
+    market-open restart without a usable warmup.
+
+    This prevents process loss from turning the first post-restart target into
+    an immediate bootstrap portfolio. The first distinct target instead starts
+    confirming relative to what the broker actually owns.
+    """
+    context = (
+        restart_recovery
+        if isinstance(
+            restart_recovery,
+            dict,
+        )
+        else {}
+    )
+
+    required = bool(
+        context.get("required")
+    )
+
+    if not required:
+        return {
+            "seeded": False,
+            "symbols": [],
+            "reason": (
+                "restart_recovery_not_required"
+            ),
+        }
+
+    if rebalance.get(
+        "restart_recovery_baseline_seeded"
+    ):
+        return {
+            "seeded": False,
+            "symbols": list(
+                rebalance.get(
+                    "restart_recovery_baseline_symbols",
+                    [],
+                )
+                or []
+            ),
+            "reason": "already_seeded",
+        }
+
+    states = rebalance.setdefault(
+        "target_hysteresis_by_symbol",
+        {},
+    )
+
+    # Recovery baseline represents the broker portfolio as a whole. Remove any
+    # stale accepted targets or pending candidates that survived in memory.
+    states.clear()
+
+    seeded_symbols = []
+    now_iso = datetime.now(
+        timezone.utc
+    ).isoformat()
+
+    for symbol, position in sorted(
+        (positions or {}).items()
+    ):
+        symbol = _norm_symbol(symbol)
+
+        if not symbol:
+            continue
+
+        market_value = max(
+            0.0,
+            safe_float(
+                (
+                    position or {}
+                ).get(
+                    "market_value"
+                )
+                if isinstance(
+                    position,
+                    dict,
+                )
+                else 0.0,
+                0.0,
+            ),
+        )
+
+        current_weight = (
+            market_value / equity
+            if equity > 0
+            else 0.0
+        )
+
+        if current_weight <= 0:
+            continue
+
+        state = states.setdefault(
+            symbol,
+            {},
+        )
+
+        state.clear()
+        state.update({
+            "initialized": True,
+            "accepted_target_weight": (
+                current_weight
+            ),
+            "last_raw_target_weight": (
+                current_weight
+            ),
+            "last_current_weight": (
+                current_weight
+            ),
+            "pending_direction": None,
+            "pending_target_weight": None,
+            "pending_count": 0,
+            "pending_required_count": 0,
+            "last_reset_reason": (
+                "restart_recovery_broker_baseline"
+            ),
+            "restart_recovery_baseline": True,
+            "updated_at": now_iso,
+        })
+
+        seeded_symbols.append(
+            symbol
+        )
+
+    rebalance[
+        "restart_recovery_baseline_seeded"
+    ] = True
+
+    rebalance[
+        "restart_recovery_baseline_symbols"
+    ] = seeded_symbols
+
+    rebalance[
+        "restart_recovery_baseline_seeded_at"
+    ] = now_iso
+
+    # Bootstrap must remain consumed for this session. Otherwise the first
+    # cycle after the pause would instantly approve the latest raw target.
+    rebalance[
+        "bootstrap_confirmation_applied"
+    ] = True
+
+    rebalance[
+        "bootstrap_confirmation_symbols"
+    ] = []
+
+    rebalance[
+        "bootstrap_confirmation_blocked_reason"
+    ] = "restart_recovery"
+
+    logging.warning(
+        "[Layer3Recovery] Seeded broker-position hysteresis baseline | "
+        "symbols=%s equity=%.2f",
+        seeded_symbols,
+        equity,
+    )
+
+    return {
+        "seeded": True,
+        "symbols": seeded_symbols,
+        "reason": "broker_positions_seeded",
     }
 
 
@@ -2311,6 +2777,10 @@ def _maybe_bootstrap_layer3_confirmation(
 
     if rebalance.get("bootstrap_confirmation_applied"):
         return []
+
+    rebalance[
+        "bootstrap_confirmation_blocked_reason"
+    ] = None
 
     market_hours_only = _layer3_bool_setting(
         "layer3_market_hours_only",
@@ -2421,6 +2891,7 @@ def _maybe_bootstrap_layer3_confirmation(
 def run_layer3_dry_run(
     *,
     source_bar_timestamp=None,
+    restart_recovery: dict | None = None,
 ) -> dict:
     """
     Broker-aware Layer 3 dry-run planner.
@@ -2523,11 +2994,43 @@ def run_layer3_dry_run(
     open_session_info = _prepare_market_open_session_state(
         rebalance,
         market_is_open=market_is_open_now,
+        source_bar_timestamp=(
+            source_bar_timestamp
+        ),
     )
 
     opening_transition = _opening_transition_info(
         rebalance,
         market_is_open_now,
+        source_bar_timestamp=(
+            source_bar_timestamp
+        ),
+    )
+
+    restart_recovery = (
+        restart_recovery
+        if isinstance(
+            restart_recovery,
+            dict,
+        )
+        else {}
+    )
+
+    recovery_baseline = (
+        _seed_restart_recovery_hysteresis_baseline(
+            rebalance=rebalance,
+            positions=positions,
+            equity=equity,
+            restart_recovery=(
+                restart_recovery
+            ),
+        )
+    )
+
+    recovery_execution_blocked = bool(
+        restart_recovery.get(
+            "execution_blocked"
+        )
     )
 
     (
@@ -2550,7 +3053,14 @@ def run_layer3_dry_run(
 
     target_symbols = set(target_weights.keys())
 
-    if confirmation_updates_allowed:
+    if (
+        confirmation_updates_allowed
+        and not bool(
+            restart_recovery.get(
+                "required"
+            )
+        )
+    ):
         _maybe_bootstrap_layer3_confirmation(
             rebalance=rebalance,
             target_symbols=target_symbols,
@@ -2656,6 +3166,7 @@ def run_layer3_dry_run(
         planner_state=rebalance,
         rolling_limits_active=bool(
             market_is_open
+            and not recovery_execution_blocked
         ),
         target_hysteresis_by_symbol=(
             hysteresis_result[
@@ -2693,8 +3204,82 @@ def run_layer3_dry_run(
         "open_session_live_cycle_count": open_session_info.get("live_cycle_count"),
         "open_session_reset_seen_symbols": open_session_info.get("reset_seen_symbols", []),
         "open_session_reset_absent_symbols": open_session_info.get("reset_absent_symbols", []),
-        "opening_transition_active": opening_transition.get("active"),
-        "opening_transition_cycles": opening_transition.get("transition_cycles"),
+        "opening_transition_active": opening_transition.get(
+            "active"
+        ),
+        "opening_transition_cycle": opening_transition.get(
+            "live_cycle_count"
+        ),
+        "opening_transition_cycles": opening_transition.get(
+            "transition_cycles"
+        ),
+        "opening_transition_phase": opening_transition.get(
+            "phase"
+        ),
+        "opening_transition_source_market_time": opening_transition.get(
+            "source_bar_market_time"
+        ),
+
+        "restart_recovery_required": bool(
+            restart_recovery.get(
+                "required"
+            )
+        ),
+        "restart_recovery_active": bool(
+            restart_recovery.get(
+                "active"
+            )
+        ),
+        "restart_recovery_execution_blocked": (
+            recovery_execution_blocked
+        ),
+        "restart_recovery_reason": restart_recovery.get(
+            "reason"
+        ),
+        "restart_recovery_observed_bars": restart_recovery.get(
+            "observed_bars"
+        ),
+        "restart_recovery_required_bars": restart_recovery.get(
+            "required_bars"
+        ),
+        "restart_recovery_source_timestamps": restart_recovery.get(
+            "source_timestamps"
+        ),
+        "restart_recovery_ready_after_source_bar": restart_recovery.get(
+            "ready_after_source_bar"
+        ),
+        "restart_recovery_completed": bool(
+            restart_recovery.get(
+                "completed"
+            )
+        ),
+        "restart_recovery_evidence_committed": bool(
+            restart_recovery.get(
+                "evidence_committed"
+            )
+        ),
+        "restart_recovery_baseline_seeded": bool(
+            rebalance.get(
+                "restart_recovery_baseline_seeded"
+            )
+        ),
+        "restart_recovery_baseline_symbols": list(
+            rebalance.get(
+                "restart_recovery_baseline_symbols",
+                [],
+            )
+            or []
+        ),
+        "restart_recovery_baseline_seeded_this_cycle": bool(
+            recovery_baseline.get(
+                "seeded"
+            )
+        ),
+        "strategy_execution_blocked_reason": (
+            "restart_recovery"
+            if recovery_execution_blocked
+            else None
+        ),
 
         "market_is_open": market_is_open,
         "confirmation_updates_allowed": confirmation_updates_allowed,
@@ -2724,6 +3309,9 @@ def run_layer3_dry_run(
         "bootstrap_confirmation_symbols": rebalance.get(
             "bootstrap_confirmation_symbols",
             [],
+        ),
+        "bootstrap_confirmation_blocked_reason": rebalance.get(
+            "bootstrap_confirmation_blocked_reason"
         ),
         "bootstrap_confirmation_warmup_filter_applied": rebalance.get(
             "bootstrap_confirmation_warmup_filter_applied",

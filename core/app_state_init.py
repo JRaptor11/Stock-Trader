@@ -34,6 +34,14 @@ def ensure_app_state_structure() -> None:
         "layer3_opening_transition_cycles",
         6,
     )
+    execution.setdefault(
+        "layer3_restart_recovery_enabled",
+        True,
+    )
+    execution.setdefault(
+        "layer3_restart_recovery_bars",
+        2,
+    )
     execution.setdefault("live_strategy_shadow_rest_bootstrap_enabled", True)
 
     execution.setdefault("layer_monitor_run_24_7", True)
@@ -115,6 +123,7 @@ def ensure_app_state_structure() -> None:
     layers.setdefault("engine", None)
     layers.setdefault("latest", {})
     layers.setdefault("rebalance", {})
+    layers.setdefault("restart_recovery", {})
     layers.setdefault("layer4", {})
     layers.setdefault("layer4_shadow", {})
     layers.setdefault("layer4_execution", {})  # temporary backward-compatible bucket
@@ -219,9 +228,14 @@ def initialize_layer_state(top_n: int = 5, force_recreate_engine: bool = False) 
     rebalance.setdefault("last_error", None)
     rebalance.setdefault("bootstrap_confirmation_applied", False)
     rebalance.setdefault("bootstrap_confirmation_symbols", [])
+    rebalance.setdefault("bootstrap_confirmation_blocked_reason", None)
     rebalance.setdefault("last_confirmation_update_at", None)
     rebalance.setdefault("confirmation_updates_allowed", None)
     rebalance.setdefault("confirmation_updates_blocked_reason", None)
+    rebalance.setdefault("restart_recovery_baseline_seeded", False)
+    rebalance.setdefault("restart_recovery_baseline_symbols", [])
+
+    layers.setdefault("restart_recovery", {})
 
     # Layer 4 active-plan metadata.
     layer4 = layers.setdefault("layer4", {})

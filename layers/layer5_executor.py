@@ -676,6 +676,8 @@ def execute_layer5_plan(plan: Any, summary: dict | None = None) -> dict:
         "errors": 0,
         "blocked_reason": None,
         "count_integrity_ok": None,
+        "strategy_execution_blocked_reason": None,
+        "strategy_rows_blocked": 0,
         "orders": [],
     }
 
@@ -783,6 +785,59 @@ def execute_layer5_plan(plan: Any, summary: dict | None = None) -> dict:
     available_cash_budget = _available_cash(client)
 
     executable = _executable_rows(plan)
+
+    strategy_execution_blocked_reason = str(
+        summary.get(
+            "strategy_execution_blocked_reason"
+        )
+        or ""
+    ).strip()
+
+    if strategy_execution_blocked_reason:
+        result[
+            "strategy_execution_blocked_reason"
+        ] = strategy_execution_blocked_reason
+
+        result[
+            "strategy_rows_blocked"
+        ] = len(executable)
+
+        if fail_safe_snapshot["active"]:
+            logging.warning(
+                "[Layer5Exec] Ordinary strategy rows blocked but fail-safe "
+                "liquidation remains enabled | cycle_id=%s plan_id=%s "
+                "reason=%s blocked_rows=%s",
+                cycle_id,
+                plan_id,
+                strategy_execution_blocked_reason,
+                len(executable),
+            )
+
+            # Remove all ordinary BUY and SELL rows. The fail-safe branch below
+            # may still append explicit liquidation rows from fail-safe state.
+            executable = []
+
+        else:
+            logging.warning(
+                "[Layer5Exec] Ordinary strategy execution blocked | "
+                "cycle_id=%s plan_id=%s reason=%s blocked_rows=%s",
+                cycle_id,
+                plan_id,
+                strategy_execution_blocked_reason,
+                len(executable),
+            )
+
+            result["blocked_reason"] = (
+                strategy_execution_blocked_reason
+            )
+
+            result["count_integrity_ok"] = True
+
+            return _finish_layer5_result(
+                result=result,
+                layer5_state=layer5_state,
+                started_monotonic=started_monotonic,
+            )
 
     if fail_safe_snapshot["active"]:
         original_executable_count = len(executable)
