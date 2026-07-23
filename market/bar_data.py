@@ -138,6 +138,829 @@ def _to_aware_utc(dt):
     return dt.astimezone(timezone.utc)
 
 
+def _bar_field(
+    bar,
+    key: str,
+    default=None,
+):
+    if isinstance(
+        bar,
+        dict,
+    ):
+        return bar.get(
+            key,
+            default,
+        )
+
+    return getattr(
+        bar,
+        key,
+        default,
+    )
+
+
+def _timestamp_utc(
+    value,
+) -> datetime | None:
+    if value is None:
+        return None
+
+    if isinstance(
+        value,
+        datetime,
+    ):
+        if value.tzinfo is None:
+            return value.replace(
+                tzinfo=timezone.utc
+            )
+
+        return value.astimezone(
+            timezone.utc
+        )
+
+    if isinstance(
+        value,
+        (int, float),
+    ):
+        try:
+            return datetime.fromtimestamp(
+                float(value),
+                tz=timezone.utc,
+            )
+        except Exception:
+            return None
+
+    text = str(
+        value
+    ).strip()
+
+    if not text:
+        return None
+
+    try:
+        return datetime.fromtimestamp(
+            float(text),
+            tz=timezone.utc,
+        )
+    except Exception:
+        pass
+
+    try:
+        parsed = datetime.fromisoformat(
+            text.replace(
+                "Z",
+                "+00:00",
+            )
+        )
+
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(
+                tzinfo=timezone.utc
+            )
+
+        return parsed.astimezone(
+            timezone.utc
+        )
+
+    except Exception:
+        return None
+
+
+def bar_timestamp_utc(
+    bar,
+) -> datetime | None:
+    """
+    Return the UTC start timestamp for a REST or internally
+    constructed LIVE bar.
+
+    LIVE bars normally expose both:
+    - timestamp
+    - bucket_start
+
+    REST bars normally expose:
+    - timestamp
+    """
+    if bar is None:
+        return None
+
+    raw_timestamp = (
+        _bar_field(
+            bar,
+            "timestamp",
+        )
+        or _bar_field(
+            bar,
+            "t",
+        )
+    )
+
+    parsed = _timestamp_utc(
+        raw_timestamp
+    )
+
+    if parsed is not None:
+        return parsed
+
+    return _timestamp_utc(
+        _bar_field(
+            bar,
+            "bucket_start",
+        )
+    )
+
+
+def _bar_end_timestamp_utc(
+    bar,
+    *,
+    timeframe_seconds: int,
+) -> datetime | None:
+    explicit_end = _timestamp_utc(
+        _bar_field(
+            bar,
+            "bucket_end",
+        )
+    )
+
+    if explicit_end is not None:
+        return explicit_end
+
+    start = bar_timestamp_utc(
+        bar
+    )
+
+    if start is None:
+        return None
+
+    return start + timedelta(
+        seconds=max(
+            1,
+            int(
+                timeframe_seconds
+                or 1
+            ),
+        )
+    )
+
+
+def _optional_float(
+    value,
+) -> float | None:
+    if value in (
+        None,
+        "",
+    ):
+        return None
+
+    try:
+        return float(
+            value
+        )
+    except Exception:
+        return None
+
+
+def _rounded_optional(
+    value,
+    digits: int = 8,
+):
+    value = _optional_float(
+        value
+    )
+
+    if value is None:
+        return None
+
+    return round(
+        value,
+        digits,
+    )
+
+
+def _numeric_delta(
+    live_value,
+    rest_value,
+):
+    live_number = _optional_float(
+        live_value
+    )
+
+    rest_number = _optional_float(
+        rest_value
+    )
+
+    if (
+        live_number is None
+        or rest_number is None
+    ):
+        return None
+
+    return round(
+        live_number
+        - rest_number,
+        8,
+    )
+
+
+def _numeric_pct_delta(
+    live_value,
+    rest_value,
+):
+    live_number = _optional_float(
+        live_value
+    )
+
+    rest_number = _optional_float(
+        rest_value
+    )
+
+    if (
+        live_number is None
+        or rest_number is None
+        or rest_number == 0
+    ):
+        return None
+
+    return round(
+        (
+            live_number
+            - rest_number
+        )
+        / rest_number,
+        8,
+    )
+
+
+def _numeric_ratio(
+    numerator,
+    denominator,
+):
+    numerator_number = _optional_float(
+        numerator
+    )
+
+    denominator_number = _optional_float(
+        denominator
+    )
+
+    if (
+        numerator_number is None
+        or denominator_number is None
+        or denominator_number == 0
+    ):
+        return None
+
+    return round(
+        numerator_number
+        / denominator_number,
+        8,
+    )
+
+
+def _iso_or_none(
+    value,
+):
+    parsed = _timestamp_utc(
+        value
+    )
+
+    return (
+        parsed.isoformat()
+        if parsed is not None
+        else None
+    )
+
+
+def build_exact_rest_live_bar_comparison(
+    *,
+    rest_bar,
+    live_bars,
+    timeframe_seconds: int = 300,
+) -> dict:
+    """
+    Match one REST bar to the internally constructed LIVE bar
+    with the exact same UTC bucket-start timestamp.
+
+    This function does not choose the latest LIVE bar. It compares
+    equivalent five-minute market intervals only.
+    """
+    timeframe_seconds = max(
+        1,
+        int(
+            timeframe_seconds
+            or 300
+        ),
+    )
+
+    result = {
+        "bar_match_status": (
+            "missing_rest_bar"
+        ),
+        "bar_match_exact": False,
+        "bar_match_comparison_eligible": (
+            False
+        ),
+
+        "bar_match_rest_timestamp": None,
+        "bar_match_rest_end_timestamp": (
+            None
+        ),
+
+        "bar_match_live_timestamp": None,
+        "bar_match_live_end_timestamp": (
+            None
+        ),
+
+        "bar_match_nearest_live_timestamp": (
+            None
+        ),
+        "bar_match_nearest_live_delta_seconds": (
+            None
+        ),
+
+        "bar_match_live_sealed": None,
+        "bar_match_live_sealed_at": None,
+        "bar_match_live_capture_quality": (
+            None
+        ),
+        "bar_match_live_full_capture_candidate": (
+            False
+        ),
+        "bar_match_live_late_created_after_seal": (
+            None
+        ),
+
+        "bar_match_live_event_timestamp_fallback_count": (
+            None
+        ),
+        "bar_match_live_trade_id_missing_count": (
+            None
+        ),
+        "bar_match_live_duplicate_trade_message_count": (
+            None
+        ),
+        "bar_match_live_late_after_seal_trade_count": (
+            None
+        ),
+        "bar_match_live_late_after_seal_volume": (
+            None
+        ),
+
+        "rest_open": None,
+        "rest_high": None,
+        "rest_low": None,
+        "rest_close": None,
+        "rest_volume": None,
+        "rest_trade_count": None,
+        "rest_vwap": None,
+
+        "matched_live_open": None,
+        "matched_live_high": None,
+        "matched_live_low": None,
+        "matched_live_close": None,
+        "matched_live_volume": None,
+        "matched_live_trade_count": None,
+        "matched_live_vwap": None,
+
+        "open_delta_live_minus_rest": None,
+        "high_delta_live_minus_rest": None,
+        "low_delta_live_minus_rest": None,
+        "close_delta_live_minus_rest": None,
+        "volume_delta_live_minus_rest": None,
+        "trade_count_delta_live_minus_rest": (
+            None
+        ),
+        "vwap_delta_live_minus_rest": None,
+
+        "open_pct_delta_live_minus_rest": (
+            None
+        ),
+        "high_pct_delta_live_minus_rest": (
+            None
+        ),
+        "low_pct_delta_live_minus_rest": (
+            None
+        ),
+        "close_pct_delta_live_minus_rest": (
+            None
+        ),
+        "volume_pct_delta_live_minus_rest": (
+            None
+        ),
+        "trade_count_pct_delta_live_minus_rest": (
+            None
+        ),
+        "vwap_pct_delta_live_minus_rest": (
+            None
+        ),
+
+        "volume_capture_ratio_live_to_rest": (
+            None
+        ),
+        "trade_count_capture_ratio_live_to_rest": (
+            None
+        ),
+    }
+
+    if rest_bar is None:
+        return result
+
+    rest_timestamp = bar_timestamp_utc(
+        rest_bar
+    )
+
+    if rest_timestamp is None:
+        result[
+            "bar_match_status"
+        ] = "missing_rest_timestamp"
+
+        return result
+
+    rest_end_timestamp = (
+        _bar_end_timestamp_utc(
+            rest_bar,
+            timeframe_seconds=(
+                timeframe_seconds
+            ),
+        )
+    )
+
+    result.update({
+        "bar_match_rest_timestamp": (
+            rest_timestamp.isoformat()
+        ),
+        "bar_match_rest_end_timestamp": (
+            rest_end_timestamp.isoformat()
+            if rest_end_timestamp
+            else None
+        ),
+
+        "rest_open": _rounded_optional(
+            _bar_field(
+                rest_bar,
+                "open",
+            )
+        ),
+        "rest_high": _rounded_optional(
+            _bar_field(
+                rest_bar,
+                "high",
+            )
+        ),
+        "rest_low": _rounded_optional(
+            _bar_field(
+                rest_bar,
+                "low",
+            )
+        ),
+        "rest_close": _rounded_optional(
+            _bar_field(
+                rest_bar,
+                "close",
+            )
+        ),
+        "rest_volume": _rounded_optional(
+            _bar_field(
+                rest_bar,
+                "volume",
+            )
+        ),
+        "rest_trade_count": _rounded_optional(
+            _bar_field(
+                rest_bar,
+                "trade_count",
+            )
+        ),
+        "rest_vwap": _rounded_optional(
+            _bar_field(
+                rest_bar,
+                "vwap",
+            )
+        ),
+    })
+
+    parsed_live_bars = []
+
+    for live_bar in list(
+        live_bars or []
+    ):
+        live_timestamp = (
+            bar_timestamp_utc(
+                live_bar
+            )
+        )
+
+        if live_timestamp is None:
+            continue
+
+        parsed_live_bars.append((
+            live_timestamp,
+            live_bar,
+        ))
+
+    if not parsed_live_bars:
+        result[
+            "bar_match_status"
+        ] = "missing_live_5m_bars"
+
+        return result
+
+    parsed_live_bars.sort(
+        key=lambda item: item[0]
+    )
+
+    exact_live_bar = None
+
+    for (
+        live_timestamp,
+        live_bar,
+    ) in parsed_live_bars:
+        timestamp_delta = (
+            live_timestamp
+            - rest_timestamp
+        ).total_seconds()
+
+        if abs(
+            timestamp_delta
+        ) <= 0.000001:
+            exact_live_bar = live_bar
+            break
+
+    if exact_live_bar is None:
+        nearest_timestamp, _ = min(
+            parsed_live_bars,
+            key=lambda item: abs(
+                (
+                    item[0]
+                    - rest_timestamp
+                ).total_seconds()
+            ),
+        )
+
+        nearest_delta_seconds = (
+            nearest_timestamp
+            - rest_timestamp
+        ).total_seconds()
+
+        result.update({
+            "bar_match_nearest_live_timestamp": (
+                nearest_timestamp.isoformat()
+            ),
+            "bar_match_nearest_live_delta_seconds": round(
+                nearest_delta_seconds,
+                6,
+            ),
+        })
+
+        earliest_timestamp = (
+            parsed_live_bars[0][0]
+        )
+
+        latest_timestamp = (
+            parsed_live_bars[-1][0]
+        )
+
+        if rest_timestamp < earliest_timestamp:
+            status = (
+                "rest_bar_before_live_history"
+            )
+
+        elif rest_timestamp > latest_timestamp:
+            status = (
+                "live_bar_not_yet_built"
+            )
+
+        else:
+            status = (
+                "no_exact_timestamp_match"
+            )
+
+        result[
+            "bar_match_status"
+        ] = status
+
+        return result
+
+    live_timestamp = bar_timestamp_utc(
+        exact_live_bar
+    )
+
+    live_end_timestamp = (
+        _bar_end_timestamp_utc(
+            exact_live_bar,
+            timeframe_seconds=(
+                timeframe_seconds
+            ),
+        )
+    )
+
+    live_sealed = bool(
+        _bar_field(
+            exact_live_bar,
+            "sealed",
+            False,
+        )
+    )
+
+    capture_quality = str(
+        _bar_field(
+            exact_live_bar,
+            "capture_quality",
+            "",
+        )
+        or ""
+    ).strip()
+
+    result.update({
+        "bar_match_status": (
+            "matched"
+            if live_sealed
+            else
+            "matching_live_bar_not_sealed"
+        ),
+        "bar_match_exact": True,
+        "bar_match_comparison_eligible": (
+            live_sealed
+        ),
+
+        "bar_match_live_timestamp": (
+            live_timestamp.isoformat()
+            if live_timestamp
+            else None
+        ),
+        "bar_match_live_end_timestamp": (
+            live_end_timestamp.isoformat()
+            if live_end_timestamp
+            else None
+        ),
+
+        "bar_match_live_sealed": (
+            live_sealed
+        ),
+        "bar_match_live_sealed_at": (
+            _iso_or_none(
+                _bar_field(
+                    exact_live_bar,
+                    "sealed_at",
+                )
+                or _bar_field(
+                    exact_live_bar,
+                    "sealed_at_epoch",
+                )
+            )
+        ),
+        "bar_match_live_capture_quality": (
+            capture_quality
+            or None
+        ),
+        "bar_match_live_full_capture_candidate": (
+            capture_quality
+            == "FULL_CAPTURE_CANDIDATE"
+        ),
+        "bar_match_live_late_created_after_seal": bool(
+            _bar_field(
+                exact_live_bar,
+                "late_created_after_seal",
+                False,
+            )
+        ),
+
+        "bar_match_live_event_timestamp_fallback_count": (
+            _bar_field(
+                exact_live_bar,
+                "event_timestamp_fallback_count",
+            )
+        ),
+        "bar_match_live_trade_id_missing_count": (
+            _bar_field(
+                exact_live_bar,
+                "trade_id_missing_count",
+            )
+        ),
+        "bar_match_live_duplicate_trade_message_count": (
+            _bar_field(
+                exact_live_bar,
+                "duplicate_trade_message_count",
+            )
+        ),
+        "bar_match_live_late_after_seal_trade_count": (
+            _bar_field(
+                exact_live_bar,
+                "late_after_seal_trade_count",
+            )
+        ),
+        "bar_match_live_late_after_seal_volume": (
+            _rounded_optional(
+                _bar_field(
+                    exact_live_bar,
+                    "late_after_seal_volume",
+                )
+            )
+        ),
+
+        "matched_live_open": _rounded_optional(
+            _bar_field(
+                exact_live_bar,
+                "open",
+            )
+        ),
+        "matched_live_high": _rounded_optional(
+            _bar_field(
+                exact_live_bar,
+                "high",
+            )
+        ),
+        "matched_live_low": _rounded_optional(
+            _bar_field(
+                exact_live_bar,
+                "low",
+            )
+        ),
+        "matched_live_close": _rounded_optional(
+            _bar_field(
+                exact_live_bar,
+                "close",
+            )
+        ),
+        "matched_live_volume": _rounded_optional(
+            _bar_field(
+                exact_live_bar,
+                "volume",
+            )
+        ),
+        "matched_live_trade_count": (
+            _rounded_optional(
+                _bar_field(
+                    exact_live_bar,
+                    "trade_count",
+                )
+            )
+        ),
+        "matched_live_vwap": _rounded_optional(
+            _bar_field(
+                exact_live_bar,
+                "vwap",
+            )
+        ),
+    })
+
+    comparison_fields = (
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "trade_count",
+        "vwap",
+    )
+
+    for field in comparison_fields:
+        rest_value = result.get(
+            f"rest_{field}"
+        )
+
+        live_value = result.get(
+            f"matched_live_{field}"
+        )
+
+        result[
+            f"{field}_delta_live_minus_rest"
+        ] = _numeric_delta(
+            live_value,
+            rest_value,
+        )
+
+        result[
+            f"{field}_pct_delta_live_minus_rest"
+        ] = _numeric_pct_delta(
+            live_value,
+            rest_value,
+        )
+
+    result[
+        "volume_capture_ratio_live_to_rest"
+    ] = _numeric_ratio(
+        result.get(
+            "matched_live_volume"
+        ),
+        result.get(
+            "rest_volume"
+        ),
+    )
+
+    result[
+        "trade_count_capture_ratio_live_to_rest"
+    ] = _numeric_ratio(
+        result.get(
+            "matched_live_trade_count"
+        ),
+        result.get(
+            "rest_trade_count"
+        ),
+    )
+
+    return result
+
+
 def latest_bar_age_minutes(symbol_bars: list, now_utc: datetime | None = None) -> float | None:
     """
     Return the age in minutes of the latest bar in a symbol's bar list.

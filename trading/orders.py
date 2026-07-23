@@ -2,15 +2,22 @@ import logging
 import asyncio
 import time
 from datetime import datetime, timezone
+from statistics import median
+from threading import Lock
 from alpaca.trading.enums import TimeInForce, QueryOrderStatus, OrderSide
 from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest, GetOrdersRequest
 from utils.threading_utils import safe_thread
 from trading.trade_utils import log_trade_to_summary
+from layers.layer_csv import (
+    append_layer_order_outcome_cycle_row,
+    append_layer_order_outcome_row,
+)
 from core.state import app_state
 
 
 EXTENDED_LIMIT_ORDER_MAX_AGE_SECONDS = 15 * 60
 CANCEL_EXTENDED_LIMITS_WHEN_MARKET_OPENS = True
+_ORDER_OUTCOME_CYCLE_LOCK = Lock()
 
 
 def _order_monitor_thread_entry() -> None:
@@ -86,6 +93,1976 @@ def _safe_float(value, default=0.0) -> float:
         return float(value)
     except Exception:
         return default
+
+
+def _parse_utc_datetime(
+    value,
+) -> datetime | None:
+    if value is None:
+        return None
+
+    if isinstance(
+        value,
+        datetime,
+    ):
+        if value.tzinfo is None:
+            return value.replace(
+                tzinfo=timezone.utc
+            )
+
+        return value.astimezone(
+            timezone.utc
+        )
+
+    try:
+        parsed = datetime.fromisoformat(
+            str(value).replace(
+                "Z",
+                "+00:00",
+            )
+        )
+
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(
+                tzinfo=timezone.utc
+            )
+
+        return parsed.astimezone(
+            timezone.utc
+        )
+
+    except Exception:
+        return None
+
+
+def _iso_utc(
+    value,
+) -> str | None:
+    parsed = _parse_utc_datetime(
+        value
+    )
+
+    return (
+        parsed.isoformat()
+        if parsed is not None
+        else None
+    )
+
+
+def _elapsed_seconds(
+    start,
+    end,
+) -> float | None:
+    start_dt = _parse_utc_datetime(
+        start
+    )
+
+    end_dt = _parse_utc_datetime(
+        end
+    )
+
+    if (
+        start_dt is None
+        or end_dt is None
+    ):
+        return None
+
+    return round(
+        max(
+            0.0,
+            (
+                end_dt
+                - start_dt
+            ).total_seconds(),
+        ),
+        6,
+    )
+
+
+def _pct_delta(
+    value,
+    reference,
+) -> float | None:
+    value = _safe_float(
+        value,
+        0.0,
+    )
+
+    reference = _safe_float(
+        reference,
+        0.0,
+    )
+
+    if (
+        value <= 0
+        or reference <= 0
+    ):
+        return None
+
+    return round(
+        (
+            value
+            - reference
+        )
+        / reference,
+        8,
+    )
+
+
+def _side_adjusted_slippage_pct(
+    *,
+    side,
+    fill_price,
+    reference_price,
+) -> float | None:
+    """
+    Positive means adverse execution.
+
+    BUY:
+        fill above reference is adverse.
+
+    SELL:
+        fill below reference is adverse.
+    """
+    raw_delta = _pct_delta(
+        fill_price,
+        reference_price,
+    )
+
+    if raw_delta is None:
+        return None
+
+    normalized_side = normalize_side(
+        side
+    )
+
+    if normalized_side == "buy":
+        return raw_delta
+
+    if normalized_side == "sell":
+        return round(
+            -raw_delta,
+            8,
+        )
+
+    return None
+
+
+def _terminal_order_timestamp(
+    order,
+    status: str,
+    observed_at: datetime,
+) -> datetime:
+    status = normalize_status(
+        status
+    )
+
+    status_field = {
+        "filled": "filled_at",
+        "canceled": "canceled_at",
+        "expired": "expired_at",
+        "rejected": "failed_at",
+        "done_for_day": "updated_at",
+    }.get(
+        status
+    )
+
+    terminal_at = (
+        _parse_utc_datetime(
+            getattr(
+                order,
+                status_field,
+                None,
+            )
+        )
+        if status_field
+        else None
+    )
+
+    if terminal_at is None:
+        terminal_at = _parse_utc_datetime(
+            getattr(
+                order,
+                "updated_at",
+                None,
+            )
+        )
+
+    return (
+        terminal_at
+        or observed_at
+    )
+
+
+def _terminal_order_message(
+    order,
+) -> str | None:
+    for field in (
+        "reject_reason",
+        "failure_reason",
+        "error",
+        "message",
+    ):
+        value = getattr(
+            order,
+            field,
+            None,
+        )
+
+        if value not in (
+            None,
+            "",
+        ):
+            return str(
+                value
+            )
+
+    return None
+
+
+def _build_terminal_order_outcome(
+    *,
+    symbol: str,
+    tracked,
+    order,
+    status: str,
+    observed_at: datetime | None = None,
+) -> dict:
+    """
+    Join the 4A submission context with the broker's terminal
+    order information.
+
+    This function does not modify positions, orders, or execution.
+    """
+    observed_at = (
+        observed_at
+        or datetime.now(
+            timezone.utc
+        )
+    )
+
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(
+            tzinfo=timezone.utc
+        )
+    else:
+        observed_at = observed_at.astimezone(
+            timezone.utc
+        )
+
+    if not isinstance(
+        tracked,
+        dict,
+    ):
+        tracked = {
+            "order_id": tracked,
+        }
+
+    status = normalize_status(
+        status
+    )
+
+    side = normalize_side(
+        tracked.get("side")
+        or getattr(
+            order,
+            "side",
+            "",
+        )
+    )
+
+    order_id = str(
+        tracked.get("order_id")
+        or getattr(
+            order,
+            "id",
+            "",
+        )
+        or ""
+    )
+
+    submitted_at = (
+        _parse_utc_datetime(
+            getattr(
+                order,
+                "submitted_at",
+                None,
+            )
+        )
+        or _parse_utc_datetime(
+            tracked.get(
+                "broker_submitted_at"
+            )
+        )
+        or _parse_utc_datetime(
+            tracked.get(
+                "broker_submit_completed_at"
+            )
+        )
+        or _parse_utc_datetime(
+            tracked.get(
+                "tracked_at"
+            )
+        )
+    )
+
+    terminal_at = (
+        _terminal_order_timestamp(
+            order,
+            status,
+            observed_at,
+        )
+    )
+
+    filled_at = _parse_utc_datetime(
+        getattr(
+            order,
+            "filled_at",
+            None,
+        )
+    )
+
+    requested_qty = _safe_float(
+        getattr(
+            order,
+            "qty",
+            tracked.get(
+                "qty",
+                0.0,
+            ),
+        ),
+        0.0,
+    )
+
+    filled_qty = _safe_float(
+        getattr(
+            order,
+            "filled_qty",
+            0.0,
+        ),
+        0.0,
+    )
+
+    filled_avg_price = _safe_float(
+        getattr(
+            order,
+            "filled_avg_price",
+            0.0,
+        ),
+        0.0,
+    )
+
+    unfilled_qty = max(
+        0.0,
+        requested_qty
+        - filled_qty,
+    )
+
+    fill_ratio = (
+        round(
+            filled_qty
+            / requested_qty,
+            8,
+        )
+        if requested_qty > 0
+        else None
+    )
+
+    filled_notional = (
+        round(
+            filled_qty
+            * filled_avg_price,
+            6,
+        )
+        if (
+            filled_qty > 0
+            and filled_avg_price > 0
+        )
+        else None
+    )
+
+    plan_price = _safe_float(
+        tracked.get(
+            "submission_plan_price"
+        ),
+        0.0,
+    )
+
+    reference_price = _safe_float(
+        tracked.get(
+            "submission_reference_price"
+        ),
+        0.0,
+    )
+
+    fill_vs_plan_pct = _pct_delta(
+        filled_avg_price,
+        plan_price,
+    )
+
+    fill_vs_reference_pct = _pct_delta(
+        filled_avg_price,
+        reference_price,
+    )
+
+    adverse_vs_plan = (
+        _side_adjusted_slippage_pct(
+            side=side,
+            fill_price=filled_avg_price,
+            reference_price=plan_price,
+        )
+    )
+
+    adverse_vs_reference = (
+        _side_adjusted_slippage_pct(
+            side=side,
+            fill_price=filled_avg_price,
+            reference_price=reference_price,
+        )
+    )
+
+    return {
+        "timestamp": (
+            observed_at.isoformat()
+        ),
+
+        "cycle_id": tracked.get(
+            "cycle_id"
+        ),
+        "plan_id": tracked.get(
+            "plan_id"
+        ),
+        "row_id": tracked.get(
+            "row_id"
+        ),
+
+        "order_id": order_id,
+        "client_order_id": getattr(
+            order,
+            "client_order_id",
+            None,
+        ),
+        "symbol": symbol,
+        "side": side,
+
+        "terminal_status": status,
+        "terminal_observed_at": (
+            observed_at.isoformat()
+        ),
+        "terminal_at": (
+            terminal_at.isoformat()
+        ),
+
+        "broker_submitted_at": (
+            submitted_at.isoformat()
+            if submitted_at is not None
+            else None
+        ),
+        "broker_updated_at": _iso_utc(
+            getattr(
+                order,
+                "updated_at",
+                None,
+            )
+        ),
+        "broker_filled_at": _iso_utc(
+            getattr(
+                order,
+                "filled_at",
+                None,
+            )
+        ),
+        "broker_canceled_at": _iso_utc(
+            getattr(
+                order,
+                "canceled_at",
+                None,
+            )
+        ),
+        "broker_expired_at": _iso_utc(
+            getattr(
+                order,
+                "expired_at",
+                None,
+            )
+        ),
+        "broker_failed_at": _iso_utc(
+            getattr(
+                order,
+                "failed_at",
+                None,
+            )
+        ),
+
+        "requested_qty": (
+            requested_qty
+        ),
+        "filled_qty": filled_qty,
+        "unfilled_qty": (
+            round(
+                unfilled_qty,
+                8,
+            )
+        ),
+        "fill_ratio": fill_ratio,
+
+        "filled_avg_price": (
+            filled_avg_price
+            if filled_avg_price > 0
+            else None
+        ),
+        "filled_notional": (
+            filled_notional
+        ),
+
+        "submission_plan_price": (
+            plan_price
+            if plan_price > 0
+            else None
+        ),
+        "submission_reference_price": (
+            reference_price
+            if reference_price > 0
+            else None
+        ),
+        "submission_reference_source": (
+            tracked.get(
+                "submission_reference_source"
+            )
+        ),
+        "submission_reference_tick_timestamp": (
+            tracked.get(
+                "submission_reference_tick_timestamp"
+            )
+        ),
+        "submission_reference_age_seconds": (
+            tracked.get(
+                "submission_reference_age_seconds"
+            )
+        ),
+        "submission_reference_vs_plan_pct": (
+            tracked.get(
+                "submission_reference_vs_plan_pct"
+            )
+        ),
+
+        "fill_vs_plan_pct": (
+            fill_vs_plan_pct
+        ),
+        "fill_vs_reference_pct": (
+            fill_vs_reference_pct
+        ),
+        "adverse_slippage_vs_plan_pct": (
+            adverse_vs_plan
+        ),
+        "adverse_slippage_vs_reference_pct": (
+            adverse_vs_reference
+        ),
+
+        "submission_to_terminal_seconds": (
+            _elapsed_seconds(
+                submitted_at,
+                terminal_at,
+            )
+        ),
+        "time_to_fill_seconds": (
+            _elapsed_seconds(
+                submitted_at,
+                filled_at,
+            )
+        ),
+        "monitor_detection_delay_seconds": (
+            _elapsed_seconds(
+                terminal_at,
+                observed_at,
+            )
+        ),
+
+        "broker_submit_started_at": (
+            tracked.get(
+                "broker_submit_started_at"
+            )
+        ),
+        "broker_submit_completed_at": (
+            tracked.get(
+                "broker_submit_completed_at"
+            )
+        ),
+        "broker_submit_latency_ms": (
+            tracked.get(
+                "broker_submit_latency_ms"
+            )
+        ),
+        "broker_status_at_submit": (
+            tracked.get(
+                "broker_status_at_submit"
+            )
+        ),
+        "broker_created_at": (
+            tracked.get(
+                "broker_created_at"
+            )
+        ),
+        "broker_limit_price": (
+            tracked.get(
+                "broker_limit_price"
+            )
+        ),
+
+        "tracked_at": tracked.get(
+            "tracked_at"
+        ),
+        "market_is_open": tracked.get(
+            "market_is_open"
+        ),
+        "reason": tracked.get(
+            "reason"
+        ),
+        "planned_notional": tracked.get(
+            "planned_notional"
+        ),
+
+        "cancel_requested": bool(
+            tracked.get(
+                "cancel_requested"
+            )
+        ),
+        "cancel_reason": tracked.get(
+            "cancel_reason"
+        ),
+        "cancel_requested_at": tracked.get(
+            "cancel_requested_at"
+        ),
+
+        "terminal_message": (
+            _terminal_order_message(
+                order
+            )
+        ),
+    }
+
+
+def _order_outcome_cycle_key(
+    cycle_id,
+    plan_id,
+) -> str | None:
+    plan_text = str(
+        plan_id or ""
+    ).strip()
+
+    if plan_text:
+        return f"plan:{plan_text}"
+
+    if cycle_id not in (
+        None,
+        "",
+    ):
+        return f"cycle:{cycle_id}"
+
+    return None
+
+
+def _order_outcome_cycles_state() -> dict:
+    return (
+        app_state.setdefault(
+            "layers",
+            {},
+        )
+        .setdefault(
+            "order_outcomes",
+            {},
+        )
+        .setdefault(
+            "cycles",
+            {},
+        )
+    )
+
+
+def _outcome_summary_number(
+    value,
+) -> float | None:
+    if value in (
+        None,
+        "",
+    ):
+        return None
+
+    try:
+        number = float(
+            value
+        )
+    except Exception:
+        return None
+
+    if number != number:
+        return None
+
+    if number in (
+        float("inf"),
+        float("-inf"),
+    ):
+        return None
+
+    return number
+
+
+def _outcome_summary_values(
+    rows: list[dict],
+    field: str,
+) -> list[float]:
+    values = []
+
+    for row in rows or []:
+        if not isinstance(
+            row,
+            dict,
+        ):
+            continue
+
+        value = (
+            _outcome_summary_number(
+                row.get(field)
+            )
+        )
+
+        if value is not None:
+            values.append(
+                value
+            )
+
+    return values
+
+
+def _outcome_summary_median(
+    rows: list[dict],
+    field: str,
+) -> float | None:
+    values = (
+        _outcome_summary_values(
+            rows,
+            field,
+        )
+    )
+
+    if not values:
+        return None
+
+    return round(
+        median(values),
+        8,
+    )
+
+
+def _outcome_summary_max(
+    rows: list[dict],
+    field: str,
+) -> float | None:
+    values = (
+        _outcome_summary_values(
+            rows,
+            field,
+        )
+    )
+
+    if not values:
+        return None
+
+    return round(
+        max(values),
+        8,
+    )
+
+
+def _outcome_adverse_slippage_dollars(
+    outcome: dict,
+    *,
+    reference_field: str,
+) -> float | None:
+    if not isinstance(
+        outcome,
+        dict,
+    ):
+        return None
+
+    side = normalize_side(
+        outcome.get("side")
+    )
+
+    fill_price = (
+        _outcome_summary_number(
+            outcome.get(
+                "filled_avg_price"
+            )
+        )
+    )
+
+    reference_price = (
+        _outcome_summary_number(
+            outcome.get(
+                reference_field
+            )
+        )
+    )
+
+    filled_qty = (
+        _outcome_summary_number(
+            outcome.get(
+                "filled_qty"
+            )
+        )
+    )
+
+    if (
+        fill_price is None
+        or reference_price is None
+        or filled_qty is None
+        or fill_price <= 0
+        or reference_price <= 0
+        or filled_qty <= 0
+    ):
+        return None
+
+    if side == "buy":
+        dollars = (
+            fill_price
+            - reference_price
+        ) * filled_qty
+
+    elif side == "sell":
+        dollars = (
+            reference_price
+            - fill_price
+        ) * filled_qty
+
+    else:
+        return None
+
+    return round(
+        dollars,
+        6,
+    )
+
+
+def _build_order_outcome_cycle_summary(
+    cycle_state: dict,
+    *,
+    generated_at: datetime | None = None,
+) -> dict:
+    generated_at = (
+        generated_at
+        or datetime.now(
+            timezone.utc
+        )
+    )
+
+    if generated_at.tzinfo is None:
+        generated_at = generated_at.replace(
+            tzinfo=timezone.utc
+        )
+    else:
+        generated_at = generated_at.astimezone(
+            timezone.utc
+        )
+
+    cycle_state = (
+        cycle_state
+        if isinstance(
+            cycle_state,
+            dict,
+        )
+        else {}
+    )
+
+    expected_order_ids = [
+        str(order_id)
+        for order_id in (
+            cycle_state.get(
+                "expected_order_ids"
+            )
+            or []
+        )
+        if str(
+            order_id or ""
+        ).strip()
+    ]
+
+    expected_order_ids = list(
+        dict.fromkeys(
+            expected_order_ids
+        )
+    )
+
+    metadata_by_id = (
+        cycle_state.get(
+            "order_metadata_by_id"
+        )
+        or {}
+    )
+
+    outcomes_by_id = (
+        cycle_state.get(
+            "outcomes_by_order_id"
+        )
+        or {}
+    )
+
+    terminal_outcomes = [
+        outcomes_by_id[order_id]
+        for order_id in expected_order_ids
+        if (
+            order_id
+            in outcomes_by_id
+            and isinstance(
+                outcomes_by_id[
+                    order_id
+                ],
+                dict,
+            )
+        )
+    ]
+
+    expected_count = len(
+        expected_order_ids
+    )
+
+    terminal_count = len(
+        terminal_outcomes
+    )
+
+    cycle_complete = bool(
+        expected_count > 0
+        and terminal_count
+        == expected_count
+    )
+
+    def expected_side(
+        order_id: str,
+    ) -> str:
+        metadata = (
+            metadata_by_id.get(
+                order_id
+            )
+            or {}
+        )
+
+        return normalize_side(
+            metadata.get("side")
+        )
+
+    expected_buy_count = sum(
+        1
+        for order_id
+        in expected_order_ids
+        if expected_side(
+            order_id
+        )
+        == "buy"
+    )
+
+    expected_sell_count = sum(
+        1
+        for order_id
+        in expected_order_ids
+        if expected_side(
+            order_id
+        )
+        == "sell"
+    )
+
+    terminal_status_counts = {}
+
+    for outcome in terminal_outcomes:
+        status = normalize_status(
+            outcome.get(
+                "terminal_status"
+            )
+        ) or "unknown"
+
+        terminal_status_counts[
+            status
+        ] = (
+            terminal_status_counts.get(
+                status,
+                0,
+            )
+            + 1
+        )
+
+    terminal_status_counts = dict(
+        sorted(
+            terminal_status_counts.items()
+        )
+    )
+
+    filled_outcomes = [
+        outcome
+        for outcome in terminal_outcomes
+        if normalize_status(
+            outcome.get(
+                "terminal_status"
+            )
+        )
+        == "filled"
+    ]
+
+    nonfilled_outcomes = [
+        outcome
+        for outcome in terminal_outcomes
+        if normalize_status(
+            outcome.get(
+                "terminal_status"
+            )
+        )
+        != "filled"
+    ]
+
+    filled_buy_count = sum(
+        1
+        for outcome in filled_outcomes
+        if normalize_side(
+            outcome.get("side")
+        )
+        == "buy"
+    )
+
+    filled_sell_count = sum(
+        1
+        for outcome in filled_outcomes
+        if normalize_side(
+            outcome.get("side")
+        )
+        == "sell"
+    )
+
+    full_fill_count = sum(
+        1
+        for outcome in filled_outcomes
+        if (
+            _outcome_summary_number(
+                outcome.get(
+                    "fill_ratio"
+                )
+            )
+            or 0.0
+        )
+        >= 0.999999
+    )
+
+    reference_slippage_rows = [
+        outcome
+        for outcome in filled_outcomes
+        if _outcome_summary_number(
+            outcome.get(
+                "adverse_slippage_vs_reference_pct"
+            )
+        )
+        is not None
+    ]
+
+    plan_slippage_rows = [
+        outcome
+        for outcome in filled_outcomes
+        if _outcome_summary_number(
+            outcome.get(
+                "adverse_slippage_vs_plan_pct"
+            )
+        )
+        is not None
+    ]
+
+    buy_reference_rows = [
+        outcome
+        for outcome in reference_slippage_rows
+        if normalize_side(
+            outcome.get("side")
+        )
+        == "buy"
+    ]
+
+    sell_reference_rows = [
+        outcome
+        for outcome in reference_slippage_rows
+        if normalize_side(
+            outcome.get("side")
+        )
+        == "sell"
+    ]
+
+    reference_dollar_values = [
+        value
+        for value in (
+            _outcome_adverse_slippage_dollars(
+                outcome,
+                reference_field=(
+                    "submission_reference_price"
+                ),
+            )
+            for outcome in filled_outcomes
+        )
+        if value is not None
+    ]
+
+    plan_dollar_values = [
+        value
+        for value in (
+            _outcome_adverse_slippage_dollars(
+                outcome,
+                reference_field=(
+                    "submission_plan_price"
+                ),
+            )
+            for outcome in filled_outcomes
+        )
+        if value is not None
+    ]
+
+    worst_reference_outcome = None
+    worst_reference_pct = None
+
+    for outcome in reference_slippage_rows:
+        value = (
+            _outcome_summary_number(
+                outcome.get(
+                    "adverse_slippage_vs_reference_pct"
+                )
+            )
+        )
+
+        if value is None:
+            continue
+
+        if (
+            worst_reference_pct
+            is None
+            or value
+            > worst_reference_pct
+        ):
+            worst_reference_pct = value
+            worst_reference_outcome = (
+                outcome
+            )
+
+    requested_qty_total = round(
+        sum(
+            _outcome_summary_number(
+                outcome.get(
+                    "requested_qty"
+                )
+            )
+            or 0.0
+            for outcome in terminal_outcomes
+        ),
+        8,
+    )
+
+    filled_qty_total = round(
+        sum(
+            _outcome_summary_number(
+                outcome.get(
+                    "filled_qty"
+                )
+            )
+            or 0.0
+            for outcome in terminal_outcomes
+        ),
+        8,
+    )
+
+    filled_notional_total = round(
+        sum(
+            _outcome_summary_number(
+                outcome.get(
+                    "filled_notional"
+                )
+            )
+            or 0.0
+            for outcome in filled_outcomes
+        ),
+        6,
+    )
+
+    terminal_symbols = sorted({
+        str(
+            outcome.get("symbol")
+            or ""
+        ).upper().strip()
+        for outcome in terminal_outcomes
+        if str(
+            outcome.get("symbol")
+            or ""
+        ).strip()
+    })
+
+    filled_symbols = sorted({
+        str(
+            outcome.get("symbol")
+            or ""
+        ).upper().strip()
+        for outcome in filled_outcomes
+        if str(
+            outcome.get("symbol")
+            or ""
+        ).strip()
+    })
+
+    nonfilled_symbols = sorted({
+        str(
+            outcome.get("symbol")
+            or ""
+        ).upper().strip()
+        for outcome in nonfilled_outcomes
+        if str(
+            outcome.get("symbol")
+            or ""
+        ).strip()
+    })
+
+    reported_submitted_count = (
+        cycle_state.get(
+            "execution_reported_submitted_count"
+        )
+    )
+
+    try:
+        reported_submitted_count = int(
+            reported_submitted_count
+        )
+    except Exception:
+        reported_submitted_count = None
+
+    return {
+        "timestamp": (
+            generated_at.isoformat()
+        ),
+
+        "cycle_id": cycle_state.get(
+            "cycle_id"
+        ),
+        "plan_id": cycle_state.get(
+            "plan_id"
+        ),
+
+        "execution_started_at": (
+            cycle_state.get(
+                "execution_started_at"
+            )
+        ),
+        "execution_finished_at": (
+            cycle_state.get(
+                "execution_finished_at"
+            )
+        ),
+
+        "execution_reported_submitted_count": (
+            reported_submitted_count
+        ),
+        "expected_submitted_count": (
+            expected_count
+        ),
+        "terminal_order_count": (
+            terminal_count
+        ),
+        "cycle_complete": cycle_complete,
+
+        "submitted_count_integrity_ok": (
+            reported_submitted_count
+            == expected_count
+            if reported_submitted_count
+            is not None
+            else None
+        ),
+
+        "expected_buy_count": (
+            expected_buy_count
+        ),
+        "expected_sell_count": (
+            expected_sell_count
+        ),
+
+        "filled_order_count": len(
+            filled_outcomes
+        ),
+        "nonfilled_terminal_count": len(
+            nonfilled_outcomes
+        ),
+
+        "filled_buy_count": (
+            filled_buy_count
+        ),
+        "filled_sell_count": (
+            filled_sell_count
+        ),
+        "full_fill_count": (
+            full_fill_count
+        ),
+
+        "fill_rate": (
+            round(
+                len(
+                    filled_outcomes
+                )
+                / expected_count,
+                8,
+            )
+            if expected_count
+            else None
+        ),
+
+        "full_fill_rate": (
+            round(
+                full_fill_count
+                / expected_count,
+                8,
+            )
+            if expected_count
+            else None
+        ),
+
+        "terminal_status_counts": (
+            terminal_status_counts
+        ),
+
+        "requested_qty_total": (
+            requested_qty_total
+        ),
+        "filled_qty_total": (
+            filled_qty_total
+        ),
+        "filled_notional_total": (
+            filled_notional_total
+        ),
+
+        "reference_slippage_sample_count": (
+            len(
+                reference_slippage_rows
+            )
+        ),
+        "reference_slippage_coverage_rate": (
+            round(
+                len(
+                    reference_slippage_rows
+                )
+                / len(
+                    filled_outcomes
+                ),
+                8,
+            )
+            if filled_outcomes
+            else None
+        ),
+
+        "plan_slippage_sample_count": (
+            len(
+                plan_slippage_rows
+            )
+        ),
+        "plan_slippage_coverage_rate": (
+            round(
+                len(
+                    plan_slippage_rows
+                )
+                / len(
+                    filled_outcomes
+                ),
+                8,
+            )
+            if filled_outcomes
+            else None
+        ),
+
+        "median_time_to_fill_seconds": (
+            _outcome_summary_median(
+                filled_outcomes,
+                "time_to_fill_seconds",
+            )
+        ),
+        "max_time_to_fill_seconds": (
+            _outcome_summary_max(
+                filled_outcomes,
+                "time_to_fill_seconds",
+            )
+        ),
+
+        "median_monitor_detection_delay_seconds": (
+            _outcome_summary_median(
+                terminal_outcomes,
+                "monitor_detection_delay_seconds",
+            )
+        ),
+        "max_monitor_detection_delay_seconds": (
+            _outcome_summary_max(
+                terminal_outcomes,
+                "monitor_detection_delay_seconds",
+            )
+        ),
+
+        "median_adverse_slippage_vs_reference_pct": (
+            _outcome_summary_median(
+                reference_slippage_rows,
+                "adverse_slippage_vs_reference_pct",
+            )
+        ),
+        "max_adverse_slippage_vs_reference_pct": (
+            _outcome_summary_max(
+                reference_slippage_rows,
+                "adverse_slippage_vs_reference_pct",
+            )
+        ),
+
+        "median_adverse_slippage_vs_plan_pct": (
+            _outcome_summary_median(
+                plan_slippage_rows,
+                "adverse_slippage_vs_plan_pct",
+            )
+        ),
+        "max_adverse_slippage_vs_plan_pct": (
+            _outcome_summary_max(
+                plan_slippage_rows,
+                "adverse_slippage_vs_plan_pct",
+            )
+        ),
+
+        "median_buy_adverse_slippage_vs_reference_pct": (
+            _outcome_summary_median(
+                buy_reference_rows,
+                "adverse_slippage_vs_reference_pct",
+            )
+        ),
+        "median_sell_adverse_slippage_vs_reference_pct": (
+            _outcome_summary_median(
+                sell_reference_rows,
+                "adverse_slippage_vs_reference_pct",
+            )
+        ),
+
+        "total_adverse_slippage_vs_reference_dollars": (
+            round(
+                sum(
+                    reference_dollar_values
+                ),
+                6,
+            )
+            if reference_dollar_values
+            else None
+        ),
+        "total_adverse_slippage_vs_plan_dollars": (
+            round(
+                sum(
+                    plan_dollar_values
+                ),
+                6,
+            )
+            if plan_dollar_values
+            else None
+        ),
+
+        "worst_reference_order_id": (
+            worst_reference_outcome.get(
+                "order_id"
+            )
+            if worst_reference_outcome
+            else None
+        ),
+        "worst_reference_symbol": (
+            worst_reference_outcome.get(
+                "symbol"
+            )
+            if worst_reference_outcome
+            else None
+        ),
+        "worst_reference_side": (
+            worst_reference_outcome.get(
+                "side"
+            )
+            if worst_reference_outcome
+            else None
+        ),
+        "worst_reference_adverse_slippage_pct": (
+            round(
+                worst_reference_pct,
+                8,
+            )
+            if worst_reference_pct
+            is not None
+            else None
+        ),
+        "worst_reference_adverse_slippage_dollars": (
+            _outcome_adverse_slippage_dollars(
+                worst_reference_outcome,
+                reference_field=(
+                    "submission_reference_price"
+                ),
+            )
+            if worst_reference_outcome
+            else None
+        ),
+
+        "terminal_symbols": (
+            terminal_symbols
+        ),
+        "filled_symbols": filled_symbols,
+        "nonfilled_symbols": (
+            nonfilled_symbols
+        ),
+    }
+
+
+def _maybe_append_order_outcome_cycle_summary(
+    cycle_key: str | None,
+) -> dict | None:
+    if not cycle_key:
+        return None
+
+    with _ORDER_OUTCOME_CYCLE_LOCK:
+        cycles = (
+            _order_outcome_cycles_state()
+        )
+
+        cycle_state = cycles.get(
+            cycle_key
+        )
+
+        if not isinstance(
+            cycle_state,
+            dict,
+        ):
+            return None
+
+        if cycle_state.get(
+            "summary_emitted"
+        ):
+            existing = cycle_state.get(
+                "summary"
+            )
+
+            return (
+                dict(existing)
+                if isinstance(
+                    existing,
+                    dict,
+                )
+                else None
+            )
+
+        if cycle_state.get(
+            "summary_pending"
+        ):
+            return None
+
+        summary = (
+            _build_order_outcome_cycle_summary(
+                cycle_state
+            )
+        )
+
+        if not summary.get(
+            "cycle_complete"
+        ):
+            return None
+
+        cycle_state[
+            "summary_pending"
+        ] = True
+
+    try:
+        append_layer_order_outcome_cycle_row(
+            summary
+        )
+
+    except Exception:
+        with _ORDER_OUTCOME_CYCLE_LOCK:
+            cycle_state = (
+                _order_outcome_cycles_state()
+                .get(
+                    cycle_key
+                )
+            )
+
+            if isinstance(
+                cycle_state,
+                dict,
+            ):
+                cycle_state[
+                    "summary_pending"
+                ] = False
+
+        logging.warning(
+            "[OrderOutcomeCycle] Failed "
+            "writing completed cycle summary | "
+            "cycle_key=%s",
+            cycle_key,
+            exc_info=True,
+        )
+
+        return None
+
+    with _ORDER_OUTCOME_CYCLE_LOCK:
+        cycle_state = (
+            _order_outcome_cycles_state()
+            .get(
+                cycle_key
+            )
+        )
+
+        if isinstance(
+            cycle_state,
+            dict,
+        ):
+            cycle_state.update({
+                "summary_pending": False,
+                "summary_emitted": True,
+                "summary": dict(
+                    summary
+                ),
+                "summary_emitted_at": (
+                    datetime.now(
+                        timezone.utc
+                    ).isoformat()
+                ),
+            })
+
+    logging.info(
+        "[OrderOutcomeCycle] Complete | "
+        "cycle_id=%s plan_id=%s "
+        "orders=%s filled=%s "
+        "fill_rate=%s median_fill_seconds=%s "
+        "median_adverse_reference=%s "
+        "worst_symbol=%s worst_adverse=%s",
+        summary.get("cycle_id"),
+        summary.get("plan_id"),
+        summary.get(
+            "expected_submitted_count"
+        ),
+        summary.get(
+            "filled_order_count"
+        ),
+        summary.get("fill_rate"),
+        summary.get(
+            "median_time_to_fill_seconds"
+        ),
+        summary.get(
+            "median_adverse_slippage_vs_reference_pct"
+        ),
+        summary.get(
+            "worst_reference_symbol"
+        ),
+        summary.get(
+            "worst_reference_adverse_slippage_pct"
+        ),
+    )
+
+    return summary
+
+
+def _store_terminal_order_outcome_for_cycle(
+    outcome: dict,
+) -> dict | None:
+    if not isinstance(
+        outcome,
+        dict,
+    ):
+        return None
+
+    cycle_key = (
+        _order_outcome_cycle_key(
+            outcome.get("cycle_id"),
+            outcome.get("plan_id"),
+        )
+    )
+
+    order_id = str(
+        outcome.get("order_id")
+        or ""
+    ).strip()
+
+    if (
+        not cycle_key
+        or not order_id
+    ):
+        return None
+
+    with _ORDER_OUTCOME_CYCLE_LOCK:
+        cycles = (
+            _order_outcome_cycles_state()
+        )
+
+        cycle_state = cycles.setdefault(
+            cycle_key,
+            {
+                "cycle_id": outcome.get(
+                    "cycle_id"
+                ),
+                "plan_id": outcome.get(
+                    "plan_id"
+                ),
+                "expected_order_ids": [],
+                "order_metadata_by_id": {},
+                "outcomes_by_order_id": {},
+                "summary_pending": False,
+                "summary_emitted": False,
+            },
+        )
+
+        cycle_state[
+            "outcomes_by_order_id"
+        ][order_id] = dict(
+            outcome
+        )
+
+    return (
+        _maybe_append_order_outcome_cycle_summary(
+            cycle_key
+        )
+    )
+
+
+def register_layer5_cycle_submissions(
+    result: dict | None,
+) -> dict | None:
+    """
+    Register the authoritative order IDs after Layer 5 finishes
+    its submission loop.
+
+    Terminal outcomes may arrive before or after this call.
+    """
+    result = (
+        result
+        if isinstance(
+            result,
+            dict,
+        )
+        else {}
+    )
+
+    submitted_rows = [
+        row
+        for row in (
+            result.get("orders")
+            or []
+        )
+        if (
+            isinstance(
+                row,
+                dict,
+            )
+            and normalize_status(
+                row.get("status")
+            )
+            == "submitted"
+            and str(
+                row.get("order_id")
+                or ""
+            ).strip()
+        )
+    ]
+
+    if not submitted_rows:
+        return None
+
+    cycle_id = result.get(
+        "cycle_id"
+    )
+
+    plan_id = result.get(
+        "plan_id"
+    )
+
+    cycle_key = (
+        _order_outcome_cycle_key(
+            cycle_id,
+            plan_id,
+        )
+    )
+
+    if not cycle_key:
+        return None
+
+    order_metadata = {}
+
+    for row in submitted_rows:
+        order_id = str(
+            row.get("order_id")
+        ).strip()
+
+        order_metadata[
+            order_id
+        ] = {
+            "order_id": order_id,
+            "symbol": row.get(
+                "symbol"
+            ),
+            "side": normalize_side(
+                row.get("side")
+            ),
+            "row_id": row.get(
+                "row_id"
+            ),
+        }
+
+    expected_ids = list(
+        order_metadata.keys()
+    )
+
+    with _ORDER_OUTCOME_CYCLE_LOCK:
+        cycles = (
+            _order_outcome_cycles_state()
+        )
+
+        cycle_state = cycles.setdefault(
+            cycle_key,
+            {
+                "cycle_id": cycle_id,
+                "plan_id": plan_id,
+                "expected_order_ids": [],
+                "order_metadata_by_id": {},
+                "outcomes_by_order_id": {},
+                "summary_pending": False,
+                "summary_emitted": False,
+            },
+        )
+
+        cycle_state.update({
+            "cycle_id": cycle_id,
+            "plan_id": plan_id,
+            "execution_started_at": (
+                result.get(
+                    "started_at"
+                )
+            ),
+            "execution_finished_at": (
+                result.get(
+                    "finished_at"
+                )
+            ),
+            "execution_reported_submitted_count": (
+                result.get(
+                    "submitted"
+                )
+            ),
+            "expected_order_ids": (
+                expected_ids
+            ),
+        })
+
+        cycle_state.setdefault(
+            "order_metadata_by_id",
+            {},
+        ).update(
+            order_metadata
+        )
+
+        cycle_state.setdefault(
+            "outcomes_by_order_id",
+            {},
+        )
+
+    return (
+        _maybe_append_order_outcome_cycle_summary(
+            cycle_key
+        )
+    )
+
+
+def _record_terminal_order_outcome(
+    *,
+    symbol: str,
+    tracked,
+    order,
+    status: str,
+) -> dict | None:
+    """
+    Persist one terminal order outcome.
+
+    Diagnostic failures must never prevent normal order finalization.
+    """
+    try:
+        outcome = (
+            _build_terminal_order_outcome(
+                symbol=symbol,
+                tracked=tracked,
+                order=order,
+                status=status,
+            )
+        )
+
+        append_layer_order_outcome_row(
+            outcome
+        )
+
+        outcome_state = (
+            app_state.setdefault(
+                "layers",
+                {},
+            ).setdefault(
+                "order_outcomes",
+                {},
+            )
+        )
+
+        outcome_state[
+            "last"
+        ] = dict(
+            outcome
+        )
+
+        recent = outcome_state.setdefault(
+            "recent",
+            [],
+        )
+
+        recent.append(
+            dict(
+                outcome
+            )
+        )
+
+        del recent[:-200]
+
+        _store_terminal_order_outcome_for_cycle(
+            outcome
+        )
+
+        logging.info(
+            "[OrderOutcome] Terminal order | "
+            "symbol=%s side=%s status=%s "
+            "order_id=%s cycle_id=%s "
+            "filled_qty=%s fill_price=%s "
+            "time_to_fill=%s "
+            "adverse_slippage_reference=%s",
+            symbol,
+            outcome.get("side"),
+            outcome.get(
+                "terminal_status"
+            ),
+            outcome.get("order_id"),
+            outcome.get("cycle_id"),
+            outcome.get("filled_qty"),
+            outcome.get(
+                "filled_avg_price"
+            ),
+            outcome.get(
+                "time_to_fill_seconds"
+            ),
+            outcome.get(
+                "adverse_slippage_vs_reference_pct"
+            ),
+        )
+
+        return outcome
+
+    except Exception:
+        logging.warning(
+            "[OrderOutcome] Failed recording "
+            "terminal outcome | symbol=%s "
+            "status=%s",
+            symbol,
+            status,
+            exc_info=True,
+        )
+
+        return None
+
 
 def _get_open_trade_status(symbol: str) -> str | None:
     trade_info = app_state.get("open_trades", {}).get(symbol)
@@ -172,28 +2149,106 @@ def _finalize_filled_sell(symbol: str, order, order_id: str) -> None:
 
     logging.info(f"[✓ Filled SELL] {symbol}: {qty} @ ${price:.2f}")
 
-def track_limit_order(symbol, order_id, side=None, qty=None, limit_price=None, market_is_open=None):
+def track_limit_order(
+    symbol,
+    order_id,
+    side=None,
+    qty=None,
+    limit_price=None,
+    market_is_open=None,
+    submission_context: dict | None = None,
+):
     """
-    Track a submitted order with enough metadata to support duplicate blocking
-    and extended-hours cancel/replace decisions.
+    Track a submitted order with enough metadata to support:
+    - duplicate blocking
+    - extended-hours cancellation/replacement
+    - later submission-to-fill diagnostics
+
+    submission_context is diagnostic-only and must not change
+    order-monitor behavior.
     """
-    app_state.setdefault("open_orders", {})[symbol] = {
-        "order_id": str(order_id),
-        "side": normalize_side(side) if side is not None else None,
-        "qty": _safe_float(qty, 0),
-        "limit_price": _safe_float(limit_price, 0),
-        "market_is_open": bool(market_is_open) if market_is_open is not None else None,
-        "tracked_at": datetime.now(timezone.utc).isoformat(),
+    tracked = {
+        "order_id": str(
+            order_id
+        ),
+        "side": (
+            normalize_side(side)
+            if side is not None
+            else None
+        ),
+        "qty": _safe_float(
+            qty,
+            0,
+        ),
+        "limit_price": _safe_float(
+            limit_price,
+            0,
+        ),
+        "market_is_open": (
+            bool(market_is_open)
+            if market_is_open
+            is not None
+            else None
+        ),
+        "tracked_at": datetime.now(
+            timezone.utc
+        ).isoformat(),
     }
 
+    if isinstance(
+        submission_context,
+        dict,
+    ):
+        tracked.update(
+            dict(
+                submission_context
+            )
+        )
+
+    app_state.setdefault(
+        "open_orders",
+        {},
+    )[symbol] = tracked
+
     logging.info(
-        f"[TRACK] 🛰️ Tracking order for {symbol}: "
-        f"id={order_id}, side={side}, qty={qty}, limit_price={limit_price}, market_is_open={market_is_open}"
+        "[TRACK] Tracking order | "
+        "symbol=%s id=%s side=%s qty=%s "
+        "limit_price=%s market_is_open=%s "
+        "cycle_id=%s plan_id=%s row_id=%s "
+        "reference_source=%s",
+        symbol,
+        order_id,
+        side,
+        qty,
+        limit_price,
+        market_is_open,
+        tracked.get(
+            "cycle_id"
+        ),
+        tracked.get(
+            "plan_id"
+        ),
+        tracked.get(
+            "row_id"
+        ),
+        tracked.get(
+            "submission_reference_source"
+        ),
     )
 
-    if not app_state.get("monitoring_orders", False):
-        app_state["monitoring_orders"] = True
-        safe_thread(_order_monitor_thread_entry, name="OrderMonitor", daemon=True)
+    if not app_state.get(
+        "monitoring_orders",
+        False,
+    ):
+        app_state[
+            "monitoring_orders"
+        ] = True
+
+        safe_thread(
+            _order_monitor_thread_entry,
+            name="OrderMonitor",
+            daemon=True,
+        )
 
 
 def get_tracked_order(symbol: str) -> dict | None:
@@ -559,6 +2614,13 @@ async def monitor_open_orders_loop() -> None:
                     logging.debug(f"[OrderMonitor] {symbol} → {status}")
 
                     if status == "filled":
+                        _record_terminal_order_outcome(
+                            symbol=symbol,
+                            tracked=tracked,
+                            order=order,
+                            status=status,
+                        )
+
                         if tracked_side == "buy":
                             _finalize_filled_buy(symbol, order, order_id)
 
@@ -581,8 +2643,23 @@ async def monitor_open_orders_loop() -> None:
 
                         del app_state["open_orders"][symbol]
 
-                    elif status in ("canceled", "expired", "rejected", "done_for_day"):
-                        _cleanup_local_order_state_after_cancel(symbol, tracked_side)
+                    elif status in (
+                        "canceled",
+                        "expired",
+                        "rejected",
+                        "done_for_day",
+                    ):
+                        _record_terminal_order_outcome(
+                            symbol=symbol,
+                            tracked=tracked,
+                            order=order,
+                            status=status,
+                        )
+
+                        _cleanup_local_order_state_after_cancel(
+                            symbol,
+                            tracked_side,
+                        )
                         logging.warning(f"[✖️ OrderClosed] {symbol} → {status.upper()} — removed from tracking")
 
                     else:

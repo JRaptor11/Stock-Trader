@@ -20,6 +20,12 @@ LAYER_CSV_FILES = {
     "cycles": "layer_cycles.csv",
     "plans": "layer3_plans.csv",
     "orders": "layer4_orders.csv",
+    "order-outcomes": (
+        "layer_order_outcomes.csv"
+    ),
+    "order-outcome-cycles": (
+        "layer_order_outcome_cycles.csv"
+    ),
     "shadow": "layer4_shadow.csv",
     "portfolio-snapshots": "layer_portfolio_snapshots.csv",
     "live-bar-health": "layer_live_bar_health.csv",
@@ -93,6 +99,29 @@ LAYER_CYCLE_FIELDS = [
     "rest_bar_lagging_symbols",
     "rest_bar_missing_symbols",
 
+    "live_bar_health_symbol_count",
+    "live_bar_exact_match_count",
+    "live_bar_comparison_eligible_count",
+    "live_bar_full_capture_candidate_count",
+
+    "live_bar_exact_match_rate",
+    "live_bar_comparison_eligible_rate",
+    "live_bar_full_capture_rate",
+
+    "live_bar_match_status_counts",
+    "live_bar_capture_quality_counts",
+    "live_bar_unmatched_symbols",
+    "live_bar_non_full_capture_symbols",
+
+    "live_bar_median_abs_open_pct_delta",
+    "live_bar_median_abs_high_pct_delta",
+    "live_bar_median_abs_low_pct_delta",
+    "live_bar_median_abs_close_pct_delta",
+    "live_bar_max_abs_close_pct_delta",
+
+    "live_bar_median_volume_capture_ratio",
+    "live_bar_median_trade_count_capture_ratio",
+
     "ranked_count",
     "top_symbols",
     "target_summary",
@@ -132,6 +161,12 @@ LAYER_CYCLE_FIELDS = [
     "restart_recovery_active",
     "restart_recovery_execution_blocked",
     "restart_recovery_reason",
+    "restart_recovery_warmup_present",
+    "restart_recovery_warmup_reason",
+    "restart_recovery_warmup_trusted",
+    "restart_recovery_warmup_timestamp",
+    "restart_recovery_warmup_age_minutes",
+    "restart_recovery_warmup_snapshot_fallback",
     "restart_recovery_observed_bars",
     "restart_recovery_required_bars",
     "restart_recovery_source_timestamps",
@@ -303,6 +338,23 @@ LAYER4_ORDER_FIELDS = [
     "qty",
     "notional",
     "price",
+
+    "submission_context_captured_at",
+    "submission_plan_price",
+    "submission_reference_price",
+    "submission_reference_source",
+    "submission_reference_tick_timestamp",
+    "submission_reference_age_seconds",
+    "submission_reference_vs_plan_pct",
+
+    "broker_submit_started_at",
+    "broker_submit_completed_at",
+    "broker_submit_latency_ms",
+    "broker_status_at_submit",
+    "broker_created_at",
+    "broker_submitted_at",
+    "broker_limit_price",
+
     "order_id",
     "reason",
     "error",
@@ -327,6 +379,140 @@ LAYER4_ORDER_FIELDS = [
     "blocked_reason",
     "duration_seconds",
     "count_integrity_ok",
+]
+
+
+LAYER_ORDER_OUTCOME_FIELDS = [
+    "timestamp",
+
+    "cycle_id",
+    "plan_id",
+    "row_id",
+
+    "order_id",
+    "client_order_id",
+    "symbol",
+    "side",
+
+    "terminal_status",
+    "terminal_observed_at",
+    "terminal_at",
+
+    "broker_submitted_at",
+    "broker_updated_at",
+    "broker_filled_at",
+    "broker_canceled_at",
+    "broker_expired_at",
+    "broker_failed_at",
+
+    "requested_qty",
+    "filled_qty",
+    "unfilled_qty",
+    "fill_ratio",
+    "filled_avg_price",
+    "filled_notional",
+
+    "submission_plan_price",
+    "submission_reference_price",
+    "submission_reference_source",
+    "submission_reference_tick_timestamp",
+    "submission_reference_age_seconds",
+    "submission_reference_vs_plan_pct",
+
+    "fill_vs_plan_pct",
+    "fill_vs_reference_pct",
+    "adverse_slippage_vs_plan_pct",
+    "adverse_slippage_vs_reference_pct",
+
+    "submission_to_terminal_seconds",
+    "time_to_fill_seconds",
+    "monitor_detection_delay_seconds",
+
+    "broker_submit_started_at",
+    "broker_submit_completed_at",
+    "broker_submit_latency_ms",
+    "broker_status_at_submit",
+    "broker_created_at",
+    "broker_limit_price",
+
+    "tracked_at",
+    "market_is_open",
+    "reason",
+    "planned_notional",
+
+    "cancel_requested",
+    "cancel_reason",
+    "cancel_requested_at",
+
+    "terminal_message",
+]
+
+
+LAYER_ORDER_OUTCOME_CYCLE_FIELDS = [
+    "timestamp",
+
+    "cycle_id",
+    "plan_id",
+
+    "execution_started_at",
+    "execution_finished_at",
+
+    "execution_reported_submitted_count",
+    "expected_submitted_count",
+    "terminal_order_count",
+    "cycle_complete",
+    "submitted_count_integrity_ok",
+
+    "expected_buy_count",
+    "expected_sell_count",
+
+    "filled_order_count",
+    "nonfilled_terminal_count",
+    "filled_buy_count",
+    "filled_sell_count",
+    "full_fill_count",
+
+    "fill_rate",
+    "full_fill_rate",
+
+    "terminal_status_counts",
+
+    "requested_qty_total",
+    "filled_qty_total",
+    "filled_notional_total",
+
+    "reference_slippage_sample_count",
+    "reference_slippage_coverage_rate",
+    "plan_slippage_sample_count",
+    "plan_slippage_coverage_rate",
+
+    "median_time_to_fill_seconds",
+    "max_time_to_fill_seconds",
+
+    "median_monitor_detection_delay_seconds",
+    "max_monitor_detection_delay_seconds",
+
+    "median_adverse_slippage_vs_reference_pct",
+    "max_adverse_slippage_vs_reference_pct",
+
+    "median_adverse_slippage_vs_plan_pct",
+    "max_adverse_slippage_vs_plan_pct",
+
+    "median_buy_adverse_slippage_vs_reference_pct",
+    "median_sell_adverse_slippage_vs_reference_pct",
+
+    "total_adverse_slippage_vs_reference_dollars",
+    "total_adverse_slippage_vs_plan_dollars",
+
+    "worst_reference_order_id",
+    "worst_reference_symbol",
+    "worst_reference_side",
+    "worst_reference_adverse_slippage_pct",
+    "worst_reference_adverse_slippage_dollars",
+
+    "terminal_symbols",
+    "filled_symbols",
+    "nonfilled_symbols",
 ]
 
 
@@ -408,6 +594,70 @@ LAYER_PORTFOLIO_FIELDS = [
     "reason",
 ]
 
+
+LAYER_REST_LIVE_BAR_COMPARISON_FIELDS = [
+    "bar_match_status",
+    "bar_match_exact",
+    "bar_match_comparison_eligible",
+
+    "bar_match_rest_timestamp",
+    "bar_match_rest_end_timestamp",
+
+    "bar_match_live_timestamp",
+    "bar_match_live_end_timestamp",
+
+    "bar_match_nearest_live_timestamp",
+    "bar_match_nearest_live_delta_seconds",
+
+    "bar_match_live_sealed",
+    "bar_match_live_sealed_at",
+    "bar_match_live_capture_quality",
+    "bar_match_live_full_capture_candidate",
+    "bar_match_live_late_created_after_seal",
+
+    "bar_match_live_event_timestamp_fallback_count",
+    "bar_match_live_trade_id_missing_count",
+    "bar_match_live_duplicate_trade_message_count",
+    "bar_match_live_late_after_seal_trade_count",
+    "bar_match_live_late_after_seal_volume",
+
+    "rest_open",
+    "rest_high",
+    "rest_low",
+    "rest_close",
+    "rest_volume",
+    "rest_trade_count",
+    "rest_vwap",
+
+    "matched_live_open",
+    "matched_live_high",
+    "matched_live_low",
+    "matched_live_close",
+    "matched_live_volume",
+    "matched_live_trade_count",
+    "matched_live_vwap",
+
+    "open_delta_live_minus_rest",
+    "high_delta_live_minus_rest",
+    "low_delta_live_minus_rest",
+    "close_delta_live_minus_rest",
+    "volume_delta_live_minus_rest",
+    "trade_count_delta_live_minus_rest",
+    "vwap_delta_live_minus_rest",
+
+    "open_pct_delta_live_minus_rest",
+    "high_pct_delta_live_minus_rest",
+    "low_pct_delta_live_minus_rest",
+    "close_pct_delta_live_minus_rest",
+    "volume_pct_delta_live_minus_rest",
+    "trade_count_pct_delta_live_minus_rest",
+    "vwap_pct_delta_live_minus_rest",
+
+    "volume_capture_ratio_live_to_rest",
+    "trade_count_capture_ratio_live_to_rest",
+]
+
+
 LAYER_LIVE_BAR_HEALTH_FIELDS = [
     "timestamp",
     "cycle_id",
@@ -425,7 +675,12 @@ LAYER_LIVE_BAR_HEALTH_FIELDS = [
     "rest_latest_close",
     "rest_latest_timestamp",
     "rest_bar_age_minutes",
+
+    # Legacy newest-tick versus delayed REST-close metric.
     "live_vs_rest_close_pct",
+
+    # Exact five-minute REST/LIVE bucket diagnostics.
+    *LAYER_REST_LIVE_BAR_COMPARISON_FIELDS,
 ]
 
 
@@ -682,8 +937,13 @@ LAYER_OPENING_SHADOW_CYCLE_FIELDS = [
     "live_ranked_count",
     "live_symbols_ready_count",
     "symbol_count",
+    "warmup_present",
     "warmup_available",
+    "warmup_reason",
+    "warmup_trusted_for_restart_recovery",
+    "warmup_timestamp",
     "warmup_age_minutes",
+    "warmup_snapshot_fallback",
     "warmup_target_symbols",
     "live_top_symbols",
     "live_cash_pct",
@@ -1283,8 +1543,85 @@ def append_layer4_order_rows(result: dict | None) -> None:
             "status": order.get("status"),
             "qty": order.get("qty"),
             "notional": order.get("notional"),
-            "price": order.get("price"),
-            "order_id": order.get("order_id"),
+            "price": order.get(
+                "price"
+            ),
+
+            "submission_context_captured_at": (
+                order.get(
+                    "submission_context_captured_at"
+                )
+            ),
+            "submission_plan_price": (
+                order.get(
+                    "submission_plan_price"
+                )
+            ),
+            "submission_reference_price": (
+                order.get(
+                    "submission_reference_price"
+                )
+            ),
+            "submission_reference_source": (
+                order.get(
+                    "submission_reference_source"
+                )
+            ),
+            "submission_reference_tick_timestamp": (
+                order.get(
+                    "submission_reference_tick_timestamp"
+                )
+            ),
+            "submission_reference_age_seconds": (
+                order.get(
+                    "submission_reference_age_seconds"
+                )
+            ),
+            "submission_reference_vs_plan_pct": (
+                order.get(
+                    "submission_reference_vs_plan_pct"
+                )
+            ),
+
+            "broker_submit_started_at": (
+                order.get(
+                    "broker_submit_started_at"
+                )
+            ),
+            "broker_submit_completed_at": (
+                order.get(
+                    "broker_submit_completed_at"
+                )
+            ),
+            "broker_submit_latency_ms": (
+                order.get(
+                    "broker_submit_latency_ms"
+                )
+            ),
+            "broker_status_at_submit": (
+                order.get(
+                    "broker_status_at_submit"
+                )
+            ),
+            "broker_created_at": (
+                order.get(
+                    "broker_created_at"
+                )
+            ),
+            "broker_submitted_at": (
+                order.get(
+                    "broker_submitted_at"
+                )
+            ),
+            "broker_limit_price": (
+                order.get(
+                    "broker_limit_price"
+                )
+            ),
+
+            "order_id": order.get(
+                "order_id"
+            ),
             "reason": order.get("reason"),
             "error": order.get("error"),
             "cash": order.get("cash"),
@@ -1323,6 +1660,64 @@ def append_layer4_order_rows(result: dict | None) -> None:
         )
     except Exception:
         logging.warning("[LayerCSV] Failed to append Layer 4 order rows.", exc_info=True)
+
+
+def append_layer_order_outcome_cycle_row(
+    row: dict | None,
+) -> None:
+    if (
+        not isinstance(
+            row,
+            dict,
+        )
+        or not row
+    ):
+        return
+
+    try:
+        _append_csv_rows(
+            LAYER_CSV_FILES[
+                "order-outcome-cycles"
+            ],
+            LAYER_ORDER_OUTCOME_CYCLE_FIELDS,
+            [row],
+        )
+
+    except Exception:
+        logging.warning(
+            "[LayerCSV] Failed to append "
+            "order-outcome cycle summary.",
+            exc_info=True,
+        )
+
+
+def append_layer_order_outcome_row(
+    row: dict | None,
+) -> None:
+    if (
+        not isinstance(
+            row,
+            dict,
+        )
+        or not row
+    ):
+        return
+
+    try:
+        _append_csv_rows(
+            LAYER_CSV_FILES[
+                "order-outcomes"
+            ],
+            LAYER_ORDER_OUTCOME_FIELDS,
+            [row],
+        )
+
+    except Exception:
+        logging.warning(
+            "[LayerCSV] Failed to append "
+            "terminal order outcome row.",
+            exc_info=True,
+        )
 
 
 def append_layer4_shadow_rows(result: dict | None) -> None:
@@ -1596,6 +1991,7 @@ def append_layer_cycle_row(
     fresh_count: int | None = None,
     required_fresh_symbols: int | None = None,
     rest_bar_gate: dict | None = None,
+    live_bar_summary: dict | None = None,
     ranked_count: int | None = None,
     top_symbols: list[str] | None = None,
     target_summary: dict | None = None,
@@ -1606,7 +2002,17 @@ def append_layer_cycle_row(
     layer3_summary = layer3_summary or {}
     layer4_result = layer4_result or {}
     rest_bar_gate = rest_bar_gate or {}
-    layer4_shadow_result = layer4_result.get("shadow_result") or {}
+    live_bar_summary = (
+        live_bar_summary
+        or {}
+    )
+
+    layer4_shadow_result = (
+        layer4_result.get(
+            "shadow_result"
+        )
+        or {}
+    )
 
     rolling_limits = (
         layer3_summary.get(
@@ -1865,11 +2271,92 @@ def append_layer_cycle_row(
         "open_session_reset_seen_symbols": layer3_summary.get("open_session_reset_seen_symbols"),
         "open_session_reset_absent_symbols": layer3_summary.get("open_session_reset_absent_symbols"),
 
-        "opening_transition_active": layer3_summary.get("opening_transition_active"),
-        "opening_transition_cycles": layer3_summary.get("opening_transition_cycles"),
+        "opening_transition_active": layer3_summary.get(
+            "opening_transition_active"
+        ),
+        "opening_transition_cycle": layer3_summary.get(
+            "opening_transition_cycle"
+        ),
+        "opening_transition_cycles": layer3_summary.get(
+            "opening_transition_cycles"
+        ),
+        "opening_transition_phase": layer3_summary.get(
+            "opening_transition_phase"
+        ),
+        "opening_transition_source_market_time": layer3_summary.get(
+            "opening_transition_source_market_time"
+        ),
 
-        "bootstrap_confirmation_applied": layer3_summary.get("bootstrap_confirmation_applied"),
-        "bootstrap_confirmation_symbols": layer3_summary.get("bootstrap_confirmation_symbols"),
+        "restart_recovery_required": layer3_summary.get(
+            "restart_recovery_required"
+        ),
+        "restart_recovery_active": layer3_summary.get(
+            "restart_recovery_active"
+        ),
+        "restart_recovery_execution_blocked": layer3_summary.get(
+            "restart_recovery_execution_blocked"
+        ),
+        "restart_recovery_reason": layer3_summary.get(
+            "restart_recovery_reason"
+        ),
+        "restart_recovery_warmup_present": layer3_summary.get(
+            "restart_recovery_warmup_present"
+        ),
+        "restart_recovery_warmup_reason": layer3_summary.get(
+            "restart_recovery_warmup_reason"
+        ),
+        "restart_recovery_warmup_trusted": layer3_summary.get(
+            "restart_recovery_warmup_trusted"
+        ),
+        "restart_recovery_warmup_timestamp": layer3_summary.get(
+            "restart_recovery_warmup_timestamp"
+        ),
+        "restart_recovery_warmup_age_minutes": layer3_summary.get(
+            "restart_recovery_warmup_age_minutes"
+        ),
+        "restart_recovery_warmup_snapshot_fallback": layer3_summary.get(
+            "restart_recovery_warmup_snapshot_fallback"
+        ),
+        "restart_recovery_observed_bars": layer3_summary.get(
+            "restart_recovery_observed_bars"
+        ),
+        "restart_recovery_required_bars": layer3_summary.get(
+            "restart_recovery_required_bars"
+        ),
+        "restart_recovery_source_timestamps": layer3_summary.get(
+            "restart_recovery_source_timestamps"
+        ),
+        "restart_recovery_ready_after_source_bar": layer3_summary.get(
+            "restart_recovery_ready_after_source_bar"
+        ),
+        "restart_recovery_completed": layer3_summary.get(
+            "restart_recovery_completed"
+        ),
+        "restart_recovery_evidence_committed": layer3_summary.get(
+            "restart_recovery_evidence_committed"
+        ),
+        "restart_recovery_baseline_seeded": layer3_summary.get(
+            "restart_recovery_baseline_seeded"
+        ),
+        "restart_recovery_baseline_symbols": layer3_summary.get(
+            "restart_recovery_baseline_symbols"
+        ),
+        "restart_recovery_baseline_seeded_this_cycle": layer3_summary.get(
+            "restart_recovery_baseline_seeded_this_cycle"
+        ),
+        "strategy_execution_blocked_reason": layer3_summary.get(
+            "strategy_execution_blocked_reason"
+        ),
+
+        "bootstrap_confirmation_applied": layer3_summary.get(
+            "bootstrap_confirmation_applied"
+        ),
+        "bootstrap_confirmation_blocked_reason": layer3_summary.get(
+            "bootstrap_confirmation_blocked_reason"
+        ),
+        "bootstrap_confirmation_symbols": layer3_summary.get(
+            "bootstrap_confirmation_symbols"
+        ),
         "bootstrap_confirmation_warmup_filter_applied": layer3_summary.get("bootstrap_confirmation_warmup_filter_applied"),
         "bootstrap_confirmation_warmup_symbols": layer3_summary.get("bootstrap_confirmation_warmup_symbols"),
         "bootstrap_confirmation_warmup_target_symbols": layer3_summary.get("bootstrap_confirmation_warmup_target_symbols"),

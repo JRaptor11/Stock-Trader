@@ -22,6 +22,7 @@ from config import runtime_config as config
 from trading.orders import (
     create_order_request,
     normalize_side,
+    register_layer5_cycle_submissions,
     track_limit_order,
 )
 
@@ -187,6 +188,238 @@ def _serialize_enum_or_value(value: Any) -> str | None:
         return None
 
     return str(getattr(value, "value", value))
+
+
+def _serialize_datetime_or_value(
+    value: Any,
+) -> str | None:
+    if value is None:
+        return None
+
+    if isinstance(
+        value,
+        datetime,
+    ):
+        if value.tzinfo is None:
+            value = value.replace(
+                tzinfo=timezone.utc
+            )
+        else:
+            value = value.astimezone(
+                timezone.utc
+            )
+
+        return value.isoformat()
+
+    text = str(
+        value
+    ).strip()
+
+    return text or None
+
+
+def _submission_price_context(
+    symbol: str,
+    plan_price: float,
+    *,
+    captured_at: datetime | None = None,
+) -> dict:
+    """
+    Capture diagnostic-only price context immediately before
+    broker submission.
+
+    This is not a bid/ask quote. The preferred reference is the
+    latest streamed trade retained by MarketDataBuffer.
+    """
+    captured_at = (
+        captured_at
+        or datetime.now(
+            timezone.utc
+        )
+    )
+
+    if captured_at.tzinfo is None:
+        captured_at = captured_at.replace(
+            tzinfo=timezone.utc
+        )
+    else:
+        captured_at = captured_at.astimezone(
+            timezone.utc
+        )
+
+    plan_price = safe_float(
+        plan_price,
+        0.0,
+    )
+
+    reference_price = 0.0
+    reference_source = None
+    tick_timestamp = None
+    reference_age_seconds = None
+
+    md = app_state.get(
+        "market_data",
+        {},
+    ).get(
+        "buffer"
+    )
+
+    if (
+        md is not None
+        and hasattr(
+            md,
+            "get_recent_prices_ts",
+        )
+    ):
+        try:
+            points = list(
+                md.get_recent_prices_ts(
+                    symbol,
+                    limit=1,
+                )
+                or []
+            )
+        except Exception:
+            points = []
+
+            logging.debug(
+                "[Layer5Exec] Could not read "
+                "submission-time streamed price "
+                "for %s.",
+                symbol,
+                exc_info=True,
+            )
+
+        if points:
+            raw_timestamp, raw_price = (
+                points[-1]
+            )
+
+            candidate_price = safe_float(
+                raw_price,
+                0.0,
+            )
+
+            try:
+                event_epoch = float(
+                    raw_timestamp
+                )
+            except Exception:
+                event_epoch = None
+
+            if candidate_price > 0:
+                reference_price = (
+                    candidate_price
+                )
+                reference_source = (
+                    "latest_streamed_trade"
+                )
+
+                if event_epoch is not None:
+                    tick_dt = datetime.fromtimestamp(
+                        event_epoch,
+                        tz=timezone.utc,
+                    )
+
+                    tick_timestamp = (
+                        tick_dt.isoformat()
+                    )
+
+                    reference_age_seconds = round(
+                        max(
+                            0.0,
+                            (
+                                captured_at
+                                - tick_dt
+                            ).total_seconds(),
+                        ),
+                        3,
+                    )
+
+    if reference_price <= 0:
+        state_price = safe_float(
+            app_state.get(
+                "last_trade_price_by_symbol",
+                {},
+            ).get(
+                symbol
+            ),
+            0.0,
+        )
+
+        if state_price > 0:
+            reference_price = state_price
+            reference_source = (
+                "app_state_last_trade"
+            )
+
+    if (
+        reference_price <= 0
+        and plan_price > 0
+    ):
+        reference_price = plan_price
+        reference_source = (
+            "plan_price_fallback"
+        )
+
+    drift_pct = None
+
+    if (
+        reference_price > 0
+        and plan_price > 0
+    ):
+        drift_pct = round(
+            (
+                reference_price
+                - plan_price
+            )
+            / plan_price,
+            8,
+        )
+
+    return {
+        "submission_context_captured_at": (
+            captured_at.isoformat()
+        ),
+        "submission_plan_price": (
+            round(
+                plan_price,
+                6,
+            )
+            if plan_price > 0
+            else None
+        ),
+        "submission_reference_price": (
+            round(
+                reference_price,
+                6,
+            )
+            if reference_price > 0
+            else None
+        ),
+        "submission_reference_source": (
+            reference_source
+            or "unavailable"
+        ),
+        "submission_reference_tick_timestamp": (
+            tick_timestamp
+        ),
+        "submission_reference_age_seconds": (
+            reference_age_seconds
+        ),
+        "submission_reference_vs_plan_pct": (
+            drift_pct
+        ),
+
+        "broker_submit_started_at": None,
+        "broker_submit_completed_at": None,
+        "broker_submit_latency_ms": None,
+
+        "broker_status_at_submit": None,
+        "broker_created_at": None,
+        "broker_submitted_at": None,
+        "broker_limit_price": None,
+    }
 
 
 def _refresh_broker_snapshot(client, layer5_state: dict, *, label: str) -> dict:
@@ -631,7 +864,23 @@ def _finish_layer5_result(
             compact_orders,
         )
 
-    append_layer4_order_rows(result)
+    append_layer4_order_rows(
+        result
+    )
+
+    try:
+        register_layer5_cycle_submissions(
+            result
+        )
+    except Exception:
+        logging.warning(
+            "[Layer5Exec] Failed registering "
+            "cycle submission diagnostics | "
+            "cycle_id=%s plan_id=%s",
+            cycle_id,
+            plan_id,
+            exc_info=True,
+        )
 
     return result
 
@@ -1019,12 +1268,29 @@ def execute_layer5_plan(plan: Any, summary: dict | None = None) -> dict:
             result["skipped"] += 1
             continue
 
-        computed_side = normalize_side(side)
+        computed_side = normalize_side(
+            side
+        )
+
         order_request = None
         order_request_side = None
         order_type = None
         order_time_in_force = None
-        cash_budget_after = available_cash_budget
+
+        cash_budget_after = (
+            available_cash_budget
+        )
+
+        submission_context = (
+            _submission_price_context(
+                symbol,
+                price,
+            )
+        )
+
+        broker_submit_started_monotonic = (
+            None
+        )
 
         try:
             order_request = create_order_request(
@@ -1066,8 +1332,100 @@ def execute_layer5_plan(plan: Any, summary: dict | None = None) -> dict:
                     f"request_side={order_request_side} symbol={symbol} row_id={row_id}"
                 )
 
-            submitted_order = client.submit_order(order_request)
-            order_id = getattr(submitted_order, "id", None)
+            broker_submit_started_at = (
+                datetime.now(
+                    timezone.utc
+                )
+            )
+
+            broker_submit_started_monotonic = (
+                time.monotonic()
+            )
+
+            submission_context[
+                "broker_submit_started_at"
+            ] = (
+                broker_submit_started_at.isoformat()
+            )
+
+            submitted_order = (
+                client.submit_order(
+                    order_request
+                )
+            )
+
+            broker_submit_completed_at = (
+                datetime.now(
+                    timezone.utc
+                )
+            )
+
+            submission_context.update({
+                "broker_submit_completed_at": (
+                    broker_submit_completed_at.isoformat()
+                ),
+                "broker_submit_latency_ms": round(
+                    (
+                        time.monotonic()
+                        - broker_submit_started_monotonic
+                    )
+                    * 1000.0,
+                    3,
+                ),
+                "broker_status_at_submit": (
+                    _serialize_enum_or_value(
+                        getattr(
+                            submitted_order,
+                            "status",
+                            None,
+                        )
+                    )
+                ),
+                "broker_created_at": (
+                    _serialize_datetime_or_value(
+                        getattr(
+                            submitted_order,
+                            "created_at",
+                            None,
+                        )
+                    )
+                ),
+                "broker_submitted_at": (
+                    _serialize_datetime_or_value(
+                        getattr(
+                            submitted_order,
+                            "submitted_at",
+                            None,
+                        )
+                    )
+                ),
+            })
+
+            broker_limit_price = safe_float(
+                getattr(
+                    submitted_order,
+                    "limit_price",
+                    0.0,
+                ),
+                0.0,
+            )
+
+            submission_context[
+                "broker_limit_price"
+            ] = (
+                round(
+                    broker_limit_price,
+                    6,
+                )
+                if broker_limit_price > 0
+                else None
+            )
+
+            order_id = getattr(
+                submitted_order,
+                "id",
+                None,
+            )
 
             if not order_id:
                 raise RuntimeError(f"Broker did not return order id for {symbol}")
@@ -1077,8 +1435,22 @@ def execute_layer5_plan(plan: Any, summary: dict | None = None) -> dict:
                 order_id=order_id,
                 side=side,
                 qty=qty,
-                limit_price=price if not market_is_open else None,
+                limit_price=(
+                    price
+                    if not market_is_open
+                    else None
+                ),
                 market_is_open=market_is_open,
+                submission_context={
+                    **submission_context,
+                    "cycle_id": cycle_id,
+                    "plan_id": plan_id,
+                    "row_id": row_id,
+                    "reason": reason,
+                    "planned_notional": (
+                        notional
+                    ),
+                },
             )
 
             if normalize_side(side) == "buy":
@@ -1152,10 +1524,44 @@ def execute_layer5_plan(plan: Any, summary: dict | None = None) -> dict:
                     "reason": reason,
                     "plan_id": plan_id,
                     "row_id": row_id,
+
+                    **submission_context,
                 }
             )
 
         except Exception as exc:
+
+            if (
+                broker_submit_started_monotonic
+                is not None
+                and submission_context.get(
+                    "broker_submit_completed_at"
+                )
+                is None
+            ):
+                broker_submit_completed_at = (
+                    datetime.now(
+                        timezone.utc
+                    )
+                )
+
+                submission_context[
+                    "broker_submit_completed_at"
+                ] = (
+                    broker_submit_completed_at.isoformat()
+                )
+
+                submission_context[
+                    "broker_submit_latency_ms"
+                ] = round(
+                    (
+                        time.monotonic()
+                        - broker_submit_started_monotonic
+                    )
+                    * 1000.0,
+                    3,
+                )
+
             broker_error_details = _extract_broker_error_details(exc)
 
             logging.exception(
@@ -1209,6 +1615,8 @@ def execute_layer5_plan(plan: Any, summary: dict | None = None) -> dict:
                     "cash_budget_after": cash_budget_after,
                     "plan_id": plan_id,
                     "row_id": row_id,
+
+                    **submission_context,
                 }
             )
 

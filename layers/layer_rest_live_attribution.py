@@ -169,6 +169,44 @@ def _better_source(value) -> str | None:
     return "TIE"
 
 
+def _snapshot_weight(
+    strategy_snapshot: dict,
+    symbol: str,
+):
+    """
+    Return a symbol's effective portfolio weight.
+
+    An absent symbol means the strategy holds zero weight.
+    A missing or invalid strategy snapshot remains unknown
+    so incomplete attribution is not silently treated as zero.
+    """
+    if not isinstance(
+        strategy_snapshot,
+        dict,
+    ):
+        return None
+
+    if not strategy_snapshot:
+        return None
+
+    row = strategy_snapshot.get(
+        symbol
+    )
+
+    if row is None:
+        return 0.0
+
+    if not isinstance(
+        row,
+        dict,
+    ):
+        return None
+
+    return _number(
+        row.get("weight")
+    )
+
+
 def _estimated_pl(
     effective_delta,
     reference_equity,
@@ -381,20 +419,17 @@ def rebuild_rest_live_attribution_csvs() -> dict:
                 timestamp,
             )
 
-            rest_portfolio_row = (
-                snapshot
-                .get("REST", {})
-                .get(symbol, {})
-            )
-            live_portfolio_row = (
-                snapshot
-                .get("LIVE", {})
-                .get(symbol, {})
+            rest_strategy_snapshot = snapshot.get(
+                "REST",
+                {},
             )
 
-            rest_equity = _number(
-                comparison.get("rest_equity")
+            live_strategy_snapshot = snapshot.get(
+                "LIVE",
+                {},
             )
+
+            rest_equity = _number(comparison.get("rest_equity"))
             live_equity = _number(
                 comparison.get("live_equity")
             )
@@ -418,11 +453,30 @@ def rebuild_rest_live_attribution_csvs() -> dict:
                 else None
             )
 
-            rest_effective_weight = _number(
-                rest_portfolio_row.get("weight")
+            rest_strategy_snapshot = snapshot.get(
+                "REST",
+                {},
             )
-            live_effective_weight = _number(
-                live_portfolio_row.get("weight")
+
+            live_strategy_snapshot = snapshot.get(
+                "LIVE",
+                {},
+            )
+
+            rest_equity = _number(comparison.get("rest_equity"))
+
+            rest_effective_weight = (
+                _snapshot_weight(
+                    rest_strategy_snapshot,
+                    symbol,
+                )
+            )
+
+            live_effective_weight = (
+                _snapshot_weight(
+                    live_strategy_snapshot,
+                    symbol,
+                )
             )
 
             effective_delta = (

@@ -6,6 +6,7 @@ import math
 import os
 import time
 from datetime import datetime, timezone, timedelta
+from statistics import median
 
 from core.market_clock import get_market_is_open
 from layers.layer_logging import target_summary_for_log
@@ -21,6 +22,7 @@ from utils.numeric import safe_float, safe_int
 
 from config import runtime_config as config
 from market.bar_data import (
+    build_exact_rest_live_bar_comparison,
     fetch_recent_bars_with_min_count,
     filter_fresh_bars,
 )
@@ -181,8 +183,21 @@ def _build_live_bar_health_rows(
         try:
             recent_prices = list(md.get_recent_prices(symbol) or [])
             bars_1m = list(md.get_live_bars(symbol, timeframe_seconds=60, limit=10) or []) if hasattr(md, "get_live_bars") else []
-            bars_5m = list(md.get_live_bars(symbol, timeframe_seconds=300, limit=6) or []) if hasattr(md, "get_live_bars") else []
-
+            bars_5m = (
+                list(
+                    md.get_live_bars(
+                        symbol,
+                        timeframe_seconds=300,
+                        limit=12,
+                    )
+                    or []
+                )
+                if hasattr(
+                    md,
+                    "get_live_bars",
+                )
+                else []
+            )
             latest_live_price = safe_float(recent_prices[-1], 0.0) if recent_prices else 0.0
             latest_1m = bars_1m[-1] if bars_1m else None
             latest_5m = bars_5m[-1] if bars_5m else None
@@ -197,8 +212,28 @@ def _build_live_bar_health_rows(
                 rest_age_minutes = round(max(0.0, (now - rest_ts).total_seconds() / 60.0), 3)
 
             live_vs_rest_close_pct = None
-            if latest_live_price > 0 and rest_close and rest_close > 0:
-                live_vs_rest_close_pct = round((latest_live_price - rest_close) / rest_close, 6)
+
+            if (
+                latest_live_price > 0
+                and rest_close
+                and rest_close > 0
+            ):
+                live_vs_rest_close_pct = round(
+                    (
+                        latest_live_price
+                        - rest_close
+                    )
+                    / rest_close,
+                    6,
+                )
+
+            exact_bar_comparison = (
+                build_exact_rest_live_bar_comparison(
+                    rest_bar=latest_rest,
+                    live_bars=bars_5m,
+                    timeframe_seconds=300,
+                )
+            )
 
             rows.append({
                 "timestamp": now.isoformat(),
@@ -217,7 +252,14 @@ def _build_live_bar_health_rows(
                 "rest_latest_close": round(rest_close, 4) if rest_close else None,
                 "rest_latest_timestamp": rest_ts.isoformat() if rest_ts else None,
                 "rest_bar_age_minutes": rest_age_minutes,
-                "live_vs_rest_close_pct": live_vs_rest_close_pct,
+                # Legacy diagnostic:
+                # newest LIVE tick versus delayed REST close.
+                "live_vs_rest_close_pct": (
+                    live_vs_rest_close_pct
+                ),
+
+                # Exact five-minute bucket comparison.
+                **exact_bar_comparison,
             })
 
         except Exception:
@@ -230,36 +272,480 @@ def _build_live_bar_health_rows(
     return rows
 
 
+def _live_bar_summary_number(
+    value,
+) -> float | None:
+    if value in (
+        None,
+        "",
+    ):
+        return None
+
+    try:
+        number = float(
+            value
+        )
+    except Exception:
+        return None
+
+    if not math.isfinite(
+        number
+    ):
+        return None
+
+    return number
+
+
+def _live_bar_summary_values(
+    rows: list[dict],
+    field: str,
+    *,
+    absolute: bool = False,
+) -> list[float]:
+    values = []
+
+    for row in rows or []:
+        if not isinstance(
+            row,
+            dict,
+        ):
+            continue
+
+        value = (
+            _live_bar_summary_number(
+                row.get(
+                    field
+                )
+            )
+        )
+
+        if value is None:
+            continue
+
+        values.append(
+            abs(value)
+            if absolute
+            else value
+        )
+
+    return values
+
+
+def _live_bar_summary_median(
+    rows: list[dict],
+    field: str,
+    *,
+    absolute: bool = False,
+):
+    values = (
+        _live_bar_summary_values(
+            rows,
+            field,
+            absolute=absolute,
+        )
+    )
+
+    if not values:
+        return None
+
+    return round(
+        median(values),
+        8,
+    )
+
+
+def _live_bar_summary_max(
+    rows: list[dict],
+    field: str,
+    *,
+    absolute: bool = False,
+):
+    values = (
+        _live_bar_summary_values(
+            rows,
+            field,
+            absolute=absolute,
+        )
+    )
+
+    if not values:
+        return None
+
+    return round(
+        max(values),
+        8,
+    )
+
+
+def _live_bar_value_counts(
+    rows: list[dict],
+    field: str,
+) -> dict:
+    counts = {}
+
+    for row in rows or []:
+        if not isinstance(
+            row,
+            dict,
+        ):
+            continue
+
+        value = str(
+            row.get(field)
+            or "UNKNOWN"
+        ).strip()
+
+        if not value:
+            value = "UNKNOWN"
+
+        counts[value] = (
+            counts.get(
+                value,
+                0,
+            )
+            + 1
+        )
+
+    return dict(
+        sorted(
+            counts.items()
+        )
+    )
+
+
+def _summarize_live_bar_health_rows(
+    rows: list[dict],
+    *,
+    cycle_id=None,
+) -> dict:
+    """
+    Build one cycle-level quality summary from the exact
+    timestamp-matched REST/LIVE health rows.
+    """
+    valid_rows = [
+        row
+        for row in (
+            rows or []
+        )
+        if isinstance(
+            row,
+            dict,
+        )
+    ]
+
+    symbol_count = len(
+        valid_rows
+    )
+
+    exact_rows = [
+        row
+        for row in valid_rows
+        if bool(
+            row.get(
+                "bar_match_exact"
+            )
+        )
+    ]
+
+    eligible_rows = [
+        row
+        for row in valid_rows
+        if bool(
+            row.get(
+                "bar_match_comparison_eligible"
+            )
+        )
+    ]
+
+    full_capture_rows = [
+        row
+        for row in eligible_rows
+        if bool(
+            row.get(
+                "bar_match_live_full_capture_candidate"
+            )
+        )
+    ]
+
+    unmatched_symbols = sorted({
+        str(
+            row.get("symbol")
+            or ""
+        ).upper().strip()
+        for row in valid_rows
+        if not bool(
+            row.get(
+                "bar_match_exact"
+            )
+        )
+        and str(
+            row.get("symbol")
+            or ""
+        ).strip()
+    })
+
+    non_full_capture_symbols = sorted({
+        str(
+            row.get("symbol")
+            or ""
+        ).upper().strip()
+        for row in eligible_rows
+        if not bool(
+            row.get(
+                "bar_match_live_full_capture_candidate"
+            )
+        )
+        and str(
+            row.get("symbol")
+            or ""
+        ).strip()
+    })
+
+    exact_match_count = len(
+        exact_rows
+    )
+
+    comparison_eligible_count = len(
+        eligible_rows
+    )
+
+    full_capture_count = len(
+        full_capture_rows
+    )
+
+    summary = {
+        "timestamp": datetime.now(
+            timezone.utc
+        ).isoformat(),
+        "cycle_id": cycle_id,
+
+        "live_bar_health_symbol_count": (
+            symbol_count
+        ),
+        "live_bar_exact_match_count": (
+            exact_match_count
+        ),
+        "live_bar_comparison_eligible_count": (
+            comparison_eligible_count
+        ),
+        "live_bar_full_capture_candidate_count": (
+            full_capture_count
+        ),
+
+        "live_bar_exact_match_rate": (
+            round(
+                exact_match_count
+                / symbol_count,
+                6,
+            )
+            if symbol_count
+            else None
+        ),
+
+        "live_bar_comparison_eligible_rate": (
+            round(
+                comparison_eligible_count
+                / symbol_count,
+                6,
+            )
+            if symbol_count
+            else None
+        ),
+
+        "live_bar_full_capture_rate": (
+            round(
+                full_capture_count
+                / comparison_eligible_count,
+                6,
+            )
+            if comparison_eligible_count
+            else None
+        ),
+
+        "live_bar_match_status_counts": (
+            _live_bar_value_counts(
+                valid_rows,
+                "bar_match_status",
+            )
+        ),
+
+        "live_bar_capture_quality_counts": (
+            _live_bar_value_counts(
+                exact_rows,
+                "bar_match_live_capture_quality",
+            )
+        ),
+
+        "live_bar_unmatched_symbols": (
+            unmatched_symbols
+        ),
+
+        "live_bar_non_full_capture_symbols": (
+            non_full_capture_symbols
+        ),
+
+        "live_bar_median_abs_open_pct_delta": (
+            _live_bar_summary_median(
+                eligible_rows,
+                "open_pct_delta_live_minus_rest",
+                absolute=True,
+            )
+        ),
+
+        "live_bar_median_abs_high_pct_delta": (
+            _live_bar_summary_median(
+                eligible_rows,
+                "high_pct_delta_live_minus_rest",
+                absolute=True,
+            )
+        ),
+
+        "live_bar_median_abs_low_pct_delta": (
+            _live_bar_summary_median(
+                eligible_rows,
+                "low_pct_delta_live_minus_rest",
+                absolute=True,
+            )
+        ),
+
+        "live_bar_median_abs_close_pct_delta": (
+            _live_bar_summary_median(
+                eligible_rows,
+                "close_pct_delta_live_minus_rest",
+                absolute=True,
+            )
+        ),
+
+        "live_bar_max_abs_close_pct_delta": (
+            _live_bar_summary_max(
+                eligible_rows,
+                "close_pct_delta_live_minus_rest",
+                absolute=True,
+            )
+        ),
+
+        "live_bar_median_volume_capture_ratio": (
+            _live_bar_summary_median(
+                eligible_rows,
+                "volume_capture_ratio_live_to_rest",
+            )
+        ),
+
+        "live_bar_median_trade_count_capture_ratio": (
+            _live_bar_summary_median(
+                eligible_rows,
+                "trade_count_capture_ratio_live_to_rest",
+            )
+        ),
+    }
+
+    return summary
+
+
 def _append_live_bar_health_snapshot(
     *,
     symbols: list[str],
     rest_bars_by_symbol: dict,
     market_is_open: bool,
     cycle_id=None,
-) -> None:
+) -> dict:
     rows = _build_live_bar_health_rows(
         symbols=symbols,
-        rest_bars_by_symbol=rest_bars_by_symbol,
+        rest_bars_by_symbol=(
+            rest_bars_by_symbol
+        ),
         market_is_open=market_is_open,
         cycle_id=cycle_id,
     )
 
-    if not rows:
-        return
+    summary = (
+        _summarize_live_bar_health_rows(
+            rows,
+            cycle_id=cycle_id,
+        )
+    )
 
-    append_layer_live_bar_health_rows(rows)
+    app_state.setdefault(
+        "layers",
+        {},
+    )[
+        "latest_live_bar_health_summary"
+    ] = dict(summary)
+
+    if not rows:
+        logging.info(
+            "[LiveBarMatch] No health rows | "
+            "cycle_id=%s",
+            cycle_id,
+        )
+
+        return summary
+
+    append_layer_live_bar_health_rows(
+        rows
+    )
+
+    logging.info(
+        "[LiveBarMatch] Cycle summary | "
+        "cycle_id=%s exact=%s/%s "
+        "eligible=%s/%s full_capture=%s/%s "
+        "median_abs_close_pct=%s "
+        "median_volume_capture=%s "
+        "statuses=%s",
+        cycle_id,
+        summary.get(
+            "live_bar_exact_match_count"
+        ),
+        summary.get(
+            "live_bar_health_symbol_count"
+        ),
+        summary.get(
+            "live_bar_comparison_eligible_count"
+        ),
+        summary.get(
+            "live_bar_health_symbol_count"
+        ),
+        summary.get(
+            "live_bar_full_capture_candidate_count"
+        ),
+        summary.get(
+            "live_bar_comparison_eligible_count"
+        ),
+        summary.get(
+            "live_bar_median_abs_close_pct_delta"
+        ),
+        summary.get(
+            "live_bar_median_volume_capture_ratio"
+        ),
+        summary.get(
+            "live_bar_match_status_counts"
+        ),
+    )
 
     compact = {
         row["symbol"]: {
-            "ticks": row.get("tick_count"),
-            "1m": row.get("live_1m_bar_count"),
-            "5m": row.get("live_5m_bar_count"),
-            "live_vs_rest": row.get("live_vs_rest_close_pct"),
+            "match": row.get(
+                "bar_match_status"
+            ),
+            "quality": row.get(
+                "bar_match_live_capture_quality"
+            ),
+            "close_pct": row.get(
+                "close_pct_delta_live_minus_rest"
+            ),
+            "volume_ratio": row.get(
+                "volume_capture_ratio_live_to_rest"
+            ),
         }
         for row in rows
     }
 
-    logging.info("[Layers] Live bar health snapshot: %s", compact)
+    logging.debug(
+        "[LiveBarMatch] Symbol details: %s",
+        compact,
+    )
+
+    return summary
 
 
 def _fresh_symbol_requirement(symbol_count: int) -> int:
@@ -363,7 +849,7 @@ def _layer2_evaluation_context(
     }
 
 
-def _usable_off_hours_warmup_available() -> bool:
+def _off_hours_warmup_diagnostics() -> dict:
     warmup = app_state.get(
         "layers",
         {},
@@ -375,20 +861,110 @@ def _usable_off_hours_warmup_available() -> bool:
         warmup,
         dict,
     ):
-        return False
+        warmup = {}
 
     target = warmup.get(
         "target_portfolio"
     )
 
-    return bool(
+    reason = str(
         warmup.get("reason")
-        == "market_closed_target_warmup"
-        and isinstance(
+        or ""
+    ).strip()
+
+    timestamp = warmup.get(
+        "timestamp"
+    )
+
+    age_minutes = None
+
+    if timestamp:
+        try:
+            parsed = datetime.fromisoformat(
+                str(timestamp).replace(
+                    "Z",
+                    "+00:00",
+                )
+            )
+
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(
+                    tzinfo=timezone.utc
+                )
+
+            age_minutes = round(
+                max(
+                    0.0,
+                    (
+                        datetime.now(
+                            timezone.utc
+                        )
+                        - parsed
+                    ).total_seconds()
+                    / 60.0,
+                ),
+                3,
+            )
+
+        except Exception:
+            age_minutes = None
+
+    freshness_report = warmup.get(
+        "freshness_report"
+    )
+
+    if not isinstance(
+        freshness_report,
+        dict,
+    ):
+        freshness_report = {}
+
+    present = bool(warmup)
+
+    available = bool(
+        isinstance(
             target,
             dict,
         )
         and bool(target)
+    )
+
+    trusted = bool(
+        reason
+        == "market_closed_target_warmup"
+        and available
+    )
+
+    snapshot_fallback = bool(
+        freshness_report.get(
+            "warmup_snapshot_fallback"
+        )
+        or reason in {
+            "market_open_rest_snapshot_fallback",
+            "market_closed_rest_snapshot_fallback",
+        }
+    )
+
+    return {
+        "present": present,
+        "available": available,
+        "reason": reason or None,
+        "trusted_for_restart_recovery": (
+            trusted
+        ),
+        "timestamp": timestamp,
+        "age_minutes": age_minutes,
+        "snapshot_fallback": (
+            snapshot_fallback
+        ),
+    }
+
+
+def _usable_off_hours_warmup_available() -> bool:
+    return bool(
+        _off_hours_warmup_diagnostics().get(
+            "trusted_for_restart_recovery"
+        )
     )
 
 
@@ -445,6 +1021,10 @@ def _restart_recovery_context(
         {},
     )
 
+    warmup_diagnostics = (
+        _off_hours_warmup_diagnostics()
+    )
+
     if not market_is_open:
         return {
             "enabled": enabled,
@@ -452,6 +1032,36 @@ def _restart_recovery_context(
             "active": False,
             "execution_blocked": False,
             "reason": "market_closed",
+            "warmup_present": (
+                warmup_diagnostics.get(
+                    "present"
+                )
+            ),
+            "warmup_reason": (
+                warmup_diagnostics.get(
+                    "reason"
+                )
+            ),
+            "warmup_trusted_for_restart_recovery": (
+                warmup_diagnostics.get(
+                    "trusted_for_restart_recovery"
+                )
+            ),
+            "warmup_timestamp": (
+                warmup_diagnostics.get(
+                    "timestamp"
+                )
+            ),
+            "warmup_age_minutes": (
+                warmup_diagnostics.get(
+                    "age_minutes"
+                )
+            ),
+            "warmup_snapshot_fallback": (
+                warmup_diagnostics.get(
+                    "snapshot_fallback"
+                )
+            ),
             "required_bars": required_bars,
             "observed_bars": safe_int(
                 state.get(
@@ -684,6 +1294,30 @@ def _restart_recovery_context(
         "warmup_available": bool(
             state.get(
                 "warmup_available"
+            )
+        ),
+        "warmup_present": bool(
+            state.get(
+                "warmup_present"
+            )
+        ),
+        "warmup_reason": state.get(
+            "warmup_reason"
+        ),
+        "warmup_trusted_for_restart_recovery": bool(
+            state.get(
+                "warmup_trusted_for_restart_recovery"
+            )
+        ),
+        "warmup_timestamp": state.get(
+            "warmup_timestamp"
+        ),
+        "warmup_age_minutes": state.get(
+            "warmup_age_minutes"
+        ),
+        "warmup_snapshot_fallback": bool(
+            state.get(
+                "warmup_snapshot_fallback"
             )
         ),
         "required_bars": safe_int(
@@ -1952,53 +2586,119 @@ def _trade_result_label(score) -> str | None:
 
 def _warmup_shadow_context() -> dict:
     """
-    Return the last off-hours warmup target/ranks. This is the closest
-    strategic anchor available when the REST production path is blocked at
-    the open by stale bars.
+    Return the latest non-executable warmup target and its
+    restart-recovery trust classification.
     """
-    warmup = app_state.get("layers", {}).get("last_off_hours_warmup", {})
-    if not isinstance(warmup, dict):
+    diagnostics = (
+        _off_hours_warmup_diagnostics()
+    )
+
+    warmup = app_state.get(
+        "layers",
+        {},
+    ).get(
+        "last_off_hours_warmup",
+        {},
+    )
+
+    if not isinstance(
+        warmup,
+        dict,
+    ):
         warmup = {}
 
-    target = warmup.get("target_portfolio") or {}
-    ranked = warmup.get("ranked") or []
+    target = warmup.get(
+        "target_portfolio",
+        {},
+    )
+
+    if not isinstance(
+        target,
+        dict,
+    ):
+        target = {}
+
+    ranked = warmup.get(
+        "ranked",
+        [],
+    )
+
+    if not isinstance(
+        ranked,
+        list,
+    ):
+        ranked = []
 
     rank_map = {}
-    for index, row in enumerate(ranked, start=1):
-        if not isinstance(row, dict):
+
+    for index, row in enumerate(
+        ranked,
+        start=1,
+    ):
+        if not isinstance(
+            row,
+            dict,
+        ):
             continue
-        symbol = str(row.get("symbol") or "").upper().strip()
+
+        symbol = str(
+            row.get("symbol")
+            or ""
+        ).upper().strip()
+
         if not symbol:
             continue
+
         rank_map[symbol] = {
             "rank": index,
-            "score": safe_float(row.get("score"), 0.0),
-            "last_price": safe_float(row.get("last_price"), 0.0),
-            "reason": row.get("reason"),
+            "score": safe_float(
+                row.get("score"),
+                0.0,
+            ),
+            "last_price": safe_float(
+                row.get("last_price"),
+                0.0,
+            ),
+            "reason": row.get(
+                "reason"
+            ),
         }
 
-    age_minutes = None
-    raw_ts = warmup.get("timestamp")
-    if raw_ts:
-        try:
-            parsed = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
-            age_minutes = round(
-                max(0.0, (datetime.now(timezone.utc) - parsed).total_seconds() / 60.0),
-                3,
-            )
-        except Exception:
-            age_minutes = None
-
     return {
-        "available": bool(target),
-        "timestamp": raw_ts,
-        "age_minutes": age_minutes,
-        "target": target if isinstance(target, dict) else {},
+        "present": diagnostics.get(
+            "present"
+        ),
+        "available": diagnostics.get(
+            "available"
+        ),
+        "reason": diagnostics.get(
+            "reason"
+        ),
+        "trusted_for_restart_recovery": (
+            diagnostics.get(
+                "trusted_for_restart_recovery"
+            )
+        ),
+        "timestamp": diagnostics.get(
+            "timestamp"
+        ),
+        "age_minutes": diagnostics.get(
+            "age_minutes"
+        ),
+        "snapshot_fallback": diagnostics.get(
+            "snapshot_fallback"
+        ),
+        "target": target,
         "rank_map": rank_map,
-        "target_symbols": sorted(_target_symbols(target)),
-        "cash_pct": safe_float(target.get("CASH"), 0.0) if isinstance(target, dict) else 0.0,
+        "target_symbols": sorted(
+            _target_symbols(
+                target
+            )
+        ),
+        "cash_pct": safe_float(
+            target.get("CASH"),
+            0.0,
+        ),
     }
 
 
@@ -2260,9 +2960,32 @@ def run_opening_live_fallback_shadow(
         "live_cohort_advanced": False,
         "duplicate_live_cohort": False,
         "symbol_count": len(symbols or []),
-        "warmup_available": warmup.get("available"),
-        "warmup_age_minutes": warmup.get("age_minutes"),
-        "warmup_target_symbols": warmup.get("target_symbols"),
+        "warmup_present": warmup.get(
+            "present"
+        ),
+        "warmup_available": warmup.get(
+            "available"
+        ),
+        "warmup_reason": warmup.get(
+            "reason"
+        ),
+        "warmup_trusted_for_restart_recovery": (
+            warmup.get(
+                "trusted_for_restart_recovery"
+            )
+        ),
+        "warmup_timestamp": warmup.get(
+            "timestamp"
+        ),
+        "warmup_age_minutes": warmup.get(
+            "age_minutes"
+        ),
+        "warmup_snapshot_fallback": warmup.get(
+            "snapshot_fallback"
+        ),
+        "warmup_target_symbols": warmup.get(
+            "target_symbols"
+        ),
     }
 
     if len(live_symbols_ready) < required_live_symbols:
@@ -5443,19 +6166,21 @@ async def run_layer_monitor(
                         freshness_report
                     )
 
-                    _append_live_bar_health_snapshot(
-                        symbols=symbols,
-                        rest_bars_by_symbol=(
-                            bars_by_symbol
-                        ),
-                        market_is_open=(
-                            market_is_open
-                        ),
-                        cycle_id=(
-                            next_layer3_cycle_id
-                            if market_is_open
-                            else None
-                        ),
+                    live_bar_health_summary = (
+                        _append_live_bar_health_snapshot(
+                            symbols=symbols,
+                            rest_bars_by_symbol=(
+                                bars_by_symbol
+                            ),
+                            market_is_open=(
+                                market_is_open
+                            ),
+                            cycle_id=(
+                                next_layer3_cycle_id
+                                if market_is_open
+                                else None
+                            ),
+                        )
                     )
 
                     logging.info(
@@ -5504,6 +6229,9 @@ async def run_layer_monitor(
                             market_is_open=market_is_open,
                             fresh_count=freshness_report.get("fresh_count") if isinstance(freshness_report, dict) else None,
                             required_fresh_symbols=required_fresh_symbols,
+                            live_bar_summary=(
+                                live_bar_health_summary
+                            ),
                             ranked_count=0,
                         )
 
@@ -5572,6 +6300,9 @@ async def run_layer_monitor(
                             required_fresh_symbols=required_fresh_symbols,
                             rest_bar_gate=(
                                 rest_bar_gate_report
+                            ),
+                            live_bar_summary=(
+                                live_bar_health_summary
                             ),
                             ranked_count=len(ranked or []),
                             top_symbols=[
@@ -5705,6 +6436,36 @@ async def run_layer_monitor(
                         )
 
                         layer3_summary.update({
+                            "restart_recovery_warmup_present": (
+                                committed_recovery.get(
+                                    "warmup_present"
+                                )
+                            ),
+                            "restart_recovery_warmup_reason": (
+                                committed_recovery.get(
+                                    "warmup_reason"
+                                )
+                            ),
+                            "restart_recovery_warmup_trusted": (
+                                committed_recovery.get(
+                                    "warmup_trusted_for_restart_recovery"
+                                )
+                            ),
+                            "restart_recovery_warmup_timestamp": (
+                                committed_recovery.get(
+                                    "warmup_timestamp"
+                                )
+                            ),
+                            "restart_recovery_warmup_age_minutes": (
+                                committed_recovery.get(
+                                    "warmup_age_minutes"
+                                )
+                            ),
+                            "restart_recovery_warmup_snapshot_fallback": (
+                                committed_recovery.get(
+                                    "warmup_snapshot_fallback"
+                                )
+                            ),
                             "restart_recovery_observed_bars": (
                                 committed_recovery.get(
                                     "observed_bars"
@@ -5818,6 +6579,9 @@ async def run_layer_monitor(
                         layer4_result=layer4_execution_result,
                         rest_bar_gate=(
                             rest_bar_gate_report
+                        ),
+                        live_bar_summary=(
+                            live_bar_health_summary
                         ),
                     )
 
