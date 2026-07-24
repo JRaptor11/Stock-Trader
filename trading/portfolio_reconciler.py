@@ -12,6 +12,11 @@ from core.state import app_state
 RECONCILE_PENDING_ORDER_GRACE_SECONDS = 5 * 60
 
 
+BROKER_SNAPSHOT_TIMEOUT_SECONDS = 15.0
+
+_broker_snapshot_fetch_task: asyncio.Task | None = None
+
+
 def _safe_float(value, default=0.0) -> float:
     try:
         return float(value)
@@ -111,33 +116,111 @@ def _serialize_order(order) -> dict:
     }
 
 
+def _fetch_broker_snapshot_sync(client):
+    """
+    Fetch one broker snapshot inside a worker thread.
+
+    Keeping the three synchronous Alpaca SDK calls in one worker task avoids
+    blocking the asyncio event loop and makes overlapping snapshot prevention
+    straightforward.
+    """
+    account = client.get_account()
+    positions = client.get_all_positions()
+
+    params = GetOrdersRequest(status=QueryOrderStatus.OPEN)
+    open_orders = client.get_orders(filter=params)
+
+    return account, positions, open_orders
+
+
+def _finish_broker_snapshot_fetch(task: asyncio.Task) -> None:
+    """
+    Release the retained broker snapshot task and consume any late exception.
+    """
+    global _broker_snapshot_fetch_task
+
+    if _broker_snapshot_fetch_task is task:
+        _broker_snapshot_fetch_task = None
+
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        logging.debug(
+            "[PortfolioReconcile] Broker snapshot task was cancelled."
+        )
+    except Exception as exc:
+        logging.debug(
+            "[PortfolioReconcile] Broker snapshot task completed "
+            "with error: %s",
+            exc,
+        )
+
+
 async def _fetch_broker_snapshot() -> tuple[dict, dict, dict]:
     """
     Fetch Alpaca account, positions, and open orders.
 
-    Alpaca is the source of truth for real portfolio state.
+    Alpaca is the source of truth for real portfolio state. The synchronous
+    SDK calls run in a retained worker task with a bounded asyncio wait.
     """
+    global _broker_snapshot_fetch_task
+
     client = app_state.get("trading_client")
     if not client:
         raise RuntimeError("missing_trading_client")
 
-    account = await asyncio.to_thread(client.get_account)
-    positions = await asyncio.to_thread(client.get_all_positions)
+    existing_task = _broker_snapshot_fetch_task
 
-    params = GetOrdersRequest(status=QueryOrderStatus.OPEN)
-    open_orders = await asyncio.to_thread(client.get_orders, filter=params)
+    if existing_task is not None and not existing_task.done():
+        raise TimeoutError(
+            "Previous broker snapshot request is still running; "
+            "skipping overlapping reconciliation request."
+        )
+
+    fetch_task = asyncio.create_task(
+        asyncio.to_thread(
+            _fetch_broker_snapshot_sync,
+            client,
+        ),
+        name="portfolio-reconciler-broker-snapshot",
+    )
+
+    _broker_snapshot_fetch_task = fetch_task
+    fetch_task.add_done_callback(_finish_broker_snapshot_fetch)
+
+    try:
+        account, positions, open_orders = await asyncio.wait_for(
+            asyncio.shield(fetch_task),
+            timeout=BROKER_SNAPSHOT_TIMEOUT_SECONDS,
+        )
+
+    except asyncio.TimeoutError as exc:
+        raise TimeoutError(
+            "Broker snapshot request exceeded "
+            f"{BROKER_SNAPSHOT_TIMEOUT_SECONDS:.1f} seconds."
+        ) from exc
+
+    except asyncio.CancelledError:
+        raise
+
+    except Exception as exc:
+        raise RuntimeError(
+            f"Broker snapshot request failed: {exc}"
+        ) from exc
 
     account_snapshot = _serialize_account(account)
 
     positions_by_symbol = {}
-    for pos in positions:
-        row = _serialize_position(pos)
+
+    for position in positions:
+        row = _serialize_position(position)
         symbol = row["symbol"]
 
         if symbol and row["qty"] > 0:
             positions_by_symbol[symbol] = row
 
     open_orders_by_id = {}
+
     for order in open_orders:
         row = _serialize_order(order)
         order_id = row["id"]
@@ -145,7 +228,11 @@ async def _fetch_broker_snapshot() -> tuple[dict, dict, dict]:
         if order_id:
             open_orders_by_id[order_id] = row
 
-    return account_snapshot, positions_by_symbol, open_orders_by_id
+    return (
+        account_snapshot,
+        positions_by_symbol,
+        open_orders_by_id,
+    )
 
 
 def _open_orders_by_symbol(open_orders_by_id: dict) -> dict:

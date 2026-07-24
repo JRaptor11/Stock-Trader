@@ -6385,15 +6385,10 @@ async def run_layer_monitor(
                         target=target,
                     )
 
-                    layer3_result = (
-                        run_layer3_dry_run(
-                            source_bar_timestamp=(
-                                rest_source_bar_timestamp
-                            ),
-                            restart_recovery=(
-                                restart_recovery
-                            ),
-                        )
+                    layer3_result = await asyncio.to_thread(
+                        run_layer3_dry_run,
+                        source_bar_timestamp=rest_source_bar_timestamp,
+                        restart_recovery=restart_recovery,
                     )
 
                     if isinstance(layer3_result, dict) and (
@@ -6558,7 +6553,8 @@ async def run_layer_monitor(
                         rest_bars_by_symbol=fresh_bars_by_symbol,
                     )
 
-                    layer4_execution_result = execute_layer4_plan(
+                    layer4_execution_result = await asyncio.to_thread(
+                        execute_layer4_plan,
                         layer3_plan,
                         layer3_summary,
                     )
