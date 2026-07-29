@@ -291,6 +291,8 @@ app_state = {
         "liquidation_in_progress": set(),
         "symbols": set(),
         "pending_liquidation_symbols": [],
+        "lifecycles": {},
+        "global_active": False,
         "liquidate_all": False,
         "symbol": None,
         "updated_at": None,

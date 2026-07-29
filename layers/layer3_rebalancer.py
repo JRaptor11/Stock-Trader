@@ -8,7 +8,6 @@ from utils.symbols import normalize_symbol
 
 from core.state import (
     app_state,
-    fail_safe_event,
 )
 from config import runtime_config as config
 
@@ -24,6 +23,11 @@ from layers.layer3_target_hysteresis import (
     prepare_confirmation_evidence,
     resolve_target_hysteresis,
 )
+
+
+def _global_fail_safe_active() -> bool:
+    """Layer 3 only applies the account-wide global fail-safe buy block."""
+    return bool(app_state.get("fail_safes", {}).get("global_active"))
 
 try:
     from alpaca.trading.enums import QueryOrderStatus
@@ -3129,13 +3133,9 @@ def run_layer3_dry_run(
         ]
     )
 
-    fail_safe_active = bool(
-        fail_safe_event.is_set()
-        or app_state.get(
-            "fail_safes",
-            {},
-        ).get("state")
-    )
+    # Layer 3's fail_safe_active switch is account-wide. Per-stock fail-safes
+    # are enforced by Layer 5 only for the affected symbol.
+    fail_safe_active = _global_fail_safe_active()
 
     built_plan = build_layer3_plan_from_snapshots(
         planner_source="REST",

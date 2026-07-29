@@ -7,6 +7,11 @@ from core.state import app_state, app_state_lock, fail_safe_event
 from integrations.alerts import send_email_alert
 from trading.trade_utils import log_trade_to_csv
 from config.runtime_config import get_config
+from safety.fail_safe_lifecycle import (
+    mark_worker_awakened,
+    queue_liquidations,
+    reconcile,
+)
 
 
 # === Fail-Safe Actions ===
@@ -72,38 +77,18 @@ def _queue_fail_safe_liquidation(
     *,
     reason: str,
     liquidate_all: bool = False,
+    trigger_price: float | None = None,
+    entry_price: float | None = None,
+    observed_loss_percent: float | None = None,
 ) -> list[str]:
-    normalized = sorted(_coerce_symbol_set(symbols))
-
-    with app_state_lock:
-        fs = app_state.setdefault("fail_safes", {})
-
-        existing_pending = _coerce_symbol_set(fs.get("pending_liquidation_symbols"))
-        existing_pending.update(normalized)
-
-        existing_symbols = _coerce_symbol_set(fs.get("symbols"))
-        existing_symbols.update(normalized)
-
-        fs["state"] = True
-        fs["updated_at"] = time.time()
-        fs["last_trigger_reason"] = reason
-        fs["pending_liquidation_symbols"] = sorted(existing_pending)
-        fs["symbols"] = set(existing_symbols)
-        fs["liquidate_all"] = bool(liquidate_all)
-
-        if len(normalized) == 1:
-            fs["symbol"] = normalized[0]
-
-    logging.warning(
-        "[FailSafe] Queued liquidation for layered execution | "
-        "reason=%s liquidate_all=%s symbols=%s",
-        reason,
-        liquidate_all,
-        normalized,
+    return queue_liquidations(
+        symbols,
+        reason=reason,
+        scope="global" if liquidate_all else "per_stock",
+        trigger_price=trigger_price,
+        entry_price=entry_price,
+        observed_loss_percent=observed_loss_percent,
     )
-
-    return normalized
-
 
 async def sell_position(symbol, price=None):
     """
@@ -269,7 +254,7 @@ async def check_global_fail_safe():
 
     if _layered_execution_enabled():
         logging.warning(
-            "[FailSafe] Global fail-safe queued for Layer 5 liquidation | symbols=%s",
+            "[FailSafe] Global fail-safe worker signaled | symbols=%s",
             sorted(_coerce_symbol_set(held_symbols)),
         )
     else:
@@ -366,6 +351,8 @@ async def check_per_stock_fail_safe():
             continue
 
         already_queued = symbol in _pending_liquidation_set()
+        if already_queued:
+            continue
 
         logging.warning(f"⚠️ Fail-safe triggered for {symbol}! Loss: {percent_loss:.2f}%")
         log_trade_to_csv(
@@ -379,6 +366,9 @@ async def check_per_stock_fail_safe():
             [symbol],
             reason="per_stock",
             liquidate_all=False,
+            trigger_price=current_price,
+            entry_price=entry_price,
+            observed_loss_percent=percent_loss,
         )
 
         fail_safe_event.set()
@@ -386,7 +376,7 @@ async def check_per_stock_fail_safe():
 
         if _layered_execution_enabled():
             logging.warning(
-                "[FailSafe] Per-stock fail-safe queued for Layer 5 liquidation | "
+                "[FailSafe] Per-stock fail-safe worker signaled | "
                 "symbol=%s loss=%.2f%%",
                 symbol,
                 percent_loss,
@@ -399,6 +389,49 @@ async def check_per_stock_fail_safe():
                 "Per-Stock Fail-Safe Triggered",
                 f"{symbol} dropped {percent_loss:.2f}%. Forced sell was triggered.",
             )
+
+
+async def fail_safe_liquidation_worker() -> None:
+    """Immediate fail-safe path independent of the strategic REST-bar gate."""
+    shutdown_event = app_state["stream"].get("shutdown_event")
+    last_reconcile_at = 0.0
+
+    while not shutdown_event.is_set():
+        event_was_set = fail_safe_event.is_set()
+        periodic_due = (
+            app_state.get("fail_safes", {}).get("state")
+            and time.monotonic() - last_reconcile_at >= 10.0
+        )
+        if not event_was_set and not periodic_due:
+            await _sleep_with_shutdown(0.25)
+            continue
+
+        fail_safe_event.clear()
+        mark_worker_awakened()
+        logging.warning(
+            "[FailSafeLifecycle] execution_worker_awakened_at=%s event_set=%s",
+            datetime.now(timezone.utc).isoformat(),
+            event_was_set,
+        )
+
+        try:
+            await asyncio.to_thread(reconcile)
+            last_reconcile_at = time.monotonic()
+            if app_state.get("fail_safes", {}).get("state"):
+                from layers.layer5_executor import execute_layer5_plan
+
+                stamp = int(time.time() * 1000)
+                await asyncio.to_thread(
+                    execute_layer5_plan,
+                    [],
+                    {
+                        "cycle_id": f"failsafe-{stamp}",
+                        "plan_id": f"failsafe-{stamp}",
+                    },
+                )
+        except Exception:
+            logging.exception("[FailSafeLifecycle] Worker pass failed.")
+            await _sleep_with_shutdown(1)
 
 
 async def _sleep_with_shutdown(seconds: float, step: float = 0.25) -> None:

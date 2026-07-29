@@ -159,6 +159,8 @@ def ensure_app_state_structure() -> None:
     fail_safes.setdefault("liquidation_in_progress", set())
     fail_safes.setdefault("symbols", set())
     fail_safes.setdefault("pending_liquidation_symbols", [])
+    fail_safes.setdefault("lifecycles", {})
+    fail_safes.setdefault("global_active", False)
     fail_safes.setdefault("liquidate_all", False)
     fail_safes.setdefault("last_trigger_reason", None)
     fail_safes.setdefault("symbol", None)

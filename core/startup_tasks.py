@@ -11,7 +11,7 @@ from alpaca.trading.client import TradingClient
 from alpaca.data.historical import StockHistoricalDataClient
 
 from core.state import app_state
-from safety.fail_safes import monitor_fail_safes
+from safety.fail_safes import fail_safe_liquidation_worker, monitor_fail_safes
 from trading.services import (
     PositionTracker,
     OrderExecutor,
@@ -245,6 +245,12 @@ async def background_startup_after_bind() -> None:
         app_state["main"]["async_tasks"].add(portfolio_reconcile_task)
 
         logging.info("[PortfolioReconcile] Portfolio reconciler task scheduled.")
+
+        fail_safe_worker_task = asyncio.create_task(
+            fail_safe_liquidation_worker(),
+            name="fail-safe-liquidation-worker",
+        )
+        app_state["main"]["async_tasks"].add(fail_safe_worker_task)
 
         t1 = safe_thread(
             monitor_fail_safes,

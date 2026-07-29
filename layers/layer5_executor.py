@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import time
+import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
@@ -17,7 +18,7 @@ from layers.layer_logging import (
 from utils.numeric import safe_float, safe_round
 from utils.symbols import normalize_symbol
 
-from core.state import app_state, fail_safe_event
+from core.state import app_state
 from config import runtime_config as config
 from trading.orders import (
     create_order_request,
@@ -27,10 +28,18 @@ from trading.orders import (
 )
 
 from layers.layer_csv import append_layer4_order_rows
+from safety.fail_safe_lifecycle import (
+    eligible_for_submission,
+    mark_submission_failed,
+    mark_submission_started,
+    mark_submitted,
+    snapshot as fail_safe_lifecycle_snapshot,
+)
 
 
 LAYER5_BROKER_ERROR_COOLDOWN_SECONDS = 30 * 60
 LAYER5_QUANTITY_ERROR_CODES = {"40310000", 40310000}
+_LAYER5_EXECUTION_LOCK = threading.RLock()
 
 
 def _normalize_decision(value: Any) -> str:
@@ -492,33 +501,7 @@ def _broker_error_cooldowns() -> dict:
 
 
 def _fail_safe_snapshot() -> dict:
-    fs = app_state.get("fail_safes", {}) or {}
-
-    pending_symbols = fs.get("pending_liquidation_symbols") or []
-    if isinstance(pending_symbols, str):
-        pending_symbols = [pending_symbols]
-
-    tracked_symbols = fs.get("symbols") or []
-    if isinstance(tracked_symbols, str):
-        tracked_symbols = [tracked_symbols]
-
-    symbol = normalize_symbol(fs.get("symbol"))
-
-    return {
-        "event_set": bool(fail_safe_event.is_set()),
-        "state": bool(fs.get("state")),
-        "active": bool(fail_safe_event.is_set() or fs.get("state")),
-        "last_trigger_reason": fs.get("last_trigger_reason"),
-        "symbol": symbol,
-        "symbols": sorted(
-            {normalize_symbol(item) for item in tracked_symbols if normalize_symbol(item)}
-        ),
-        "pending_liquidation_symbols": sorted(
-            {normalize_symbol(item) for item in pending_symbols if normalize_symbol(item)}
-        ),
-        "liquidate_all": bool(fs.get("liquidate_all")),
-        "updated_at": fs.get("updated_at"),
-    }
+    return fail_safe_lifecycle_snapshot()
 
 
 def _fail_safe_liquidation_symbols(snapshot: dict, position_qty: dict[str, float]) -> list[str]:
@@ -535,7 +518,12 @@ def _fail_safe_liquidation_symbols(snapshot: dict, position_qty: dict[str, float
     if symbol:
         symbols.add(symbol)
 
-    return sorted(symbol for symbol in symbols if position_qty.get(symbol, 0.0) > 0)
+    return sorted(
+        symbol
+        for symbol in symbols
+        if position_qty.get(symbol, 0.0) > 0
+        and eligible_for_submission(symbol)
+    )
 
 
 def _price_for_fail_safe_sell(symbol: str, existing_rows: list[dict]) -> float:
@@ -577,6 +565,26 @@ def _append_fail_safe_liquidation_rows(
 
     for symbol in _fail_safe_liquidation_symbols(snapshot, position_qty):
         if symbol in sell_symbols:
+            for row in executable:
+                if (
+                    normalize_symbol(row.get("symbol")) == symbol
+                    and _normalize_decision(row.get("decision")) == "SELL"
+                ):
+                    qty = safe_float(position_qty.get(symbol), 0.0)
+                    price = _price_for_fail_safe_sell(symbol, executable)
+                    row.update(
+                        {
+                            "qty": qty,
+                            "notional": qty * price,
+                            "price": price,
+                            "reason": (
+                                "fail_safe_forced_liquidation_"
+                                f"{snapshot.get('last_trigger_reason') or 'active'}"
+                            ),
+                            "fail_safe_forced": True,
+                        }
+                    )
+                    break
             continue
 
         qty = safe_float(position_qty.get(symbol), 0.0)
@@ -658,26 +666,6 @@ def _record_fail_safe_blocked_buys(
                 "row_id": row_id,
             }
         )
-
-
-def _mark_fail_safe_liquidation_submitted(symbol: str) -> None:
-    symbol = normalize_symbol(symbol)
-    if not symbol:
-        return
-
-    fs = app_state.setdefault("fail_safes", {})
-    pending = fs.get("pending_liquidation_symbols") or []
-    if isinstance(pending, str):
-        pending = [pending]
-
-    pending = [
-        normalize_symbol(item)
-        for item in pending
-        if normalize_symbol(item) != symbol
-    ]
-
-    fs["pending_liquidation_symbols"] = sorted({item for item in pending if item})
-    fs["last_liquidation_submitted_at"] = datetime.now(timezone.utc).isoformat()
 
 
 def _broker_error_cooldown_remaining(symbol: str) -> float:
@@ -885,7 +873,7 @@ def _finish_layer5_result(
     return result
 
 
-def execute_layer5_plan(plan: Any, summary: dict | None = None) -> dict:
+def _execute_layer5_plan_unlocked(plan: Any, summary: dict | None = None) -> dict:
     """
     Execute the latest Layer 4 plan using Layer 5.
 
@@ -1013,7 +1001,7 @@ def execute_layer5_plan(plan: Any, summary: dict | None = None) -> dict:
             open_order_count_by_symbol.get(order_symbol, 0) + 1
         )
 
-    if open_orders:
+    if open_orders and not fail_safe_snapshot["active"]:
         logging.warning(
             "[Layer5Exec] Existing broker open orders detected; skipping Layer 4 "
             "execution this cycle. open_order_count=%s cycle_id=%s plan_id=%s",
@@ -1027,6 +1015,12 @@ def execute_layer5_plan(plan: Any, summary: dict | None = None) -> dict:
             layer5_state=layer5_state,
             started_monotonic=started_monotonic,
             log_level=logging.WARNING,
+        )
+    elif open_orders:
+        logging.warning(
+            "[Layer5Exec] Existing broker orders detected while fail-safe is active; "
+            "continuing with per-symbol duplicate checks. open_order_count=%s",
+            len(open_orders),
         )
 
     position_qty = _position_qty_by_symbol(client)
@@ -1090,8 +1084,10 @@ def execute_layer5_plan(plan: Any, summary: dict | None = None) -> dict:
 
     if fail_safe_snapshot["active"]:
         original_executable_count = len(executable)
-        blocked_buy_rows = [row for row in executable if row.get("decision") == "BUY"]
-        executable = [row for row in executable if row.get("decision") == "SELL"]
+        active_symbols = set(fail_safe_snapshot.get("symbols") or [])
+        blocked_buy_rows = [row for row in executable if row.get("decision") == "BUY" and (fail_safe_snapshot.get("global_active") or row.get("symbol") in active_symbols)]
+        blocked_ids = {id(row) for row in blocked_buy_rows}
+        executable = [row for row in executable if id(row) not in blocked_ids]
 
         _record_fail_safe_blocked_buys(
             result=result,
@@ -1210,6 +1206,21 @@ def execute_layer5_plan(plan: Any, summary: dict | None = None) -> dict:
         position_qty_before = position_qty.get(symbol, 0.0)
         open_order_count_for_symbol = open_order_count_by_symbol.get(symbol, 0)
 
+        if open_order_count_for_symbol > 0:
+            result["skipped"] += 1
+            result["orders"].append(
+                {
+                    "symbol": symbol,
+                    "side": decision.lower(),
+                    "status": "skipped",
+                    "reason": "existing_broker_order_for_symbol",
+                    "open_order_count_for_symbol": open_order_count_for_symbol,
+                    "plan_id": plan_id,
+                    "row_id": row_id,
+                }
+            )
+            continue
+
         if decision == "SELL":
             held_qty = position_qty.get(symbol, 0.0)
             if held_qty <= 0:
@@ -1293,6 +1304,20 @@ def execute_layer5_plan(plan: Any, summary: dict | None = None) -> dict:
         )
 
         try:
+            if row.get("fail_safe_forced") and not mark_submission_started(symbol):
+                result["skipped"] += 1
+                result["orders"].append(
+                    {
+                        "symbol": symbol,
+                        "side": "sell",
+                        "status": "skipped",
+                        "reason": "fail_safe_not_submission_eligible",
+                        "plan_id": plan_id,
+                        "row_id": row_id,
+                    }
+                )
+                continue
+
             order_request = create_order_request(
                 symbol=symbol,
                 qty=qty,
@@ -1500,7 +1525,7 @@ def execute_layer5_plan(plan: Any, summary: dict | None = None) -> dict:
             _clear_broker_error_cooldown(symbol)
 
             if decision == "SELL" and row.get("fail_safe_forced"):
-                _mark_fail_safe_liquidation_submitted(symbol)
+                mark_submitted(symbol, submitted_order)
 
             result["submitted"] += 1
             result["orders"].append(
@@ -1530,6 +1555,8 @@ def execute_layer5_plan(plan: Any, summary: dict | None = None) -> dict:
             )
 
         except Exception as exc:
+            if row.get("fail_safe_forced"):
+                mark_submission_failed(symbol, exc)
 
             if (
                 broker_submit_started_monotonic
@@ -1628,3 +1655,8 @@ def execute_layer5_plan(plan: Any, summary: dict | None = None) -> dict:
         started_monotonic=started_monotonic,
         log_level=logging.WARNING if result["errors"] else logging.INFO,
     )
+
+def execute_layer5_plan(plan: Any, summary: dict | None = None) -> dict:
+    """Serialize strategic and immediate fail-safe submission passes."""
+    with _LAYER5_EXECUTION_LOCK:
+        return _execute_layer5_plan_unlocked(plan, summary)

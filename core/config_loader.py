@@ -443,6 +443,8 @@ def apply_runtime_config_to_app_state() -> None:
     app_state["fail_safes"]["symbol"] = None
     app_state["fail_safes"]["symbols"] = set()
     app_state["fail_safes"]["pending_liquidation_symbols"] = []
+    app_state["fail_safes"]["lifecycles"] = {}
+    app_state["fail_safes"]["global_active"] = False
     app_state["fail_safes"]["liquidate_all"] = False
     app_state["fail_safes"]["updated_at"] = None
     app_state["fail_safes"]["last_trigger_reason"] = None

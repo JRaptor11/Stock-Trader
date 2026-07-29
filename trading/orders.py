@@ -13,6 +13,7 @@ from layers.layer_csv import (
     append_layer_order_outcome_row,
 )
 from core.state import app_state
+from safety.fail_safe_lifecycle import record_order_update, reconcile as reconcile_fail_safe
 
 
 EXTENDED_LIMIT_ORDER_MAX_AGE_SECONDS = 15 * 60
@@ -2607,10 +2608,20 @@ async def monitor_open_orders_loop() -> None:
                         logging.warning(f"[OrderMonitor] Missing order_id for tracked order on {symbol}; removing.")
                         clear_entry_lock(symbol)
                         del app_state["open_orders"][symbol]
+                        try:
+                            reconcile_fail_safe(client=client)
+                        except Exception:
+                            logging.warning(
+                                "[FailSafeLifecycle] Missing-order reconciliation failed "
+                                "for %s",
+                                symbol,
+                                exc_info=True,
+                            )
                         continue
 
                     order = client.get_order_by_id(order_id)
                     status = normalize_status(getattr(order, "status", ""))
+                    record_order_update(symbol, order, status)
                     logging.debug(f"[OrderMonitor] {symbol} → {status}")
 
                     if status == "filled":
@@ -2642,6 +2653,15 @@ async def monitor_open_orders_loop() -> None:
                                 _finalize_filled_buy(symbol, order, order_id)
 
                         del app_state["open_orders"][symbol]
+                        try:
+                            reconcile_fail_safe(client=client)
+                        except Exception:
+                            logging.warning(
+                                "[FailSafeLifecycle] Post-fill reconciliation failed "
+                                "for %s",
+                                symbol,
+                                exc_info=True,
+                            )
 
                     elif status in (
                         "canceled",
@@ -2660,6 +2680,15 @@ async def monitor_open_orders_loop() -> None:
                             symbol,
                             tracked_side,
                         )
+                        try:
+                            reconcile_fail_safe(client=client)
+                        except Exception:
+                            logging.warning(
+                                "[FailSafeLifecycle] Terminal-failure reconciliation "
+                                "failed for %s",
+                                symbol,
+                                exc_info=True,
+                            )
                         logging.warning(f"[✖️ OrderClosed] {symbol} → {status.upper()} — removed from tracking")
 
                     else:
