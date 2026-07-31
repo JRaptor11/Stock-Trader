@@ -2621,7 +2621,16 @@ async def monitor_open_orders_loop() -> None:
 
                     order = client.get_order_by_id(order_id)
                     status = normalize_status(getattr(order, "status", ""))
-                    record_order_update(symbol, order, status)
+                    record_order_update(
+                        symbol,
+                        order,
+                        status,
+                        lifecycle_id=(
+                            tracked.get("fail_safe_lifecycle_id")
+                            if isinstance(tracked, dict)
+                            else None
+                        ),
+                    )
                     logging.debug(f"[OrderMonitor] {symbol} → {status}")
 
                     if status == "filled":

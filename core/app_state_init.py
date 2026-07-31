@@ -165,6 +165,13 @@ def ensure_app_state_structure() -> None:
     fail_safes.setdefault("last_trigger_reason", None)
     fail_safes.setdefault("symbol", None)
     fail_safes.setdefault("updated_at", None)
+    fail_safes.setdefault("reentry_block_until", {})
+
+    daily_review = app_state.setdefault("daily_review", {})
+    daily_review.setdefault("trade_date", None)
+    daily_review.setdefault("snapshots", {})
+    daily_review.setdefault("package_created_for", None)
+    daily_review.setdefault("latest_package", None)
 
     strategy = app_state.setdefault("strategy", {})
     strategy.setdefault("sells_in_progress", set())

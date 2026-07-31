@@ -27,6 +27,7 @@ from safety.fail_safes import fail_safe_liquidation_worker
 class FakePosition:
     symbol: str
     qty: float
+    avg_entry_price: float = 100.0
 
 
 @dataclass
@@ -87,6 +88,14 @@ class FailSafeLifecycleTests(unittest.TestCase):
         self.assertEqual(original["triggered_at"], current["triggered_at"])
         self.assertEqual(["AMD"], app_state["fail_safes"]["pending_liquidation_symbols"])
 
+    def test_new_lifecycle_gets_new_generation_id_after_clear(self):
+        self.queue_amd()
+        first_id = app_state["fail_safes"]["lifecycles"]["AMD"]["lifecycle_id"]
+        lifecycle.reconcile(positions=[], open_orders=[])
+        self.queue_amd()
+        second_id = app_state["fail_safes"]["lifecycles"]["AMD"]["lifecycle_id"]
+        self.assertNotEqual(first_id, second_id)
+
     def test_submission_is_in_flight_not_cleared(self):
         self.queue_amd()
         self.assertTrue(lifecycle.mark_submission_started("AMD"))
@@ -97,6 +106,7 @@ class FailSafeLifecycleTests(unittest.TestCase):
 
     def test_partial_fill_remains_active(self):
         self.queue_amd()
+        lifecycle.mark_submitted("AMD", FakeOrder(symbol="AMD"))
         lifecycle.record_order_update(
             "AMD",
             FakeOrder(symbol="AMD", status="partially_filled", filled_qty=4),
@@ -106,8 +116,9 @@ class FailSafeLifecycleTests(unittest.TestCase):
         self.assertEqual(4.0, state["filled_qty"])
         self.assertTrue(lifecycle.snapshot()["active"])
 
-    def test_complete_fill_waits_for_position_zero(self):
+    def test_complete_fill_with_remaining_position_waits_for_retry(self):
         self.queue_amd()
+        lifecycle.mark_submitted("AMD", FakeOrder(symbol="AMD"))
         lifecycle.record_order_update(
             "AMD",
             FakeOrder(symbol="AMD", status="filled", filled_qty=10),
@@ -117,11 +128,12 @@ class FailSafeLifecycleTests(unittest.TestCase):
             open_orders=[],
         )
         state = app_state["fail_safes"]["lifecycles"]["AMD"]
-        self.assertEqual("filled_awaiting_position", state["lifecycle_state"])
+        self.assertEqual("waiting_retry", state["lifecycle_state"])
         self.assertTrue(lifecycle.snapshot()["active"])
 
     def test_position_zero_reconciliation_clears_per_stock_state(self):
         self.queue_amd()
+        lifecycle.mark_submitted("AMD", FakeOrder(symbol="AMD"))
         lifecycle.record_order_update(
             "AMD",
             FakeOrder(symbol="AMD", status="filled", filled_qty=10),
@@ -130,6 +142,19 @@ class FailSafeLifecycleTests(unittest.TestCase):
         self.assertEqual(["AMD"], result["cleared_symbols"])
         self.assertFalse(lifecycle.snapshot()["active"])
         self.assertFalse(fail_safe_event.is_set())
+
+    def test_position_zero_starts_reentry_cooldown(self):
+        self.queue_amd()
+        lifecycle.mark_submission_started("AMD")
+        lifecycle.mark_submitted("AMD", FakeOrder(symbol="AMD"))
+        app_state.setdefault("config_defaults", {})[
+            "FAIL_SAFE_REENTRY_COOLDOWN_SECONDS"
+        ] = 3600
+        with patch.object(lifecycle.time, "time", return_value=100.0):
+            lifecycle.reconcile(positions=[], open_orders=[])
+            self.assertTrue(lifecycle.should_block_buy("AMD"))
+        with patch.object(lifecycle.time, "time", return_value=3700.0):
+            self.assertFalse(lifecycle.should_block_buy("AMD"))
 
     def test_per_stock_blocks_only_same_symbol(self):
         self.queue_amd()
@@ -177,6 +202,7 @@ class FailSafeLifecycleTests(unittest.TestCase):
 
     def test_terminal_failure_waits_for_retry_cooldown(self):
         self.queue_amd()
+        lifecycle.mark_submitted("AMD", FakeOrder(symbol="AMD"))
         with patch.object(lifecycle.time, "time", return_value=100.0):
             lifecycle.record_order_update(
                 "AMD",
@@ -189,6 +215,7 @@ class FailSafeLifecycleTests(unittest.TestCase):
 
     def test_partially_filled_canceled_retries_remaining_position(self):
         self.queue_amd()
+        lifecycle.mark_submitted("AMD", FakeOrder(symbol="AMD"))
         lifecycle.record_order_update(
             "AMD",
             FakeOrder(symbol="AMD", status="canceled", filled_qty=4),
@@ -274,6 +301,9 @@ class FailSafeLifecycleTests(unittest.TestCase):
         self.assertTrue(str(calls[0][1]["cycle_id"]).startswith("failsafe-"))
 
     def test_july_amd_pending_sell_sequence_does_not_requeue_or_realert(self):
+        app_state["trading_client"] = FakeClient(
+            positions=[FakePosition("AMD", 10, avg_entry_price=100.0)]
+        )
         app_state["open_trades"]["AMD"] = {
             "status": "filled",
             "buy_price": 100.0,
@@ -302,6 +332,7 @@ class FailSafeLifecycleTests(unittest.TestCase):
         self.assertEqual(1, len(csv_rows))
         self.assertEqual(1, len(emails))
         self.assertEqual(1, len(app_state["fail_safes"]["lifecycles"]))
+        lifecycle.mark_submitted("AMD", FakeOrder(symbol="AMD"))
         lifecycle.record_order_update(
             "AMD",
             FakeOrder(symbol="AMD", status="filled", filled_qty=10),
@@ -310,6 +341,73 @@ class FailSafeLifecycleTests(unittest.TestCase):
         lifecycle.reconcile(positions=[], open_orders=[])
         self.assertFalse(lifecycle.snapshot()["active"])
         self.assertEqual([], app_state["fail_safes"]["pending_liquidation_symbols"])
+
+    def test_broker_average_entry_prevents_stale_local_false_trigger(self):
+        app_state["trading_client"] = FakeClient(
+            positions=[FakePosition("AMD", 54, avg_entry_price=446.96)]
+        )
+        app_state["open_trades"]["AMD"] = {
+            "status": "filled",
+            "buy_price": 500.0,
+            "quantity": 54,
+        }
+        app_state["last_trade_price_by_symbol"]["AMD"] = 461.93
+
+        with patch.object(fail_safes, "get_config", return_value=5.0):
+            asyncio.run(fail_safes.check_per_stock_fail_safe())
+
+        self.assertFalse(lifecycle.snapshot()["active"])
+
+    def test_unrelated_order_update_cannot_corrupt_liquidation_lifecycle(self):
+        self.queue_amd()
+        lifecycle.mark_submitted(
+            "AMD",
+            FakeOrder(symbol="AMD", id="liquidation-order"),
+        )
+
+        lifecycle.record_order_update(
+            "AMD",
+            FakeOrder(
+                symbol="AMD",
+                id="strategic-buy-order",
+                side="buy",
+                status="filled",
+                filled_qty=16,
+            ),
+        )
+
+        state = app_state["fail_safes"]["lifecycles"]["AMD"]
+        self.assertEqual("submitted_open", state["lifecycle_state"])
+        self.assertEqual("liquidation-order", state["order_id"])
+        self.assertEqual(0.0, state["filled_qty"])
+
+    def test_filled_liquidation_with_reacquired_position_becomes_retryable(self):
+        self.queue_amd()
+        lifecycle.mark_submitted(
+            "AMD",
+            FakeOrder(symbol="AMD", id="liquidation-order"),
+        )
+        lifecycle.record_order_update(
+            "AMD",
+            FakeOrder(
+                symbol="AMD",
+                id="liquidation-order",
+                status="filled",
+                filled_qty=54,
+            ),
+        )
+
+        with patch.object(lifecycle.time, "time", return_value=300.0):
+            lifecycle.reconcile(
+                positions=[FakePosition("AMD", 16, avg_entry_price=477.46)],
+                open_orders=[],
+            )
+
+        state = app_state["fail_safes"]["lifecycles"]["AMD"]
+        self.assertEqual("waiting_retry", state["lifecycle_state"])
+        self.assertEqual(16.0, state["remaining_broker_position_qty"])
+        self.assertFalse(lifecycle.eligible_for_submission("AMD", now_epoch=329.9))
+        self.assertTrue(lifecycle.eligible_for_submission("AMD", now_epoch=330.0))
 
 
 if __name__ == "__main__":

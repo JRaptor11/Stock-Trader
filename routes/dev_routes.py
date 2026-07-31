@@ -6,6 +6,7 @@ import io
 import json
 import tempfile
 import zipfile
+from pathlib import Path
 from collections import Counter, defaultdict
 
 import logging
@@ -25,6 +26,7 @@ from utils.misc_utils import with_retries
 from market.stream import FakeTrade
 
 from layers.layer_csv import LAYER_CSV_FILES, layer_csv_path, read_csv_rows
+from diagnostics.daily_review import REVIEW_PACKAGE_DIR
 
 # ================================================================
 #
@@ -288,6 +290,7 @@ def dev_route_list():
                     "Download layer_rest_live_attribution_symbols.csv"
                 ),
                 "/layers/all-csv-diagnostics.zip": "GET — Download all available Layer CSV diagnostics as one ZIP",
+                "/daily-review/latest.zip": "GET — Download the latest automatic end-of-day review ZIP",
                 "/layers/dashboard": (
                     "GET — Summarize latest Layer health and REST/LIVE attribution"
                 ),
@@ -689,6 +692,30 @@ def download_all_layer_csv_diagnostics():
         zip_path,
         media_type="application/zip",
         filename=zip_filename,
+    )
+
+
+@dev_routes.get("/daily-review/latest.zip")
+@with_retries()
+def download_latest_daily_review():
+    """Download the newest automatically generated end-of-day review package."""
+    state_path = app_state.get("daily_review", {}).get("latest_package")
+    candidates = []
+    if state_path:
+        candidates.append(Path(state_path))
+    if REVIEW_PACKAGE_DIR.exists():
+        candidates.extend(REVIEW_PACKAGE_DIR.glob("daily_review_*.zip"))
+    existing = [path for path in candidates if path.exists() and path.is_file()]
+    if not existing:
+        raise HTTPException(
+            status_code=404,
+            detail="No completed daily review package is available yet.",
+        )
+    latest = max(existing, key=lambda path: path.stat().st_mtime)
+    return FileResponse(
+        latest,
+        media_type="application/zip",
+        filename=latest.name,
     )
 
 

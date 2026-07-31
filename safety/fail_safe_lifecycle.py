@@ -11,8 +11,10 @@ from datetime import datetime, timezone
 import logging
 import time
 from typing import Any, Iterable
+from uuid import uuid4
 
 from core.state import app_state, app_state_lock, fail_safe_event
+from config.runtime_config import get_config
 
 
 FAIL_SAFE_RETRY_COOLDOWN_SECONDS = 30.0
@@ -69,7 +71,22 @@ def ensure_fail_safe_state() -> dict:
     fs.setdefault("pending_liquidation_symbols", [])
     fs.setdefault("symbol", None)
     fs.setdefault("last_trigger_reason", None)
+    fs.setdefault("reentry_block_until", {})
     return fs
+
+
+def _audit(event: str, lifecycle: dict, *, old_state: str | None = None, error=None, details=None) -> None:
+    try:
+        from diagnostics.fail_safe_audit import append_fail_safe_transition
+        append_fail_safe_transition(
+            event,
+            dict(lifecycle),
+            old_state=old_state,
+            error=error,
+            details=details,
+        )
+    except Exception:
+        logging.warning("[FailSafeLifecycle] Failed writing audit transition.", exc_info=True)
 
 
 def queue_liquidations(
@@ -80,6 +97,7 @@ def queue_liquidations(
     trigger_price: float | None = None,
     entry_price: float | None = None,
     observed_loss_percent: float | None = None,
+    position_qty: float | None = None,
 ) -> list[str]:
     """Create each active lifecycle once and preserve its original trigger."""
     normalized = sorted({normalize_symbol(symbol) for symbol in symbols if normalize_symbol(symbol)})
@@ -108,6 +126,7 @@ def queue_liquidations(
 
             lifecycles[symbol] = {
                 "symbol": symbol,
+                "lifecycle_id": uuid4().hex,
                 "scope": scope,
                 "trigger_reason": reason,
                 "triggered_at": now,
@@ -119,6 +138,7 @@ def queue_liquidations(
                 "entry_price": entry_price,
                 "observed_loss_percent": observed_loss_percent,
                 "observed_loss_percent_latest": observed_loss_percent,
+                "position_qty": position_qty,
                 "lifecycle_state": "queued",
                 "submission_attempt_at": None,
                 "broker_accepted_at": None,
@@ -133,6 +153,7 @@ def queue_liquidations(
                 "next_retry_at_epoch": 0.0,
                 "last_error": None,
                 "cleared_at": None,
+                "entry_price_source": "alpaca_position_avg_entry_price",
             }
             active_symbols.add(symbol)
             created.append(symbol)
@@ -149,6 +170,8 @@ def queue_liquidations(
             fs["symbol"] = normalized[0]
 
     if created:
+        for symbol in created:
+            _audit("queued", ensure_fail_safe_state()["lifecycles"][symbol])
         fail_safe_event.set()
         logging.warning(
             "[FailSafeLifecycle] transition=queued scope=%s reason=%s symbols=%s "
@@ -164,6 +187,14 @@ def queue_liquidations(
 def snapshot() -> dict:
     with app_state_lock:
         fs = ensure_fail_safe_state()
+        now_epoch = time.time()
+        reentry = fs.setdefault("reentry_block_until", {})
+        expired = [
+            symbol for symbol, until in reentry.items()
+            if float(until or 0) <= now_epoch
+        ]
+        for symbol in expired:
+            reentry.pop(symbol, None)
         lifecycles = {
             symbol: dict(data)
             for symbol, data in fs["lifecycles"].items()
@@ -185,13 +216,20 @@ def snapshot() -> dict:
             "symbols": active_symbols,
             "pending_liquidation_symbols": active_symbols,
             "lifecycles": lifecycles,
+            "reentry_block_until": dict(reentry),
+            "reentry_blocked_symbols": sorted(reentry),
             "updated_at": fs.get("updated_at"),
         }
 
 
 def should_block_buy(symbol: str) -> bool:
     state = snapshot()
-    return state["global_active"] or normalize_symbol(symbol) in set(state["symbols"])
+    symbol = normalize_symbol(symbol)
+    return (
+        state["global_active"]
+        or symbol in set(state["symbols"])
+        or symbol in set(state["reentry_blocked_symbols"])
+    )
 
 
 def eligible_for_submission(symbol: str, *, now_epoch: float | None = None) -> bool:
@@ -223,11 +261,14 @@ def mark_submission_started(symbol: str) -> bool:
         lifecycle = fs["lifecycles"].get(symbol)
         if not lifecycle or not eligible_for_submission(symbol):
             return False
+        old_state = lifecycle.get("lifecycle_state")
         lifecycle["lifecycle_state"] = "submitting"
         lifecycle["submission_attempt_at"] = utc_now_iso()
         lifecycle["retry_count"] = int(lifecycle.get("retry_count") or 0) + 1
         lifecycle["last_error"] = None
-        return True
+        audit_row = dict(lifecycle)
+    _audit("submission_started", audit_row, old_state=old_state)
+    return True
 
 
 def mark_submitted(symbol: str, order: Any) -> None:
@@ -235,6 +276,7 @@ def mark_submitted(symbol: str, order: Any) -> None:
     now = utc_now_iso()
     with app_state_lock:
         lifecycle = ensure_fail_safe_state()["lifecycles"].setdefault(symbol, {"symbol": symbol})
+        old_state = lifecycle.get("lifecycle_state")
         lifecycle.update(
             {
                 "lifecycle_state": "submitted_open",
@@ -244,6 +286,8 @@ def mark_submitted(symbol: str, order: Any) -> None:
                 "last_error": None,
             }
         )
+        audit_row = dict(lifecycle)
+    _audit("submitted", audit_row, old_state=old_state)
     logging.warning(
         "[FailSafeLifecycle] transition=submitted_open symbol=%s order_id=%s accepted_at=%s",
         symbol,
@@ -264,6 +308,7 @@ def mark_submission_failed(
         lifecycle = ensure_fail_safe_state()["lifecycles"].get(symbol)
         if not lifecycle:
             return
+        old_state = lifecycle.get("lifecycle_state")
         lifecycle.update(
             {
                 "lifecycle_state": "waiting_retry",
@@ -273,6 +318,8 @@ def mark_submission_failed(
                 "next_retry_at_epoch": time.time() + max(0.0, float(cooldown_seconds)),
             }
         )
+        audit_row = dict(lifecycle)
+    _audit("submission_failed", audit_row, old_state=old_state, error=error)
     fail_safe_event.set()
     logging.error(
         "[FailSafeLifecycle] transition=waiting_retry symbol=%s retry_count=%s "
@@ -284,8 +331,15 @@ def mark_submission_failed(
     )
 
 
-def record_order_update(symbol: str, order: Any, status: str | None = None) -> None:
+def record_order_update(
+    symbol: str,
+    order: Any,
+    status: str | None = None,
+    *,
+    lifecycle_id: str | None = None,
+) -> None:
     symbol = normalize_symbol(symbol)
+    incoming_order_id = str(getattr(order, "id", "") or "")
     status = normalize_status(status if status is not None else getattr(order, "status", ""))
     filled_qty = float(getattr(order, "filled_qty", 0) or 0)
     now = utc_now_iso()
@@ -293,6 +347,30 @@ def record_order_update(symbol: str, order: Any, status: str | None = None) -> N
         lifecycle = ensure_fail_safe_state()["lifecycles"].get(symbol)
         if not lifecycle:
             return
+        lifecycle_order_id = str(lifecycle.get("order_id") or "")
+        current_lifecycle_id = str(lifecycle.get("lifecycle_id") or "")
+        if (
+            not lifecycle_order_id
+            or not incoming_order_id
+            or incoming_order_id != lifecycle_order_id
+            or (
+                lifecycle_id is not None
+                and str(lifecycle_id) != current_lifecycle_id
+            )
+        ):
+            logging.debug(
+                "[FailSafeLifecycle] Ignoring unrelated order update symbol=%s "
+                "lifecycle_order_id=%s incoming_order_id=%s "
+                "lifecycle_id=%s incoming_lifecycle_id=%s status=%s",
+                symbol,
+                lifecycle_order_id or None,
+                incoming_order_id or None,
+                current_lifecycle_id or None,
+                lifecycle_id,
+                status,
+            )
+            return
+        old_state = lifecycle.get("lifecycle_state")
         lifecycle["order_status"] = status
         lifecycle["filled_qty"] = filled_qty
         if filled_qty > 0 and not lifecycle.get("first_fill_at"):
@@ -308,6 +386,9 @@ def record_order_update(symbol: str, order: Any, status: str | None = None) -> N
             lifecycle["last_error"] = status
             lifecycle["next_retry_at_epoch"] = time.time() + FAIL_SAFE_RETRY_COOLDOWN_SECONDS
             fail_safe_event.set()
+        audit_row = dict(lifecycle)
+    if audit_row.get("lifecycle_state") != old_state or status in TERMINAL_FAILURE_STATUSES | {"filled"}:
+        _audit("order_update", audit_row, old_state=old_state, details={"status": status})
 
 
 def _position_quantities(positions: Iterable[Any]) -> dict[str, float]:
@@ -359,6 +440,7 @@ def reconcile(
     open_sells = _open_sell_orders(open_orders)
     now = utc_now_iso()
     cleared: list[str] = []
+    transitions: list[tuple[str, dict, str | None]] = []
 
     with app_state_lock:
         global_active = bool(ensure_fail_safe_state().get("global_active"))
@@ -387,32 +469,53 @@ def reconcile(
             lifecycle["remaining_broker_position_qty"] = remaining
             order = open_sells.get(symbol)
             if order is not None:
+                old_state = lifecycle.get("lifecycle_state")
                 lifecycle["order_id"] = str(getattr(order, "id", "") or lifecycle.get("order_id") or "")
                 lifecycle["order_status"] = normalize_status(getattr(order, "status", ""))
                 lifecycle["filled_qty"] = float(getattr(order, "filled_qty", 0) or 0)
                 lifecycle["lifecycle_state"] = (
                     "partially_filled" if lifecycle["filled_qty"] > 0 else "submitted_open"
                 )
+                if lifecycle["lifecycle_state"] != old_state:
+                    transitions.append(("broker_open_order", dict(lifecycle), old_state))
             elif remaining <= 0:
+                old_state = lifecycle.get("lifecycle_state")
+                liquidation_was_attempted = bool(
+                    lifecycle.get("order_id")
+                    or int(lifecycle.get("retry_count") or 0) > 0
+                    or float(lifecycle.get("filled_qty") or 0) > 0
+                )
+                cooldown_seconds = max(
+                    0.0,
+                    float(get_config("FAIL_SAFE_REENTRY_COOLDOWN_SECONDS") or 0),
+                ) if liquidation_was_attempted else 0.0
+                reentry_until = time.time() + cooldown_seconds
                 lifecycle.update(
                     {
                         "lifecycle_state": "cleared",
                         "position_zero_confirmed_at": now,
                         "cleared_at": now,
                         "remaining_broker_position_qty": 0.0,
+                        "reentry_block_until_epoch": reentry_until,
                     }
                 )
+                if cooldown_seconds > 0:
+                    fs.setdefault("reentry_block_until", {})[symbol] = reentry_until
                 cleared.append(symbol)
+                transitions.append(("cleared", dict(lifecycle), old_state))
             elif lifecycle.get("lifecycle_state") in {
                 "submitted_open",
                 "partially_filled",
                 "submitting",
+                "filled_awaiting_position",
             }:
+                old_state = lifecycle.get("lifecycle_state")
                 lifecycle["lifecycle_state"] = "waiting_retry"
                 lifecycle["next_retry_at_epoch"] = max(
                     float(lifecycle.get("next_retry_at_epoch") or 0.0),
                     time.time() + FAIL_SAFE_RETRY_COOLDOWN_SECONDS,
                 )
+                transitions.append(("retry_scheduled", dict(lifecycle), old_state))
 
         active = {
             symbol
@@ -443,6 +546,8 @@ def reconcile(
             symbol,
             now,
         )
+    for event, lifecycle, old_state in transitions:
+        _audit(event, lifecycle, old_state=old_state)
     return {
         "active_symbols": sorted(active),
         "cleared_symbols": cleared,

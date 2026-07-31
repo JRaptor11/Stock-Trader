@@ -28,6 +28,10 @@ LAYER_CSV_FILES = {
     ),
     "shadow": "layer4_shadow.csv",
     "portfolio-snapshots": "layer_portfolio_snapshots.csv",
+    "fail-safe-lifecycle": "fail_safe_lifecycle.csv",
+    "daily-account-snapshots": "daily_account_snapshots.csv",
+    "daily-position-snapshots": "daily_position_snapshots.csv",
+    "daily-benchmark-snapshots": "daily_benchmark_snapshots.csv",
     "live-bar-health": "layer_live_bar_health.csv",
 
     # Shadow diagnostics for comparing the current delayed REST-bar Layer 1/2

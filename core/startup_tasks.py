@@ -35,6 +35,7 @@ from utils.lifecycle_utils import (
     safe_send_startup_alert,
 )
 from integrations.telegram_bot import start_telegram_bot
+from diagnostics.daily_review import run_daily_review_monitor
 
 
 _startup_alert_tasks: set[asyncio.Task] = set()
@@ -245,6 +246,13 @@ async def background_startup_after_bind() -> None:
         app_state["main"]["async_tasks"].add(portfolio_reconcile_task)
 
         logging.info("[PortfolioReconcile] Portfolio reconciler task scheduled.")
+
+        daily_review_task = asyncio.create_task(
+            run_daily_review_monitor(),
+            name="daily-review-monitor",
+        )
+        app_state["main"]["async_tasks"].add(daily_review_task)
+        logging.info("[DailyReview] Daily snapshot/package monitor scheduled.")
 
         fail_safe_worker_task = asyncio.create_task(
             fail_safe_liquidation_worker(),

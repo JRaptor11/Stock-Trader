@@ -658,7 +658,8 @@ def _record_fail_safe_blocked_buys(
                 "symbol": row.get("symbol"),
                 "side": "buy",
                 "status": "skipped",
-                "reason": "fail_safe_active_blocks_buy",
+                "reason": row.get("_fail_safe_block_reason")
+                or "fail_safe_active_blocks_buy",
                 "qty": qty,
                 "notional": notional,
                 "price": price,
@@ -1082,10 +1083,36 @@ def _execute_layer5_plan_unlocked(plan: Any, summary: dict | None = None) -> dic
                 started_monotonic=started_monotonic,
             )
 
+    reentry_blocked_symbols = set(
+        fail_safe_snapshot.get("reentry_blocked_symbols") or []
+    )
+    if reentry_blocked_symbols:
+        cooldown_rows = [
+            row for row in executable
+            if row.get("decision") == "BUY"
+            and row.get("symbol") in reentry_blocked_symbols
+        ]
+        for row in cooldown_rows:
+            row["_fail_safe_block_reason"] = (
+                "fail_safe_reentry_cooldown_blocks_buy"
+            )
+        cooldown_ids = {id(row) for row in cooldown_rows}
+        executable = [
+            row for row in executable if id(row) not in cooldown_ids
+        ]
+        _record_fail_safe_blocked_buys(
+            result=result,
+            blocked_rows=cooldown_rows,
+            cycle_id=cycle_id,
+            plan_id=plan_id,
+        )
+
     if fail_safe_snapshot["active"]:
         original_executable_count = len(executable)
         active_symbols = set(fail_safe_snapshot.get("symbols") or [])
         blocked_buy_rows = [row for row in executable if row.get("decision") == "BUY" and (fail_safe_snapshot.get("global_active") or row.get("symbol") in active_symbols)]
+        for row in blocked_buy_rows:
+            row["_fail_safe_block_reason"] = "fail_safe_active_blocks_buy"
         blocked_ids = {id(row) for row in blocked_buy_rows}
         executable = [row for row in executable if id(row) not in blocked_ids]
 
@@ -1132,6 +1159,8 @@ def _execute_layer5_plan_unlocked(plan: Any, summary: dict | None = None) -> dic
         result["blocked_reason"] = (
             "fail_safe_active_no_sell_rows"
             if fail_safe_snapshot["active"]
+            else "fail_safe_reentry_cooldown_no_rows"
+            if reentry_blocked_symbols and result["skipped"]
             else "no_executable_rows"
         )
         return _finish_layer5_result(
@@ -1302,6 +1331,7 @@ def _execute_layer5_plan_unlocked(plan: Any, summary: dict | None = None) -> dic
         broker_submit_started_monotonic = (
             None
         )
+        fail_safe_lifecycle_id = None
 
         try:
             if row.get("fail_safe_forced") and not mark_submission_started(symbol):
@@ -1317,6 +1347,13 @@ def _execute_layer5_plan_unlocked(plan: Any, summary: dict | None = None) -> dic
                     }
                 )
                 continue
+            if row.get("fail_safe_forced"):
+                fail_safe_lifecycle_id = (
+                    fail_safe_lifecycle_snapshot()
+                    .get("lifecycles", {})
+                    .get(symbol, {})
+                    .get("lifecycle_id")
+                )
 
             order_request = create_order_request(
                 symbol=symbol,
@@ -1475,6 +1512,7 @@ def _execute_layer5_plan_unlocked(plan: Any, summary: dict | None = None) -> dic
                     "planned_notional": (
                         notional
                     ),
+                    "fail_safe_lifecycle_id": fail_safe_lifecycle_id,
                 },
             )
 

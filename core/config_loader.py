@@ -13,6 +13,7 @@ from config.constants import (
     EQUITY_THRESHOLD,
     EQUITY_FAILSAFE_COOLDOWN,
     MAX_POSITION_LOSS_PERCENT,
+    FAIL_SAFE_REENTRY_COOLDOWN_SECONDS,
     MAX_EQUITY_LOSS,
     MAX_POSITION_LOSS,
     MAX_CONNECTION_ERRORS,
@@ -176,6 +177,11 @@ def load_environment_config() -> None:
     config.LAYER3_BOOTSTRAP_MIN_BAR_COUNT = get_int_env(
         "LAYER3_BOOTSTRAP_MIN_BAR_COUNT",
         8,
+    )
+
+    config.FAIL_SAFE_REENTRY_COOLDOWN_SECONDS = get_int_env(
+        "FAIL_SAFE_REENTRY_COOLDOWN_SECONDS",
+        FAIL_SAFE_REENTRY_COOLDOWN_SECONDS,
     )
 
     config.LAYER3_OPENING_TRANSITION_CYCLES = get_int_env(
@@ -422,6 +428,9 @@ def apply_runtime_config_to_app_state() -> None:
         "EQUITY_THRESHOLD": EQUITY_THRESHOLD,
         "EQUITY_FAILSAFE_COOLDOWN": EQUITY_FAILSAFE_COOLDOWN,
         "MAX_POSITION_LOSS_PERCENT": MAX_POSITION_LOSS_PERCENT,
+        "FAIL_SAFE_REENTRY_COOLDOWN_SECONDS": (
+            config.FAIL_SAFE_REENTRY_COOLDOWN_SECONDS
+        ),
         "MAX_EQUITY_LOSS": MAX_EQUITY_LOSS,
         "MAX_POSITION_LOSS": MAX_POSITION_LOSS,
         "MAX_CONNECTION_ERRORS": MAX_CONNECTION_ERRORS,
@@ -448,6 +457,13 @@ def apply_runtime_config_to_app_state() -> None:
     app_state["fail_safes"]["liquidate_all"] = False
     app_state["fail_safes"]["updated_at"] = None
     app_state["fail_safes"]["last_trigger_reason"] = None
+    app_state["fail_safes"]["reentry_block_until"] = {}
+    app_state["daily_review"] = {
+        "trade_date": None,
+        "snapshots": {},
+        "package_created_for": None,
+        "latest_package": None,
+    }
     fail_safe_event.clear()
 
 

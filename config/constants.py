@@ -20,6 +20,7 @@ CONFIDENCE_CONFLICT_MARGIN = 0.18
 EQUITY_THRESHOLD = 10000               # Global equity failsafe
 EQUITY_FAILSAFE_COOLDOWN = 300         # seconds
 MAX_POSITION_LOSS_PERCENT = 5.0       # Per-position max percent loss
+FAIL_SAFE_REENTRY_COOLDOWN_SECONDS = 3600
 MAX_EQUITY_LOSS = 0.90                 # Global account equity loss
 MAX_POSITION_LOSS = 0.95               # Individual position loss
 MAX_CONNECTION_ERRORS = 5

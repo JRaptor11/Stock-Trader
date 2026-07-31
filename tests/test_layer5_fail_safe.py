@@ -259,6 +259,31 @@ class Layer5FailSafeTests(unittest.TestCase):
         )
         self.assertTrue(lifecycle.snapshot()["active"])
 
+    def test_post_liquidation_cooldown_blocks_same_symbol_buy(self):
+        app_state["fail_safes"]["reentry_block_until"] = {
+            "AMD": time.time() + 3600
+        }
+        client = Client([])
+        result = self.execute(
+            client,
+            plan=[{
+                "symbol": "AMD",
+                "decision": "BUY",
+                "qty": 2,
+                "price": 100,
+                "notional": 200,
+            }],
+        )
+        self.assertEqual(0, result["submitted"])
+        self.assertEqual(
+            "fail_safe_reentry_cooldown_no_rows",
+            result["blocked_reason"],
+        )
+        self.assertTrue(any(
+            row.get("reason") == "fail_safe_reentry_cooldown_blocks_buy"
+            for row in result["orders"]
+        ))
+
     def test_fail_safe_bypasses_strategy_restart_block(self):
         lifecycle.queue_liquidations(["AMD"], reason="per_stock", scope="per_stock")
         client = Client([Position("AMD", 10)])

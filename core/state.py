@@ -297,6 +297,14 @@ app_state = {
         "symbol": None,
         "updated_at": None,
         "last_trigger_reason": None,
+        "reentry_block_until": {},
+    },
+
+    "daily_review": {
+        "trade_date": None,
+        "snapshots": {},
+        "package_created_for": None,
+        "latest_package": None,
     },
 
     # ─────────────────────────────────────────────

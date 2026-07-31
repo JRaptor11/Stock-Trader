@@ -29,6 +29,7 @@ LAYER3_MARKET_HOURS_ONLY = True
 
 LAYER3_BOOTSTRAP_CONFIRMATION_ENABLED = True
 LAYER3_BOOTSTRAP_MIN_BAR_COUNT = 8
+FAIL_SAFE_REENTRY_COOLDOWN_SECONDS = 3600
 
 def get_config(key):
     return app_state["config_overrides"].get(key, app_state["config_defaults"].get(key))

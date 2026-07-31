@@ -80,6 +80,7 @@ def _queue_fail_safe_liquidation(
     trigger_price: float | None = None,
     entry_price: float | None = None,
     observed_loss_percent: float | None = None,
+    position_qty: float | None = None,
 ) -> list[str]:
     return queue_liquidations(
         symbols,
@@ -88,6 +89,7 @@ def _queue_fail_safe_liquidation(
         trigger_price=trigger_price,
         entry_price=entry_price,
         observed_loss_percent=observed_loss_percent,
+        position_qty=position_qty,
     )
 
 async def sell_position(symbol, price=None):
@@ -290,25 +292,51 @@ async def check_per_stock_fail_safe():
         fs.setdefault("liquidate_all", False)
         fs.setdefault("symbols", set())
 
-        open_trades_snapshot = dict(app_state.get("open_trades", {}))
         last_price_snapshot = dict(app_state.get("last_trade_price_by_symbol", {}))
 
-    for symbol, trade_data in open_trades_snapshot.items():
-        symbol = _normalize_symbol(symbol)
+    client = app_state.get("trading_client")
+    if client is None:
+        logging.warning(
+            "[FailSafe] Skipping per-stock checks because no trading client is available."
+        )
+        return
 
-        if not isinstance(trade_data, dict):
+    try:
+        broker_positions = await asyncio.to_thread(client.get_all_positions)
+    except Exception:
+        logging.warning(
+            "[FailSafe] Skipping per-stock checks because the broker position "
+            "snapshot failed.",
+            exc_info=True,
+        )
+        return
+
+    for position in broker_positions or []:
+        symbol = _normalize_symbol(getattr(position, "symbol", ""))
+        if not symbol:
             continue
 
-        status = str(trade_data.get("status", "")).lower().strip()
-        if not _is_held_trade_status(status):
-            logging.debug(f"[FailSafe] Skipping {symbol}; non-held local status={status!r}")
+        try:
+            quantity = float(getattr(position, "qty", 0) or 0)
+            entry_price = float(getattr(position, "avg_entry_price", 0) or 0)
+        except (TypeError, ValueError):
+            logging.warning(
+                "[FailSafe] Skipping %s because the broker position fields are invalid.",
+                symbol,
+            )
             continue
 
-        entry_price = float(trade_data.get("buy_price", 0) or 0)
+        if quantity <= 0:
+            continue
+
         current_price = last_price_snapshot.get(symbol)
 
         logging.debug(
-            f"[FailSafe] {symbol}: status={status}, Entry=${entry_price}, Current=${current_price}"
+            "[FailSafe] %s: broker_qty=%s, broker_avg_entry=$%s, Current=$%s",
+            symbol,
+            quantity,
+            entry_price,
+            current_price,
         )
 
         with app_state_lock:
@@ -320,7 +348,11 @@ async def check_per_stock_fail_safe():
                     continue
                 cache[symbol] = "invalid_entry"
 
-            logging.error(f"[FailSafe] Invalid buy_price ({entry_price}) for {symbol}")
+            logging.error(
+                "[FailSafe] Invalid broker avg_entry_price (%s) for %s",
+                entry_price,
+                symbol,
+            )
             continue
 
         if current_price is None or float(current_price) <= 0:
@@ -369,6 +401,7 @@ async def check_per_stock_fail_safe():
             trigger_price=current_price,
             entry_price=entry_price,
             observed_loss_percent=percent_loss,
+            position_qty=quantity,
         )
 
         fail_safe_event.set()
