@@ -67,6 +67,7 @@ from core.state import app_state, fail_safe_event
 from layers import layer5_executor
 from layers.layer3_rebalancer import _global_fail_safe_active
 from safety import fail_safe_lifecycle as lifecycle
+from trading import orders as order_tracking
 
 
 @dataclass
@@ -136,6 +137,39 @@ class ClosedMarketClient(Client):
         return types.SimpleNamespace(is_open=False)
 
 
+class SellSettlingClient(Client):
+    def __init__(self):
+        super().__init__([Position("AMD", 10, avg_entry_price=100)])
+        self.cash = 0.0
+        self.orders_by_id = {}
+
+    def get_account(self):
+        return types.SimpleNamespace(
+            cash=self.cash,
+            equity=100000,
+            buying_power=100000,
+        )
+
+    def submit_order(self, request):
+        order = BrokerOrder(
+            symbol=request.symbol,
+            side=request.side,
+            status="filled",
+            id=f"order-{len(self.submissions) + 1}",
+            filled_qty=request.qty,
+        )
+        order.filled_avg_price = 100.0
+        self.submissions.append(request)
+        self.orders_by_id[order.id] = order
+        if request.side == OrderSide.SELL:
+            self.positions = []
+            self.cash += request.qty * 100.0
+        return order
+
+    def get_order_by_id(self, order_id):
+        return self.orders_by_id[order_id]
+
+
 class Layer5FailSafeTests(unittest.TestCase):
     def setUp(self):
         fail_safe_event.clear()
@@ -198,6 +232,14 @@ class Layer5FailSafeTests(unittest.TestCase):
         self.assertEqual({"AMD", "NVDA"}, {request.symbol for request in client.submissions})
         amd = next(request for request in client.submissions if request.symbol == "AMD")
         self.assertEqual(10, amd.qty)
+        amd_result = next(
+            order for order in result["orders"]
+            if order.get("symbol") == "AMD"
+        )
+        self.assertEqual(
+            "risk_or_fail_safe",
+            amd_result["trade_attribution"],
+        )
         self.assertFalse(_global_fail_safe_active())
 
     def test_global_blocks_all_buys(self):
@@ -319,6 +361,69 @@ class Layer5FailSafeTests(unittest.TestCase):
         for thread in threads:
             thread.join()
         self.assertEqual(1, len(client.submissions))
+
+    def test_terminal_buy_syncs_aggregate_broker_position(self):
+        client = Client([Position("AMD", 15, avg_entry_price=105)])
+        app_state["trading_client"] = client
+        order = BrokerOrder(
+            "AMD",
+            OrderSide.BUY,
+            status="filled",
+            id="buy-1",
+            filled_qty=5,
+        )
+        order.filled_avg_price = 110
+
+        order_tracking._finalize_filled_buy("AMD", order, "buy-1")
+
+        self.assertEqual(15, app_state["open_trades"]["AMD"]["quantity"])
+        self.assertEqual(105, app_state["open_trades"]["AMD"]["buy_price"])
+        self.assertEqual("synced", app_state["open_trades"]["AMD"]["status"])
+
+    def test_terminal_partial_sell_preserves_remaining_broker_position(self):
+        client = Client([Position("AMD", 6, avg_entry_price=100)])
+        app_state["trading_client"] = client
+        order = BrokerOrder(
+            "AMD",
+            OrderSide.SELL,
+            status="filled",
+            id="sell-1",
+            filled_qty=4,
+        )
+        order.filled_avg_price = 99
+
+        order_tracking._finalize_filled_sell("AMD", order, "sell-1")
+
+        self.assertEqual(6, app_state["open_trades"]["AMD"]["quantity"])
+        self.assertEqual("synced", app_state["open_trades"]["AMD"]["status"])
+
+    def test_sell_phase_refreshes_cash_before_buy_phase(self):
+        client = SellSettlingClient()
+        plan = [
+            {
+                "symbol": "NVDA",
+                "decision": "BUY",
+                "qty": 5,
+                "price": 100,
+                "notional": 500,
+            },
+            {
+                "symbol": "AMD",
+                "decision": "SELL",
+                "qty": 10,
+                "price": 100,
+                "notional": 1000,
+            },
+        ]
+
+        result = self.execute(client, plan)
+
+        self.assertEqual(["AMD", "NVDA"], [
+            request.symbol for request in client.submissions
+        ])
+        self.assertEqual(2, result["submitted"])
+        self.assertEqual(1000, result["cash_after_sell_refresh"])
+        self.assertEqual(1, result["sell_phase_wait"]["terminal_order_count"])
 
 
 if __name__ == "__main__":

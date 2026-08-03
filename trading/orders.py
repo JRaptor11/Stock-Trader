@@ -12,7 +12,7 @@ from layers.layer_csv import (
     append_layer_order_outcome_cycle_row,
     append_layer_order_outcome_row,
 )
-from core.state import app_state
+from core.state import app_state, app_state_lock
 from safety.fail_safe_lifecycle import record_order_update, reconcile as reconcile_fail_safe
 
 
@@ -2087,18 +2087,150 @@ def _has_broker_pending_sell(symbol: str) -> bool:
         return True  # safest fallback
 
 
+def _sync_local_position_from_broker(
+    symbol: str,
+    *,
+    source: str,
+) -> tuple[bool, dict | None]:
+    """
+    Replace local state with the broker's aggregate position after an order.
+
+    A terminal order reports only that order's filled quantity. It does not
+    report the combined/remaining account position, so using it directly
+    corrupts local state after scale-ins and partial sells.
+    """
+    client = app_state.get("trading_client")
+    if client is None:
+        return False, None
+
+    try:
+        positions = list(client.get_all_positions() or [])
+    except Exception:
+        logging.warning(
+            "[PositionSync] Broker position refresh failed after %s for %s.",
+            source,
+            symbol,
+            exc_info=True,
+        )
+        return False, None
+
+    broker_position = next(
+        (
+            position
+            for position in positions
+            if str(getattr(position, "symbol", "") or "").upper().strip()
+            == symbol
+            and _safe_float(getattr(position, "qty", 0), 0) > 0
+        ),
+        None,
+    )
+
+    with app_state_lock:
+        open_trades = app_state.setdefault("open_trades", {})
+        previous = open_trades.get(symbol)
+
+        if broker_position is None:
+            open_trades.pop(symbol, None)
+            return True, None
+
+        qty = _safe_float(getattr(broker_position, "qty", 0), 0)
+        avg_entry = _safe_float(
+            getattr(broker_position, "avg_entry_price", 0),
+            0,
+        )
+        now = datetime.now(timezone.utc)
+        updated = dict(previous) if isinstance(previous, dict) else {}
+        updated.update({
+            "buy_price": avg_entry,
+            "buy_time": updated.get("buy_time") or now,
+            "quantity": qty,
+            "status": "synced",
+            "max_price": max(
+                _safe_float(updated.get("max_price"), avg_entry),
+                avg_entry,
+            ),
+            "reconciled_at": now.isoformat(),
+            "reconcile_source": source,
+        })
+        for key in (
+            "pending_buy_order_id",
+            "pending_buy_quantity",
+            "pending_sell_order_id",
+            "sell_order_id",
+            "sell_quantity",
+            "broker_quantity_before_order",
+        ):
+            updated.pop(key, None)
+        open_trades[symbol] = updated
+        return True, dict(updated)
+
+
+def _fallback_terminal_position_update(
+    symbol: str,
+    *,
+    side: str,
+    filled_qty: float,
+    filled_price: float,
+) -> dict | None:
+    """Conservative fallback used only when the broker snapshot is unavailable."""
+    with app_state_lock:
+        open_trades = app_state.setdefault("open_trades", {})
+        previous = open_trades.get(symbol)
+        previous = dict(previous) if isinstance(previous, dict) else {}
+        base_qty = _safe_float(
+            previous.get(
+                "broker_quantity_before_order",
+                previous.get("quantity", 0),
+            ),
+            0,
+        )
+        remaining_qty = (
+            base_qty + filled_qty
+            if side == "buy"
+            else max(0.0, base_qty - filled_qty)
+        )
+
+        if remaining_qty <= 0:
+            open_trades.pop(symbol, None)
+            return None
+
+        previous.update({
+            "quantity": remaining_qty,
+            "status": "filled",
+            "buy_price": _safe_float(
+                previous.get("buy_price"),
+                filled_price,
+            ) or filled_price,
+            "buy_time": previous.get("buy_time") or datetime.now(timezone.utc),
+            "reconcile_source": f"terminal_{side}_fallback",
+        })
+        for key in (
+            "pending_buy_order_id",
+            "pending_buy_quantity",
+            "pending_sell_order_id",
+            "sell_order_id",
+            "sell_quantity",
+            "broker_quantity_before_order",
+        ):
+            previous.pop(key, None)
+        open_trades[symbol] = previous
+        return dict(previous)
+
+
 def _finalize_filled_buy(symbol: str, order, order_id: str) -> None:
     qty = _safe_float(getattr(order, "filled_qty", 0), 0)
     price = _safe_float(getattr(order, "filled_avg_price", 0), 0)
-    now = datetime.now(timezone.utc)
-
-    app_state.setdefault("open_trades", {})[symbol] = {
-        "buy_price": price,
-        "buy_time": now,
-        "quantity": qty,
-        "status": "filled",
-        "order_id": order_id,
-    }
+    synced, _ = _sync_local_position_from_broker(
+        symbol,
+        source="terminal_buy_broker_snapshot",
+    )
+    if not synced:
+        _fallback_terminal_position_update(
+            symbol,
+            side="buy",
+            filled_qty=qty,
+            filled_price=price,
+        )
 
     app_state.setdefault("last_trade_price_by_symbol", {})[symbol] = price
     app_state["last_trade_time"] = time.time()
@@ -2114,7 +2246,7 @@ def _finalize_filled_sell(symbol: str, order, order_id: str) -> None:
     price = _safe_float(getattr(order, "filled_avg_price", 0), 0)
     sell_time = datetime.now(timezone.utc)
 
-    trade_info = app_state.setdefault("open_trades", {}).pop(symbol, None)
+    trade_info = app_state.setdefault("open_trades", {}).get(symbol)
 
     if trade_info:
         buy_price = _safe_float(trade_info.get("buy_price", price), price)
@@ -2142,6 +2274,18 @@ def _finalize_filled_sell(symbol: str, order, order_id: str) -> None:
             app_state["strategy"]["consecutive_losses"] = 0
     else:
         logging.warning(f"[OrderMonitor] ⚠️ Filled SELL for {symbol} but no matching open_trades entry was found.")
+
+    synced, _ = _sync_local_position_from_broker(
+        symbol,
+        source="terminal_sell_broker_snapshot",
+    )
+    if not synced:
+        _fallback_terminal_position_update(
+            symbol,
+            side="sell",
+            filled_qty=qty,
+            filled_price=price,
+        )
 
     app_state["last_trade_time"] = time.time()
     app_state["last_signal"] = "sell"
@@ -2311,9 +2455,20 @@ def _cleanup_local_order_state_after_cancel(symbol: str, side: str | None) -> No
             status = str(trade_info.get("status", "")).lower().strip()
             if status == "pending":
                 app_state["open_trades"].pop(symbol, None)
+            else:
+                trade_info.pop("pending_buy_order_id", None)
+                trade_info.pop("pending_buy_quantity", None)
+                trade_info.pop("broker_quantity_before_order", None)
 
     elif side == "sell":
         app_state.setdefault("strategy", {}).setdefault("sells_in_progress", set()).discard(symbol)
+        trade_info = app_state.get("open_trades", {}).get(symbol)
+        if isinstance(trade_info, dict):
+            trade_info["status"] = "synced"
+            trade_info.pop("pending_sell_order_id", None)
+            trade_info.pop("sell_order_id", None)
+            trade_info.pop("sell_quantity", None)
+            trade_info.pop("broker_quantity_before_order", None)
 
 
 def cancel_tracked_order(symbol: str, reason: str = "manual_cleanup") -> bool:

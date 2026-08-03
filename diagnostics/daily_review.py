@@ -15,6 +15,7 @@ import zipfile
 from zoneinfo import ZoneInfo
 
 from core.state import app_state
+from diagnostics.execution_analytics import build_execution_analytics
 from layers.layer_csv import LAYER_CSV_FILES, layer_csv_path
 
 
@@ -278,7 +279,13 @@ def _redacted_config() -> dict:
     }
 
 
-def _daily_summary(snapshots: dict) -> dict:
+def _daily_summary(
+    snapshots: dict,
+    *,
+    trade_date: str | None = None,
+    execution_rows: list[dict] | None = None,
+    plan_rows: list[dict] | None = None,
+) -> dict:
     opening = snapshots.get("open", {})
     closing = snapshots.get("close", {})
     open_account = opening.get("account", {})
@@ -294,6 +301,18 @@ def _daily_summary(snapshots: dict) -> dict:
         if row.get("symbol")
     }
     symbols = sorted(set(open_positions) | set(close_positions))
+    trade_date = (
+        trade_date
+        or closing.get("trade_date")
+        or opening.get("trade_date")
+        or datetime.now(EASTERN).date().isoformat()
+    )
+    execution_analytics = build_execution_analytics(
+        snapshots,
+        trade_date=trade_date,
+        execution_rows=execution_rows,
+        plan_rows=plan_rows,
+    )
     return {
         "open_equity": open_equity or None,
         "close_equity": close_equity or None,
@@ -336,11 +355,33 @@ def _daily_summary(snapshots: dict) -> dict:
         ],
         "benchmarks": closing.get("benchmarks", []),
         "broker_order_count_at_close": len(closing.get("orders", [])),
-        "realized_pnl_note": (
-            "Alpaca position snapshots do not expose authoritative per-symbol "
-            "realized daily P&L; broker orders/fills are included for attribution."
-        ),
+        "execution_analytics": execution_analytics,
     }
+
+
+def _read_diagnostic_rows(filename: str, trade_date: str) -> list[dict]:
+    path = layer_csv_path(filename)
+    if not path.exists():
+        return []
+    try:
+        with path.open("r", newline="", encoding="utf-8-sig") as handle:
+            rows = list(csv.DictReader(handle))
+    except Exception:
+        logging.warning(
+            "[DailyReview] Failed reading %s for analytics.",
+            filename,
+            exc_info=True,
+        )
+        return []
+    return [
+        row for row in rows
+        if str(
+            row.get("timestamp")
+            or row.get("broker_submitted_at")
+            or row.get("plan_created_at")
+            or ""
+        )[:10] == trade_date
+    ]
 
 
 def build_daily_review_package(trade_date: str | None = None) -> Path:
@@ -349,6 +390,18 @@ def build_daily_review_package(trade_date: str | None = None) -> Path:
     REVIEW_PACKAGE_DIR.mkdir(parents=True, exist_ok=True)
     path = REVIEW_PACKAGE_DIR / f"daily_review_{trade_date}.zip"
     snapshots = state.get("snapshots", {})
+    execution_rows = _read_diagnostic_rows(
+        LAYER_CSV_FILES["orders"], trade_date
+    )
+    plan_rows = _read_diagnostic_rows(
+        LAYER_CSV_FILES["plans"], trade_date
+    )
+    daily_summary = _daily_summary(
+        snapshots,
+        trade_date=trade_date,
+        execution_rows=execution_rows,
+        plan_rows=plan_rows,
+    )
     metadata = {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "trade_date": trade_date,
@@ -384,7 +437,15 @@ def build_daily_review_package(trade_date: str | None = None) -> Path:
         archive.writestr("snapshots.json", json.dumps(snapshots, indent=2, default=str))
         archive.writestr(
             "daily_summary.json",
-            json.dumps(_daily_summary(snapshots), indent=2, default=str),
+            json.dumps(daily_summary, indent=2, default=str),
+        )
+        archive.writestr(
+            "execution_analytics.json",
+            json.dumps(
+                daily_summary.get("execution_analytics", {}),
+                indent=2,
+                default=str,
+            ),
         )
         archive.writestr("config_redacted.json", json.dumps(_redacted_config(), indent=2, default=str))
         archive.writestr("manifest.json", json.dumps(metadata, indent=2, default=str))

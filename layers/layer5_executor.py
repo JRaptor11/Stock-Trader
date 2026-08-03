@@ -493,6 +493,60 @@ def _refresh_broker_snapshot(client, layer5_state: dict, *, label: str) -> dict:
     return snapshot
 
 
+def _wait_for_sell_terminal_states(
+    client,
+    order_ids: list[str],
+    *,
+    timeout_seconds: float = 12.0,
+    poll_seconds: float = 0.25,
+) -> dict:
+    """Wait briefly for submitted sells before refreshing cash for buys."""
+    result = {
+        "requested_order_count": len(order_ids),
+        "terminal_order_count": 0,
+        "timed_out_order_ids": [],
+        "duration_seconds": 0.0,
+        "supported": callable(getattr(client, "get_order_by_id", None)),
+    }
+    if not order_ids or not result["supported"]:
+        return result
+
+    terminal_statuses = {
+        "filled", "canceled", "expired", "rejected", "done_for_day",
+    }
+    pending = {str(order_id) for order_id in order_ids if order_id}
+    started = time.monotonic()
+    deadline = started + max(0.0, float(timeout_seconds))
+
+    while pending and time.monotonic() < deadline:
+        for order_id in list(pending):
+            try:
+                order = client.get_order_by_id(order_id)
+                status = str(
+                    getattr(
+                        getattr(order, "status", ""),
+                        "value",
+                        getattr(order, "status", ""),
+                    )
+                    or ""
+                ).lower().strip()
+                if status in terminal_statuses:
+                    pending.discard(order_id)
+            except Exception:
+                logging.warning(
+                    "[Layer5Exec] Sell-phase order refresh failed | order_id=%s",
+                    order_id,
+                    exc_info=True,
+                )
+        if pending:
+            time.sleep(min(poll_seconds, max(0.0, deadline - time.monotonic())))
+
+    result["duration_seconds"] = round(time.monotonic() - started, 3)
+    result["terminal_order_count"] = len(order_ids) - len(pending)
+    result["timed_out_order_ids"] = sorted(pending)
+    return result
+
+
 def _broker_error_cooldowns() -> dict:
     return app_state.setdefault("execution", {}).setdefault(
         "layer5_broker_error_cooldowns",
@@ -916,6 +970,9 @@ def _execute_layer5_plan_unlocked(plan: Any, summary: dict | None = None) -> dic
         "count_integrity_ok": None,
         "strategy_execution_blocked_reason": None,
         "strategy_rows_blocked": 0,
+        "execution_sequence": "sells_then_cash_refresh_then_buys",
+        "sell_phase_wait": None,
+        "cash_after_sell_refresh": None,
         "orders": [],
     }
 
@@ -1178,6 +1235,16 @@ def _execute_layer5_plan_unlocked(plan: Any, summary: dict | None = None) -> dic
         [compact_executable_row_for_log(row) for row in executable],
     )
 
+    executable = sorted(
+        executable,
+        key=lambda row: (
+            0 if row.get("decision") == "SELL" else 1,
+            str(row.get("symbol") or ""),
+        ),
+    )
+    submitted_sell_order_ids: list[str] = []
+    buy_phase_started = False
+
     for row in executable:
         symbol = row["symbol"]
         decision = row["decision"]
@@ -1186,6 +1253,51 @@ def _execute_layer5_plan_unlocked(plan: Any, summary: dict | None = None) -> dic
         notional = safe_float(row.get("notional"), qty * price)
         reason = str(row.get("reason", ""))
         row_id = row.get("row_id") or f"{plan_id}:{symbol}"
+
+        if decision == "BUY" and not buy_phase_started:
+            buy_phase_started = True
+            wait_timeout = safe_float(
+                app_state.get("execution", {}).get(
+                    "sell_first_wait_timeout_seconds",
+                    12.0,
+                ),
+                12.0,
+            )
+            result["sell_phase_wait"] = _wait_for_sell_terminal_states(
+                client,
+                submitted_sell_order_ids,
+                timeout_seconds=wait_timeout,
+            )
+            refreshed = _refresh_broker_snapshot(
+                client,
+                layer5_state,
+                label="after_sell_phase",
+            )
+            if refreshed.get("positions_ok"):
+                position_qty = {
+                    broker_symbol: safe_float(position.get("qty"), 0.0)
+                    for broker_symbol, position in refreshed.get(
+                        "positions",
+                        {},
+                    ).items()
+                }
+            if refreshed.get("account_ok"):
+                available_cash_budget = safe_float(
+                    refreshed.get("cash"),
+                    available_cash_budget,
+                )
+            result["cash_after_sell_refresh"] = available_cash_budget
+            logging.info(
+                "[Layer5Exec] Sell phase complete; refreshed broker state "
+                "before buys | cycle_id=%s plan_id=%s sells=%s "
+                "terminal=%s timed_out=%s cash=%s",
+                cycle_id,
+                plan_id,
+                len(submitted_sell_order_ids),
+                result["sell_phase_wait"].get("terminal_order_count"),
+                result["sell_phase_wait"].get("timed_out_order_ids"),
+                available_cash_budget,
+            )
 
         result["attempted"] += 1
 
@@ -1492,6 +1604,20 @@ def _execute_layer5_plan_unlocked(plan: Any, summary: dict | None = None) -> dic
             if not order_id:
                 raise RuntimeError(f"Broker did not return order id for {symbol}")
 
+            execution_phase = (
+                "sell"
+                if decision == "SELL"
+                else "buy_after_sell_refresh"
+            )
+            trade_attribution, trade_attribution_evidence = (
+                _trade_attribution(
+                    row,
+                    broker_position_qty=position_qty_before,
+                )
+            )
+            if decision == "SELL":
+                submitted_sell_order_ids.append(str(order_id))
+
             track_limit_order(
                 symbol=symbol,
                 order_id=order_id,
@@ -1512,24 +1638,48 @@ def _execute_layer5_plan_unlocked(plan: Any, summary: dict | None = None) -> dic
                     "planned_notional": (
                         notional
                     ),
+                    "execution_phase": execution_phase,
+                    "trade_attribution": trade_attribution,
+                    "trade_attribution_evidence": trade_attribution_evidence,
                     "fail_safe_lifecycle_id": fail_safe_lifecycle_id,
                 },
             )
 
             if normalize_side(side) == "buy":
-                app_state.setdefault("open_trades", {})[symbol] = {
-                    "status": "pending",
-                    "order_id": str(order_id),
-                    "quantity": qty,
-                    "buy_price": price,
-                    "buy_time": datetime.now(timezone.utc),
-                    "source": "layer5",
-                    "layer4_reason": reason,  # temporary backward-compatible field
-                    "layer5_reason": reason,
-                    "cycle_id": cycle_id,
-                    "plan_id": plan_id,
-                    "row_id": row_id,
-                }
+                open_trades = app_state.setdefault("open_trades", {})
+                existing = open_trades.get(symbol)
+                if (
+                    isinstance(existing, dict)
+                    and position_qty_before > 0
+                ):
+                    existing["pending_buy_order_id"] = str(order_id)
+                    existing["pending_buy_quantity"] = qty
+                    existing["broker_quantity_before_order"] = (
+                        position_qty_before
+                    )
+                    existing["source"] = "layer5"
+                    existing["layer5_reason"] = reason
+                    existing["cycle_id"] = cycle_id
+                    existing["plan_id"] = plan_id
+                    existing["row_id"] = row_id
+                else:
+                    open_trades[symbol] = {
+                        "status": "pending",
+                        "order_id": str(order_id),
+                        "quantity": 0.0,
+                        "broker_quantity_before_order": (
+                            position_qty_before
+                        ),
+                        "pending_buy_quantity": qty,
+                        "buy_price": price,
+                        "buy_time": datetime.now(timezone.utc),
+                        "source": "layer5",
+                        "layer4_reason": reason,
+                        "layer5_reason": reason,
+                        "cycle_id": cycle_id,
+                        "plan_id": plan_id,
+                        "row_id": row_id,
+                    }
 
             elif normalize_side(side) == "sell":
                 existing = app_state.setdefault("open_trades", {}).setdefault(
@@ -1538,7 +1688,11 @@ def _execute_layer5_plan_unlocked(plan: Any, summary: dict | None = None) -> dic
                 )
                 existing["status"] = "pending_sell"
                 existing["sell_order_id"] = str(order_id)
+                existing["pending_sell_order_id"] = str(order_id)
                 existing["sell_quantity"] = qty
+                existing["broker_quantity_before_order"] = (
+                    position_qty_before
+                )
                 existing["source"] = "layer5"
                 existing["layer4_reason"] = reason  # temporary backward-compatible field
                 existing["layer5_reason"] = reason
@@ -1580,6 +1734,9 @@ def _execute_layer5_plan_unlocked(plan: Any, summary: dict | None = None) -> dic
                     "cash_budget_before": cash_budget_before,
                     "cash_budget_after": cash_budget_after,
                     "status": "submitted",
+                    "execution_phase": execution_phase,
+                    "trade_attribution": trade_attribution,
+                    "trade_attribution_evidence": trade_attribution_evidence,
                     "order_id": str(order_id),
                     "qty": qty,
                     "notional": notional,
@@ -1698,3 +1855,57 @@ def execute_layer5_plan(plan: Any, summary: dict | None = None) -> dict:
     """Serialize strategic and immediate fail-safe submission passes."""
     with _LAYER5_EXECUTION_LOCK:
         return _execute_layer5_plan_unlocked(plan, summary)
+def _trade_attribution(
+    row: dict,
+    *,
+    broker_position_qty: float | None = None,
+) -> tuple[str, str]:
+    """Classify why an executable row exists without affecting execution."""
+    reason = str(row.get("reason") or "").lower()
+    planned_current_qty = row.get("current_qty")
+    if planned_current_qty is not None and broker_position_qty is not None:
+        planned_qty = safe_float(planned_current_qty, 0.0)
+        broker_qty = safe_float(broker_position_qty, 0.0)
+        if abs(planned_qty - broker_qty) > 0.000001:
+            return (
+                "stale_local_state_correction",
+                (
+                    "Layer 3 current_qty differed from broker position at "
+                    f"execution ({planned_qty} vs {broker_qty})"
+                ),
+            )
+    if row.get("fail_safe_forced") or any(
+        token in reason for token in ("fail_safe", "risk", "loss")
+    ):
+        return "risk_or_fail_safe", "risk/fail-safe reason"
+    if any(
+        token in reason
+        for token in (
+            "reconcile",
+            "broker_state",
+            "stale_local",
+            "position_mismatch",
+        )
+    ):
+        category = (
+            "stale_local_state_correction"
+            if "stale" in reason or "mismatch" in reason
+            else "broker_state_reconciliation"
+        )
+        return category, "state-reconciliation reason"
+    if row.get("target_hysteresis_changed_target") or any(
+        token in reason
+        for token in ("ranking", "rank_change", "target_added", "target_removed")
+    ):
+        return "genuine_ranking_change", "target/ranking-change evidence"
+    if any(
+        row.get(key) is not None
+        for key in (
+            "target_weight",
+            "target_qty",
+            "qty_delta",
+            "delta_weight",
+        )
+    ):
+        return "target_size_change", "target-size delta evidence"
+    return "unknown", "insufficient attribution evidence"

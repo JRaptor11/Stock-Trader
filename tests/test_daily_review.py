@@ -88,6 +88,7 @@ class DailyReviewTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIn("manifest.json", names)
                     self.assertIn("snapshots.json", names)
                     self.assertIn("daily_summary.json", names)
+                    self.assertIn("execution_analytics.json", names)
                     self.assertIn("config_redacted.json", names)
                     self.assertIn("daily_account_snapshots.csv", names)
                     self.assertIn("daily_position_snapshots.csv", names)
