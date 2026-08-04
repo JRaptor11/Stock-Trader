@@ -7,6 +7,7 @@ import time
 import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, List
+from zoneinfo import ZoneInfo
 
 from alpaca.trading.enums import OrderSide, QueryOrderStatus
 from alpaca.trading.requests import GetOrdersRequest
@@ -40,6 +41,7 @@ from safety.fail_safe_lifecycle import (
 LAYER5_BROKER_ERROR_COOLDOWN_SECONDS = 30 * 60
 LAYER5_QUANTITY_ERROR_CODES = {"40310000", 40310000}
 _LAYER5_EXECUTION_LOCK = threading.RLock()
+EASTERN = ZoneInfo("America/New_York")
 
 
 def _normalize_decision(value: Any) -> str:
@@ -157,6 +159,107 @@ def _market_hours_only() -> bool:
             getattr(config, "LAYER3_MARKET_HOURS_ONLY", True),
         )
     )
+
+
+def _config_value(name: str, default: Any) -> Any:
+    value = app_state.get("config_overrides", {}).get(
+        name,
+        app_state.get("config_defaults", {}).get(name, default),
+    )
+    return default if value is None else value
+
+
+def _fail_safe_after_hours_window(
+    now: datetime | None = None,
+) -> tuple[bool, str]:
+    if not bool(_config_value("FAIL_SAFE_EXTENDED_HOURS_ENABLED", True)):
+        return False, "extended_fail_safe_disabled"
+    local = (now or datetime.now(timezone.utc)).astimezone(EASTERN)
+    minutes = local.hour * 60 + local.minute
+    if local.weekday() >= 5:
+        return False, "weekend"
+    if 16 * 60 <= minutes < 20 * 60:
+        return True, "after_hours_4pm_8pm_et"
+    return False, "outside_supported_after_hours_window"
+
+
+def _fail_safe_extended_quote(symbol: str) -> dict:
+    client = app_state.get("stock_data_client")
+    if client is None:
+        return {"ok": False, "reason": "missing_stock_data_client"}
+    try:
+        from alpaca.data.requests import StockLatestQuoteRequest
+
+        response = client.get_stock_latest_quote(
+            StockLatestQuoteRequest(symbol_or_symbols=[symbol])
+        )
+        quote = (
+            response.get(symbol)
+            if isinstance(response, dict)
+            else getattr(response, "data", {}).get(symbol)
+        )
+        if quote is None:
+            return {"ok": False, "reason": "missing_quote"}
+        bid = safe_float(getattr(quote, "bid_price", 0), 0.0)
+        ask = safe_float(getattr(quote, "ask_price", 0), 0.0)
+        timestamp = getattr(quote, "timestamp", None)
+        if bid <= 0 or ask <= 0 or ask < bid:
+            return {"ok": False, "reason": "invalid_bid_ask", "bid": bid, "ask": ask}
+        now = datetime.now(timezone.utc)
+        if isinstance(timestamp, datetime):
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=timezone.utc)
+            age = max(0.0, (now - timestamp.astimezone(timezone.utc)).total_seconds())
+        else:
+            age = None
+        max_age = float(_config_value(
+            "FAIL_SAFE_EXTENDED_HOURS_MAX_QUOTE_AGE_SECONDS", 15.0
+        ))
+        if age is None or age > max_age:
+            return {
+                "ok": False,
+                "reason": "stale_quote",
+                "bid": bid,
+                "ask": ask,
+                "quote_age_seconds": age,
+            }
+        midpoint = (bid + ask) / 2.0
+        spread_pct = (ask - bid) / midpoint * 100 if midpoint > 0 else 0.0
+        max_spread = float(_config_value(
+            "FAIL_SAFE_EXTENDED_HOURS_MAX_SPREAD_PCT", 1.5
+        ))
+        if spread_pct > max_spread:
+            return {
+                "ok": False,
+                "reason": "spread_too_wide",
+                "bid": bid,
+                "ask": ask,
+                "spread_pct": spread_pct,
+                "quote_age_seconds": age,
+            }
+        offset_bps = float(_config_value(
+            "FAIL_SAFE_EXTENDED_HOURS_LIMIT_OFFSET_BPS", 5.0
+        ))
+        limit_price = max(0.01, bid * (1.0 - offset_bps / 10000.0))
+        return {
+            "ok": True,
+            "reason": "fresh_quote",
+            "bid": bid,
+            "ask": ask,
+            "spread_pct": spread_pct,
+            "quote_timestamp": timestamp.isoformat(),
+            "quote_age_seconds": age,
+            "limit_offset_bps": offset_bps,
+            "limit_price": round(limit_price, 2),
+        }
+    except Exception as exc:
+        logging.warning(
+            "[Layer5Exec] Extended-hours fail-safe quote failed | symbol=%s error=%s",
+            symbol,
+            exc,
+            exc_info=True,
+        )
+        return {"ok": False, "reason": "quote_fetch_failed", "error": str(exc)}
 
 
 def _broker_open_orders(client) -> list:
@@ -608,6 +711,7 @@ def _append_fail_safe_liquidation_rows(
     position_qty: dict[str, float],
     cycle_id: Any,
     plan_id: Any,
+    market_is_open: bool,
 ) -> list[dict]:
     sell_symbols = {
         normalize_symbol(row.get("symbol"))
@@ -626,6 +730,24 @@ def _append_fail_safe_liquidation_rows(
                 ):
                     qty = safe_float(position_qty.get(symbol), 0.0)
                     price = _price_for_fail_safe_sell(symbol, executable)
+                    extended_context = None
+                    if not market_is_open:
+                        extended_context = _fail_safe_extended_quote(symbol)
+                        if not extended_context.get("ok"):
+                            logging.warning(
+                                "[Layer5Exec] Existing fail-safe SELL deferred "
+                                "during extended hours | symbol=%s reason=%s "
+                                "context=%s",
+                                symbol,
+                                extended_context.get("reason"),
+                                extended_context,
+                            )
+                            executable.remove(row)
+                            break
+                        price = safe_float(
+                            extended_context.get("limit_price"),
+                            0.0,
+                        )
                     row.update(
                         {
                             "qty": qty,
@@ -636,6 +758,8 @@ def _append_fail_safe_liquidation_rows(
                                 f"{snapshot.get('last_trigger_reason') or 'active'}"
                             ),
                             "fail_safe_forced": True,
+                            "extended_hours_fail_safe": not market_is_open,
+                            "extended_hours_context": extended_context,
                         }
                     )
                     break
@@ -643,6 +767,19 @@ def _append_fail_safe_liquidation_rows(
 
         qty = safe_float(position_qty.get(symbol), 0.0)
         price = _price_for_fail_safe_sell(symbol, executable)
+        extended_context = None
+        if not market_is_open:
+            extended_context = _fail_safe_extended_quote(symbol)
+            if not extended_context.get("ok"):
+                logging.warning(
+                    "[Layer5Exec] Fail-safe extended-hours row deferred | "
+                    "symbol=%s reason=%s context=%s",
+                    symbol,
+                    extended_context.get("reason"),
+                    extended_context,
+                )
+                continue
+            price = safe_float(extended_context.get("limit_price"), 0.0)
 
         if qty <= 0 or price <= 0:
             logging.warning(
@@ -667,6 +804,8 @@ def _append_fail_safe_liquidation_rows(
             "notional": qty * price,
             "reason": f"fail_safe_forced_liquidation_{snapshot.get('last_trigger_reason') or 'active'}",
             "fail_safe_forced": True,
+            "extended_hours_fail_safe": not market_is_open,
+            "extended_hours_context": extended_context,
         }
 
         executable.append(row)
@@ -1022,7 +1161,19 @@ def _execute_layer5_plan_unlocked(plan: Any, summary: dict | None = None) -> dic
             log_level=logging.WARNING,
         )
 
-    if _market_hours_only() and not market_is_open:
+    extended_fail_safe_allowed, extended_session = (
+        _fail_safe_after_hours_window()
+    )
+    fail_safe_market_exception = (
+        not market_is_open
+        and bool(fail_safe_snapshot.get("active"))
+        and extended_fail_safe_allowed
+    )
+    if (
+        _market_hours_only()
+        and not market_is_open
+        and not fail_safe_market_exception
+    ):
         logging.info(
             "[Layer5Exec] Market is closed and market-hours-only execution is enabled. "
             "Skipping execution. cycle_id=%s plan_id=%s",
@@ -1034,6 +1185,16 @@ def _execute_layer5_plan_unlocked(plan: Any, summary: dict | None = None) -> dic
             result=result,
             layer5_state=layer5_state,
             started_monotonic=started_monotonic,
+        )
+    if fail_safe_market_exception:
+        result["fail_safe_market_hours_exception"] = True
+        result["fail_safe_extended_session"] = extended_session
+        logging.warning(
+            "[Layer5Exec] Allowing fail-safe-only extended-hours execution | "
+            "cycle_id=%s plan_id=%s session=%s",
+            cycle_id,
+            plan_id,
+            extended_session,
         )
 
     try:
@@ -1186,6 +1347,7 @@ def _execute_layer5_plan_unlocked(plan: Any, summary: dict | None = None) -> dic
             position_qty=position_qty,
             cycle_id=cycle_id,
             plan_id=plan_id,
+            market_is_open=market_is_open,
         )
 
         logging.warning(
@@ -1615,6 +1777,7 @@ def _execute_layer5_plan_unlocked(plan: Any, summary: dict | None = None) -> dic
                     broker_position_qty=position_qty_before,
                 )
             )
+            trade_attribution_detail = _trade_attribution_detail(row)
             if decision == "SELL":
                 submitted_sell_order_ids.append(str(order_id))
 
@@ -1641,6 +1804,17 @@ def _execute_layer5_plan_unlocked(plan: Any, summary: dict | None = None) -> dic
                     "execution_phase": execution_phase,
                     "trade_attribution": trade_attribution,
                     "trade_attribution_evidence": trade_attribution_evidence,
+                    "trade_attribution_detail": trade_attribution_detail,
+                    "extended_hours_fail_safe": row.get(
+                        "extended_hours_fail_safe"
+                    ),
+                    "extended_hours_context": row.get(
+                        "extended_hours_context"
+                    ),
+                    "extended_hours_reprice_seconds": _config_value(
+                        "FAIL_SAFE_EXTENDED_HOURS_REPRICE_SECONDS",
+                        20.0,
+                    ),
                     "fail_safe_lifecycle_id": fail_safe_lifecycle_id,
                 },
             )
@@ -1737,6 +1911,13 @@ def _execute_layer5_plan_unlocked(plan: Any, summary: dict | None = None) -> dic
                     "execution_phase": execution_phase,
                     "trade_attribution": trade_attribution,
                     "trade_attribution_evidence": trade_attribution_evidence,
+                    "trade_attribution_detail": trade_attribution_detail,
+                    "extended_hours_fail_safe": row.get(
+                        "extended_hours_fail_safe"
+                    ),
+                    "extended_hours_context": row.get(
+                        "extended_hours_context"
+                    ),
                     "order_id": str(order_id),
                     "qty": qty,
                     "notional": notional,
@@ -1909,3 +2090,31 @@ def _trade_attribution(
     ):
         return "target_size_change", "target-size delta evidence"
     return "unknown", "insufficient attribution evidence"
+
+
+def _trade_attribution_detail(row: dict) -> str:
+    reason = str(row.get("reason") or "").lower()
+    decision = _normalize_decision(row.get("decision"))
+    current_qty = safe_float(row.get("current_qty"), 0.0)
+    target_weight = safe_float(row.get("target_weight"), 0.0)
+    if row.get("fail_safe_forced") or "fail_safe" in reason:
+        return "forced_risk_liquidation"
+    if any(token in reason for token in ("stale", "mismatch", "reconcile")):
+        return "state_reconciliation"
+    if decision == "BUY" and (
+        current_qty <= 0
+        or "target_added" in reason
+        or "new_target" in reason
+    ):
+        return "ranked_set_entry"
+    if decision == "SELL" and (
+        target_weight <= 0
+        or "target_removed" in reason
+        or "removal" in reason
+    ):
+        return "ranked_set_exit"
+    if row.get("target_hysteresis_changed_target"):
+        return "hysteresis_confirmed_target_change"
+    if any(token in reason for token in ("rank", "score")):
+        return "rank_or_score_weight_change"
+    return "target_resize"

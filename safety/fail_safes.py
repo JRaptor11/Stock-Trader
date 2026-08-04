@@ -291,6 +291,8 @@ async def check_per_stock_fail_safe():
         fs.setdefault("pending_liquidation_symbols", [])
         fs.setdefault("liquidate_all", False)
         fs.setdefault("symbols", set())
+        fs.setdefault("position_loss_confirmations", {})
+        fs.setdefault("position_loss_observations", [])
 
         last_price_snapshot = dict(app_state.get("last_trade_price_by_symbol", {}))
 
@@ -380,6 +382,53 @@ async def check_per_stock_fail_safe():
         )
 
         if percent_loss < threshold:
+            with app_state_lock:
+                fs.setdefault("position_loss_confirmations", {}).pop(
+                    symbol, None
+                )
+            continue
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        required_confirmations = max(
+            1,
+            int(get_config("FAIL_SAFE_POSITION_CONFIRMATIONS") or 2),
+        )
+        with app_state_lock:
+            confirmation = fs.setdefault(
+                "position_loss_confirmations", {}
+            ).setdefault(
+                symbol,
+                {
+                    "count": 0,
+                    "first_breach_at": now_iso,
+                },
+            )
+            confirmation["count"] = int(confirmation.get("count") or 0) + 1
+            confirmation["last_breach_at"] = now_iso
+            confirmation["last_loss_percent"] = percent_loss
+            confirmation["last_price"] = current_price
+            observations = fs.setdefault("position_loss_observations", [])
+            observations.append({
+                "timestamp": now_iso,
+                "symbol": symbol,
+                "loss_percent": percent_loss,
+                "configured_threshold_percent": threshold,
+                "confirmation_count": confirmation["count"],
+                "required_confirmations": required_confirmations,
+            })
+            if len(observations) > 5000:
+                del observations[:-5000]
+            confirmation_count = confirmation["count"]
+
+        if confirmation_count < required_confirmations:
+            logging.warning(
+                "[FailSafe] Loss breach awaiting confirmation | symbol=%s "
+                "loss=%.2f%% count=%s required=%s",
+                symbol,
+                percent_loss,
+                confirmation_count,
+                required_confirmations,
+            )
             continue
 
         already_queued = symbol in _pending_liquidation_set()
@@ -403,6 +452,10 @@ async def check_per_stock_fail_safe():
             observed_loss_percent=percent_loss,
             position_qty=quantity,
         )
+        with app_state_lock:
+            fs.setdefault("position_loss_confirmations", {}).pop(
+                symbol, None
+            )
 
         fail_safe_event.set()
         logging.error(f"[FailSafe] state=True set at {time.strftime('%H:%M:%S')}")

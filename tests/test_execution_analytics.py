@@ -122,7 +122,7 @@ class ExecutionAnalyticsTests(unittest.TestCase):
             3, len(result["target_update_interval_counterfactuals"])
         )
         self.assertEqual(
-            4, len(result["small_follow_up_counterfactuals"])
+            5, len(result["small_follow_up_counterfactuals"])
         )
         self.assertEqual(
             1,

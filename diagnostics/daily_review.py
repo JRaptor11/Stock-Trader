@@ -39,6 +39,10 @@ BENCHMARK_FIELDS = [
     "timestamp", "trade_date", "snapshot_type", "symbol", "bar_timestamp",
     "previous_close", "current_close", "return_pct", "source",
 ]
+TRADED_SYMBOL_PRICE_FIELDS = [
+    "timestamp", "trade_date", "snapshot_type", "symbol",
+    "price", "price_timestamp", "source",
+]
 
 
 def _csv_value(value: Any) -> Any:
@@ -77,6 +81,42 @@ def _safe_float(value: Any) -> float:
         return float(value or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _order_timestamp_is_trade_date(order: Any, trade_date: str) -> bool:
+    for field in ("filled_at", "submitted_at", "created_at"):
+        raw = getattr(order, field, None)
+        if not raw:
+            continue
+        try:
+            timestamp = (
+                raw
+                if isinstance(raw, datetime)
+                else datetime.fromisoformat(
+                    str(raw).replace("Z", "+00:00")
+                )
+            )
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=timezone.utc)
+            if timestamp.astimezone(EASTERN).date().isoformat() == trade_date:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def _earnings_calendar() -> dict[str, str]:
+    raw = os.getenv("EARNINGS_DATES_JSON", "{}")
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        logging.warning("[DailyReview] Invalid EARNINGS_DATES_JSON.")
+        return {}
+    return {
+        str(symbol).upper(): str(event_date)
+        for symbol, event_date in value.items()
+        if symbol and event_date
+    } if isinstance(value, dict) else {}
 
 
 def _serialize_account(account: Any) -> dict:
@@ -161,6 +201,32 @@ def _fetch_daily_snapshot_sync(client: Any) -> tuple[Any, list[Any], list[Any]]:
     return account, positions, orders
 
 
+def _fetch_traded_symbol_prices_sync(
+    data_client: Any,
+    symbols: list[str],
+) -> list[dict]:
+    if data_client is None or not symbols:
+        return []
+    from alpaca.data.requests import StockLatestTradeRequest
+
+    response = data_client.get_stock_latest_trade(
+        StockLatestTradeRequest(symbol_or_symbols=symbols)
+    )
+    data = response if isinstance(response, dict) else getattr(response, "data", {})
+    rows = []
+    for symbol in symbols:
+        trade = data.get(symbol) if isinstance(data, dict) else None
+        price = _safe_float(getattr(trade, "price", 0))
+        if price > 0:
+            rows.append({
+                "symbol": symbol,
+                "price": price,
+                "price_timestamp": str(getattr(trade, "timestamp", "") or ""),
+                "source": "Alpaca latest trade",
+            })
+    return rows
+
+
 async def capture_daily_snapshot(
     snapshot_type: str,
     *,
@@ -200,6 +266,42 @@ async def capture_daily_snapshot(
         {**common, **row} for row in position_rows
     ])
 
+    traded_symbol_prices = []
+    if snapshot_type in {"close", "after_hours_close"}:
+        traded_symbols = sorted({
+            str(getattr(order, "symbol", "") or "").upper()
+            for order in orders
+            if getattr(order, "symbol", None)
+            and str(
+                getattr(
+                    getattr(order, "status", ""),
+                    "value",
+                    getattr(order, "status", ""),
+                )
+            ).lower() == "filled"
+            and _order_timestamp_is_trade_date(order, trade_date)
+        })
+        try:
+            traded_symbol_prices = await asyncio.to_thread(
+                _fetch_traded_symbol_prices_sync,
+                app_state.get("stock_data_client"),
+                traded_symbols,
+            )
+        except Exception:
+            logging.warning(
+                "[DailyReview] Traded-symbol price capture failed.",
+                exc_info=True,
+            )
+        _ensure_csv(
+            "daily_traded_symbol_prices.csv",
+            TRADED_SYMBOL_PRICE_FIELDS,
+        )
+        _append_csv(
+            "daily_traded_symbol_prices.csv",
+            TRADED_SYMBOL_PRICE_FIELDS,
+            [{**common, **row} for row in traded_symbol_prices],
+        )
+
     try:
         benchmarks = await asyncio.to_thread(
             _fetch_benchmarks_sync, app_state.get("stock_data_client"), now
@@ -219,6 +321,8 @@ async def capture_daily_snapshot(
         "positions": position_rows,
         "benchmarks": benchmarks,
         "orders": [_serialize_order(order) for order in orders],
+        "traded_symbol_prices": traded_symbol_prices,
+        "earnings_calendar": _earnings_calendar(),
     }
     state["trade_date"] = trade_date
     return state["snapshots"][snapshot_type]
@@ -417,6 +521,7 @@ def build_daily_review_package(trade_date: str | None = None) -> Path:
             "daily_account_snapshots.csv",
             "daily_position_snapshots.csv",
             "daily_benchmark_snapshots.csv",
+            "daily_traded_symbol_prices.csv",
             "trade_history.csv",
             "trade_summary.csv",
         }
@@ -509,6 +614,25 @@ async def run_daily_review_monitor(poll_seconds: float = 30.0) -> None:
                     now=now,
                 )
                 await asyncio.to_thread(build_daily_review_package, trade_date)
+                state["package_created_for"] = trade_date
+            after_hours_close_due = (
+                not is_open
+                and local_now.weekday() < 5
+                and local_now.hour >= 20
+                and "close" in snapshots
+                and "after_hours_close" not in snapshots
+            )
+            if after_hours_close_due:
+                await capture_daily_snapshot(
+                    "after_hours_close",
+                    capture_reason="after_hours_session_end",
+                    market_is_open=False,
+                    now=now,
+                )
+                await asyncio.to_thread(
+                    build_daily_review_package,
+                    trade_date,
+                )
                 state["package_created_for"] = trade_date
             previous_open = is_open
         except asyncio.CancelledError:

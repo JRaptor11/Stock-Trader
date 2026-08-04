@@ -341,6 +341,9 @@ LAYER4_ORDER_FIELDS = [
     "execution_phase",
     "trade_attribution",
     "trade_attribution_evidence",
+    "trade_attribution_detail",
+    "extended_hours_fail_safe",
+    "extended_hours_context",
     "status",
     "qty",
     "notional",
@@ -1552,6 +1555,15 @@ def append_layer4_order_rows(result: dict | None) -> None:
             "trade_attribution": order.get("trade_attribution"),
             "trade_attribution_evidence": order.get(
                 "trade_attribution_evidence"
+            ),
+            "trade_attribution_detail": order.get(
+                "trade_attribution_detail"
+            ),
+            "extended_hours_fail_safe": order.get(
+                "extended_hours_fail_safe"
+            ),
+            "extended_hours_context": order.get(
+                "extended_hours_context"
             ),
             "qty": order.get("qty"),
             "notional": order.get("notional"),

@@ -293,13 +293,54 @@ class Layer5FailSafeTests(unittest.TestCase):
     def test_market_closed_retains_queued_liquidation(self):
         lifecycle.queue_liquidations(["AMD"], reason="per_stock", scope="per_stock")
         client = ClosedMarketClient([Position("AMD", 10)])
-        result = self.execute(client)
+        with patch.object(
+            layer5_executor,
+            "_fail_safe_after_hours_window",
+            return_value=(False, "outside_test_window"),
+        ):
+            result = self.execute(client)
         self.assertEqual("market_closed", result["blocked_reason"])
         self.assertEqual(
             "queued",
             app_state["fail_safes"]["lifecycles"]["AMD"]["lifecycle_state"],
         )
         self.assertTrue(lifecycle.snapshot()["active"])
+
+    def test_after_hours_fail_safe_submits_extended_limit_sell(self):
+        lifecycle.queue_liquidations(
+            ["AMD"], reason="per_stock", scope="per_stock"
+        )
+        client = ClosedMarketClient([Position("AMD", 10)])
+        quote = {
+            "ok": True,
+            "reason": "fresh_quote",
+            "bid": 89.5,
+            "ask": 90.0,
+            "spread_pct": 0.56,
+            "quote_age_seconds": 1.0,
+            "limit_price": 89.46,
+        }
+        with (
+            patch.object(
+                layer5_executor,
+                "_fail_safe_after_hours_window",
+                return_value=(True, "after_hours_4pm_8pm_et"),
+            ),
+            patch.object(
+                layer5_executor,
+                "_fail_safe_extended_quote",
+                return_value=quote,
+            ),
+        ):
+            result = self.execute(client)
+        self.assertEqual(1, result["submitted"])
+        request = client.submissions[0]
+        self.assertEqual(OrderSide.SELL, request.side)
+        self.assertEqual(89.46, request.limit_price)
+        self.assertTrue(request.extended_hours)
+        self.assertTrue(
+            result["orders"][0]["extended_hours_fail_safe"]
+        )
 
     def test_post_liquidation_cooldown_blocks_same_symbol_buy(self):
         app_state["fail_safes"]["reentry_block_until"] = {

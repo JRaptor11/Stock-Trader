@@ -317,7 +317,15 @@ class FailSafeLifecycleTests(unittest.TestCase):
             emails.append((args, kwargs))
 
         with (
-            patch.object(fail_safes, "get_config", return_value=5.0),
+            patch.object(
+                fail_safes,
+                "get_config",
+                side_effect=lambda key: (
+                    2
+                    if key == "FAIL_SAFE_POSITION_CONFIRMATIONS"
+                    else 5.0
+                ),
+            ),
             patch.object(
                 fail_safes,
                 "log_trade_to_csv",

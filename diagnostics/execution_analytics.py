@@ -131,6 +131,19 @@ def build_execution_analytics(
     close_account = closing.get("account", {}) or {}
     open_positions = _position_map(opening.get("positions", []) or [])
     close_positions = _position_map(closing.get("positions", []) or [])
+    after_hours = snapshots.get("after_hours_close", {}) or {}
+    after_hours_positions = _position_map(
+        after_hours.get("positions", []) or []
+    )
+    close_prices = {
+        symbol: _safe_float(row.get("current_price"))
+        for symbol, row in close_positions.items()
+    }
+    close_prices.update({
+        str(row.get("symbol") or "").upper(): _safe_float(row.get("price"))
+        for row in (closing.get("traded_symbol_prices", []) or [])
+        if row.get("symbol") and _safe_float(row.get("price")) > 0
+    })
     execution_rows = execution_rows or []
     plan_rows = plan_rows or []
     execution_by_order_id = {
@@ -201,9 +214,7 @@ def build_execution_analytics(
             or order.get("trade_attribution")
             or "unknown"
         )
-        close_price = _safe_float(
-            close_positions.get(symbol, {}).get("current_price")
-        )
+        close_price = close_prices.get(symbol, 0.0)
         mark_to_close = _mark_to_close_pnl(side, qty, price, close_price)
         is_follow_up = metric["first_side"] is not None
         if mark_to_close is not None:
@@ -225,6 +236,10 @@ def build_execution_analytics(
             "is_follow_up": is_follow_up,
             "mark_to_close_pnl": mark_to_close,
             "trade_attribution": attribution,
+            "trade_attribution_detail": (
+                execution.get("trade_attribution_detail")
+                or "unknown"
+            ),
             "trade_attribution_evidence": execution.get(
                 "trade_attribution_evidence"
             ),
@@ -334,6 +349,30 @@ def build_execution_analytics(
                 metric["realized_pnl_estimate"] / gross
                 if gross > 0 else None
             ),
+            "net_position_unchanged": (
+                abs(
+                    _safe_float(open_positions.get(symbol, {}).get("qty"))
+                    - reported_close_qty
+                ) <= 0.000001
+            ),
+            "realized_pnl_after_cost_sensitivity": [
+                {
+                    "basis_points": basis_points,
+                    "estimated_cost": gross * basis_points / 10000,
+                    "realized_pnl_after_cost": (
+                        metric["realized_pnl_estimate"]
+                        - gross * basis_points / 10000
+                    ),
+                    "net_pnl_per_gross_dollar": (
+                        (
+                            metric["realized_pnl_estimate"]
+                            - gross * basis_points / 10000
+                        ) / gross
+                        if gross > 0 else None
+                    ),
+                }
+                for basis_points in (1, 5, 10, 20)
+            ],
             "gross_turnover_pct_of_average_equity": (
                 gross / average_equity * 100
                 if average_equity > 0 else None
@@ -396,20 +435,41 @@ def build_execution_analytics(
     attribution_metrics: dict[str, dict] = defaultdict(
         lambda: {"order_count": 0, "gross_notional": 0.0, "mark_to_close_pnl": 0.0}
     )
+    attribution_detail_metrics: dict[str, dict] = defaultdict(
+        lambda: {"order_count": 0, "gross_notional": 0.0, "mark_to_close_pnl": 0.0}
+    )
     for row in enriched_orders:
         metric = attribution_metrics[row["trade_attribution"]]
         metric["order_count"] += 1
         metric["gross_notional"] += row["filled_notional"]
         if row["mark_to_close_pnl"] is not None:
             metric["mark_to_close_pnl"] += row["mark_to_close_pnl"]
+        detail_metric = attribution_detail_metrics[
+            row["trade_attribution_detail"]
+        ]
+        detail_metric["order_count"] += 1
+        detail_metric["gross_notional"] += row["filled_notional"]
+        if row["mark_to_close_pnl"] is not None:
+            detail_metric["mark_to_close_pnl"] += row["mark_to_close_pnl"]
 
     follow_up_counterfactuals = []
-    for threshold in (50, 100, 250, 500):
+    threshold_specs = [
+        ("fixed_notional", 1000.0),
+        ("fixed_notional", 2500.0),
+        ("fixed_notional", 5000.0),
+    ]
+    if average_equity > 0:
+        threshold_specs.extend([
+            ("average_equity_pct_1", average_equity * 0.01),
+            ("average_equity_pct_2_5", average_equity * 0.025),
+        ])
+    for threshold_type, threshold in threshold_specs:
         ignored = [
             row for row in enriched_orders
             if row["is_follow_up"] and row["filled_notional"] <= threshold
         ]
         follow_up_counterfactuals.append({
+            "threshold_type": threshold_type,
             "maximum_follow_up_notional_ignored": threshold,
             "ignored_order_count": len(ignored),
             "ignored_gross_notional": sum(
@@ -426,6 +486,70 @@ def build_execution_analytics(
 
     first_rows = [row for row in enriched_orders if not row["is_follow_up"]]
     follow_rows = [row for row in enriched_orders if row["is_follow_up"]]
+    after_hours_account = after_hours.get("account", {}) or {}
+    after_hours_equity = _safe_float(after_hours_account.get("equity"))
+    after_hours_symbol_attribution = []
+    for symbol in sorted(set(close_positions) | set(after_hours_positions)):
+        close_row = close_positions.get(symbol, {})
+        later_row = after_hours_positions.get(symbol, {})
+        qty = _safe_float(close_row.get("qty"))
+        close_price = _safe_float(close_row.get("current_price"))
+        later_price = _safe_float(later_row.get("current_price"))
+        after_hours_symbol_attribution.append({
+            "symbol": symbol,
+            "close_qty": qty,
+            "regular_close_price": close_price or None,
+            "after_hours_close_price": later_price or None,
+            "estimated_after_hours_pnl": (
+                qty * (later_price - close_price)
+                if qty and close_price and later_price else None
+            ),
+        })
+
+    threshold_positions = (
+        after_hours_positions
+        if after_hours_positions
+        else close_positions
+    )
+    threshold_snapshot_type = (
+        "after_hours_close"
+        if after_hours_positions
+        else "regular_close_fallback"
+    )
+    threshold_comparison = []
+    for threshold in (2.0, 3.0, 4.0, 5.0):
+        breached = []
+        for symbol, row in threshold_positions.items():
+            entry = _safe_float(row.get("avg_entry_price"))
+            current = _safe_float(row.get("current_price"))
+            loss = (entry - current) / entry * 100 if entry > 0 else None
+            if loss is not None and loss >= threshold:
+                breached.append({
+                    "symbol": symbol,
+                    "loss_percent": loss,
+                })
+        threshold_comparison.append({
+            "threshold_percent": threshold,
+            "snapshot_type": threshold_snapshot_type,
+            "after_hours_breach_count": len(breached),
+            "after_hours_breaches": breached,
+            "measurement_only": True,
+        })
+    earnings_calendar = closing.get("earnings_calendar", {}) or {}
+    event_exposure = []
+    for symbol, row in close_positions.items():
+        event_date = earnings_calendar.get(symbol)
+        market_value = abs(_safe_float(row.get("market_value")))
+        event_exposure.append({
+            "symbol": symbol,
+            "market_value": market_value,
+            "portfolio_equity_pct": (
+                market_value / close_equity * 100
+                if close_equity > 0 else None
+            ),
+            "earnings_date": event_date,
+            "earnings_on_trade_date": event_date == trade_date,
+        })
 
     return {
         "trade_date": trade_date,
@@ -516,15 +640,34 @@ def build_execution_analytics(
             _plan_interval_counterfactuals(
                 plan_rows,
                 trade_date=trade_date,
-                close_prices={
-                    symbol: _safe_float(row.get("current_price"))
-                    for symbol, row in close_positions.items()
-                },
+                close_prices=close_prices,
             )
         ),
         "small_follow_up_counterfactuals": follow_up_counterfactuals,
         "trade_attribution": dict(attribution_metrics),
+        "trade_attribution_detail": dict(attribution_detail_metrics),
         "fill_attribution": enriched_orders,
+        "after_hours_attribution": {
+            "available": bool(after_hours),
+            "regular_close_equity": close_equity or None,
+            "after_hours_close_equity": after_hours_equity or None,
+            "equity_change_after_hours": (
+                after_hours_equity - close_equity
+                if after_hours_equity > 0 and close_equity > 0
+                else None
+            ),
+            "symbols": after_hours_symbol_attribution,
+        },
+        "position_loss_threshold_comparison": threshold_comparison,
+        "after_hours_event_exposure": {
+            "earnings_calendar_configured": bool(earnings_calendar),
+            "positions": event_exposure,
+            "earnings_day_market_value": sum(
+                row["market_value"]
+                for row in event_exposure
+                if row["earnings_on_trade_date"]
+            ),
+        },
         "attribution_coverage": {
             "attributed_order_count": sum(
                 row["trade_attribution"] != "unknown"

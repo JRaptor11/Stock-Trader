@@ -2788,6 +2788,33 @@ async def monitor_open_orders_loop() -> None:
                     )
                     logging.debug(f"[OrderMonitor] {symbol} → {status}")
 
+                    if (
+                        isinstance(tracked, dict)
+                        and tracked.get("extended_hours_fail_safe")
+                        and status not in {
+                            "filled",
+                            "canceled",
+                            "expired",
+                            "rejected",
+                            "done_for_day",
+                            "pending_cancel",
+                        }
+                        and not tracked.get("cancel_requested")
+                        and _order_age_seconds(tracked)
+                        >= _safe_float(
+                            tracked.get(
+                                "extended_hours_reprice_seconds",
+                                20.0,
+                            ),
+                            20.0,
+                        )
+                    ):
+                        cancel_tracked_order(
+                            symbol,
+                            reason="fail_safe_extended_hours_reprice",
+                        )
+                        continue
+
                     if status == "filled":
                         _record_terminal_order_outcome(
                             symbol=symbol,
@@ -2839,6 +2866,21 @@ async def monitor_open_orders_loop() -> None:
                             order=order,
                             status=status,
                         )
+
+                        if (
+                            tracked_side == "sell"
+                            and _safe_float(
+                                getattr(order, "filled_qty", 0),
+                                0.0,
+                            ) > 0
+                        ):
+                            _sync_local_position_from_broker(
+                                symbol,
+                                source=(
+                                    "terminal_partial_sell_"
+                                    f"{status}"
+                                ),
+                            )
 
                         _cleanup_local_order_state_after_cancel(
                             symbol,
