@@ -134,6 +134,78 @@ class ExecutionAnalyticsTests(unittest.TestCase):
             0, result["attribution_coverage"]["unknown_order_count"]
         )
 
+    def test_intraday_thresholds_include_exited_positions(self):
+        snapshots = {
+            "open": {
+                "account": {"equity": 100000, "last_equity": 100000},
+                "positions": [],
+            },
+            "close": {
+                "account": {"equity": 99000},
+                "positions": [],
+                "traded_symbol_prices": [{
+                    "symbol": "GOOGL",
+                    "price": 96,
+                }],
+                "orders": [{
+                    "id": "failsafe-sell",
+                    "symbol": "GOOGL",
+                    "side": "sell",
+                    "status": "filled",
+                    "filled_qty": 10,
+                    "filled_avg_price": 94,
+                    "submitted_at": "2026-08-03T16:01:00+00:00",
+                    "filled_at": "2026-08-03T16:01:01+00:00",
+                }],
+            },
+        }
+        observations = [
+            {
+                "timestamp": "2026-08-03T15:59:50+00:00",
+                "symbol": "GOOGL",
+                "position_qty": 10,
+                "entry_price": 100,
+                "current_price": 96,
+                "loss_percent": 4,
+                "confirmed_crossing_4_percent": "false",
+            },
+            {
+                "timestamp": "2026-08-03T16:00:00+00:00",
+                "symbol": "GOOGL",
+                "position_qty": 10,
+                "entry_price": 100,
+                "current_price": 95.5,
+                "loss_percent": 4.5,
+                "confirmed_crossing_4_percent": "true",
+            },
+        ]
+
+        result = build_execution_analytics(
+            snapshots,
+            trade_date="2026-08-03",
+            execution_rows=[{
+                "order_id": "failsafe-sell",
+                "trade_attribution": "risk_or_fail_safe",
+                "trade_attribution_detail": "forced_risk_liquidation",
+            }],
+            fail_safe_observation_rows=observations,
+        )
+
+        comparison = next(
+            row
+            for row in result["position_loss_threshold_comparison"]
+            if row["threshold_percent"] == 4
+        )
+        self.assertEqual(1, comparison["confirmed_crossing_count"])
+        crossing = comparison["confirmed_crossings"][0]
+        self.assertEqual("GOOGL", crossing["symbol"])
+        self.assertAlmostEqual(-5, crossing[
+            "hypothetical_pnl_vs_regular_close"
+        ])
+        self.assertAlmostEqual(15, crossing[
+            "hypothetical_pnl_vs_actual_fail_safe_exit"
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()

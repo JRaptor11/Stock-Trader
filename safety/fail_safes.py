@@ -12,6 +12,10 @@ from safety.fail_safe_lifecycle import (
     queue_liquidations,
     reconcile,
 )
+from diagnostics.fail_safe_observations import (
+    THRESHOLDS as MEASUREMENT_THRESHOLDS,
+    append_position_loss_observation,
+)
 
 
 # === Fail-Safe Actions ===
@@ -292,6 +296,7 @@ async def check_per_stock_fail_safe():
         fs.setdefault("liquidate_all", False)
         fs.setdefault("symbols", set())
         fs.setdefault("position_loss_confirmations", {})
+        fs.setdefault("position_loss_threshold_confirmations", {})
         fs.setdefault("position_loss_observations", [])
 
         last_price_snapshot = dict(app_state.get("last_trade_price_by_symbol", {}))
@@ -312,6 +317,25 @@ async def check_per_stock_fail_safe():
             exc_info=True,
         )
         return
+
+    held_broker_symbols = set()
+    for position in broker_positions or []:
+        symbol = _normalize_symbol(getattr(position, "symbol", ""))
+        try:
+            held = float(getattr(position, "qty", 0) or 0) > 0
+        except (TypeError, ValueError):
+            held = False
+        if symbol and held:
+            held_broker_symbols.add(symbol)
+    with app_state_lock:
+        threshold_confirmations = fs.setdefault(
+            "position_loss_threshold_confirmations",
+            {},
+        )
+        for stale_symbol in (
+            set(threshold_confirmations) - held_broker_symbols
+        ):
+            threshold_confirmations.pop(stale_symbol, None)
 
     for position in broker_positions or []:
         symbol = _normalize_symbol(getattr(position, "symbol", ""))
@@ -376,6 +400,61 @@ async def check_per_stock_fail_safe():
         current_price = float(current_price)
         percent_loss = ((entry_price - current_price) / entry_price) * 100
         threshold = get_config("MAX_POSITION_LOSS_PERCENT")
+        now_iso = datetime.now(timezone.utc).isoformat()
+        required_confirmations = max(
+            1,
+            int(get_config("FAIL_SAFE_POSITION_CONFIRMATIONS") or 2),
+        )
+
+        observation = {
+            "timestamp": now_iso,
+            "symbol": symbol,
+            "position_qty": quantity,
+            "entry_price": entry_price,
+            "current_price": current_price,
+            "loss_percent": percent_loss,
+            "configured_threshold_percent": threshold,
+            "required_confirmations": required_confirmations,
+        }
+        with app_state_lock:
+            threshold_state = fs.setdefault(
+                "position_loss_threshold_confirmations",
+                {},
+            ).setdefault(symbol, {})
+            for measured_threshold in MEASUREMENT_THRESHOLDS:
+                key = str(measured_threshold)
+                breached = percent_loss >= measured_threshold
+                previous_count = int(threshold_state.get(key) or 0)
+                count = previous_count + 1 if breached else 0
+                threshold_state[key] = count
+                observation[
+                    f"breach_{measured_threshold}_percent"
+                ] = breached
+                observation[
+                    f"confirmation_count_{measured_threshold}_percent"
+                ] = count
+                observation[
+                    f"confirmed_crossing_{measured_threshold}_percent"
+                ] = (
+                    breached
+                    and count == required_confirmations
+                )
+
+            observations = fs.setdefault(
+                "position_loss_observations",
+                [],
+            )
+            observations.append(dict(observation))
+            if len(observations) > 5000:
+                del observations[:-5000]
+
+        try:
+            append_position_loss_observation(observation)
+        except Exception:
+            logging.warning(
+                "[FailSafe] Failed persisting position-loss observation.",
+                exc_info=True,
+            )
 
         logging.debug(
             f"[FailSafe] {symbol} loss: {percent_loss:.2f}% (Threshold: {threshold}%)"
@@ -388,11 +467,6 @@ async def check_per_stock_fail_safe():
                 )
             continue
 
-        now_iso = datetime.now(timezone.utc).isoformat()
-        required_confirmations = max(
-            1,
-            int(get_config("FAIL_SAFE_POSITION_CONFIRMATIONS") or 2),
-        )
         with app_state_lock:
             confirmation = fs.setdefault(
                 "position_loss_confirmations", {}
@@ -407,17 +481,6 @@ async def check_per_stock_fail_safe():
             confirmation["last_breach_at"] = now_iso
             confirmation["last_loss_percent"] = percent_loss
             confirmation["last_price"] = current_price
-            observations = fs.setdefault("position_loss_observations", [])
-            observations.append({
-                "timestamp": now_iso,
-                "symbol": symbol,
-                "loss_percent": percent_loss,
-                "configured_threshold_percent": threshold,
-                "confirmation_count": confirmation["count"],
-                "required_confirmations": required_confirmations,
-            })
-            if len(observations) > 5000:
-                del observations[:-5000]
             confirmation_count = confirmation["count"]
 
         if confirmation_count < required_confirmations:

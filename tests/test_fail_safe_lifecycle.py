@@ -312,6 +312,7 @@ class FailSafeLifecycleTests(unittest.TestCase):
         app_state["last_trade_price_by_symbol"]["AMD"] = 90.0
         csv_rows = []
         emails = []
+        observations = []
 
         async def record_email(*args, **kwargs):
             emails.append((args, kwargs))
@@ -331,6 +332,11 @@ class FailSafeLifecycleTests(unittest.TestCase):
                 "log_trade_to_csv",
                 side_effect=lambda *args, **kwargs: csv_rows.append((args, kwargs)),
             ),
+            patch.object(
+                fail_safes,
+                "append_position_loss_observation",
+                side_effect=observations.append,
+            ),
             patch.object(fail_safes, "send_fail_safe_alert_async", record_email),
         ):
             asyncio.run(fail_safes.check_per_stock_fail_safe())
@@ -339,6 +345,13 @@ class FailSafeLifecycleTests(unittest.TestCase):
 
         self.assertEqual(1, len(csv_rows))
         self.assertEqual(1, len(emails))
+        self.assertEqual(2, len(observations))
+        self.assertFalse(
+            observations[0]["confirmed_crossing_5_percent"]
+        )
+        self.assertTrue(
+            observations[1]["confirmed_crossing_5_percent"]
+        )
         self.assertEqual(1, len(app_state["fail_safes"]["lifecycles"]))
         lifecycle.mark_submitted("AMD", FakeOrder(symbol="AMD"))
         lifecycle.record_order_update(
@@ -361,7 +374,13 @@ class FailSafeLifecycleTests(unittest.TestCase):
         }
         app_state["last_trade_price_by_symbol"]["AMD"] = 461.93
 
-        with patch.object(fail_safes, "get_config", return_value=5.0):
+        with (
+            patch.object(fail_safes, "get_config", return_value=5.0),
+            patch.object(
+                fail_safes,
+                "append_position_loss_observation",
+            ),
+        ):
             asyncio.run(fail_safes.check_per_stock_fail_safe())
 
         self.assertFalse(lifecycle.snapshot()["active"])

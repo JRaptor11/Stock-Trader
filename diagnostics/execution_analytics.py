@@ -3,6 +3,10 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
+
+
+EASTERN = ZoneInfo("America/New_York")
 
 
 def _safe_float(value: Any) -> float:
@@ -14,8 +18,12 @@ def _safe_float(value: Any) -> float:
 
 def _order_on_trade_date(order: dict, trade_date: str) -> bool:
     for key in ("filled_at", "submitted_at"):
-        value = str(order.get(key) or "")
-        if value[:10] == trade_date:
+        timestamp = _parse_timestamp(order.get(key))
+        if (
+            timestamp is not None
+            and timestamp.astimezone(EASTERN).date().isoformat()
+            == trade_date
+        ):
             return True
     return False
 
@@ -119,6 +127,7 @@ def build_execution_analytics(
     trade_date: str,
     execution_rows: list[dict] | None = None,
     plan_rows: list[dict] | None = None,
+    fail_safe_observation_rows: list[dict] | None = None,
 ) -> dict:
     """
     Build broker-fill-derived daily execution and turnover measurements.
@@ -146,6 +155,7 @@ def build_execution_analytics(
     })
     execution_rows = execution_rows or []
     plan_rows = plan_rows or []
+    fail_safe_observation_rows = fail_safe_observation_rows or []
     execution_by_order_id = {
         str(row.get("order_id")): row
         for row in execution_rows
@@ -232,6 +242,10 @@ def build_execution_analytics(
             "side": side,
             "filled_qty": qty,
             "filled_avg_price": price,
+            "filled_at": (
+                order.get("filled_at")
+                or order.get("submitted_at")
+            ),
             "filled_notional": notional,
             "is_follow_up": is_follow_up,
             "mark_to_close_pnl": mark_to_close,
@@ -506,33 +520,135 @@ def build_execution_analytics(
             ),
         })
 
-    threshold_positions = (
-        after_hours_positions
-        if after_hours_positions
-        else close_positions
-    )
-    threshold_snapshot_type = (
-        "after_hours_close"
-        if after_hours_positions
-        else "regular_close_fallback"
-    )
     threshold_comparison = []
-    for threshold in (2.0, 3.0, 4.0, 5.0):
-        breached = []
-        for symbol, row in threshold_positions.items():
-            entry = _safe_float(row.get("avg_entry_price"))
-            current = _safe_float(row.get("current_price"))
-            loss = (entry - current) / entry * 100 if entry > 0 else None
-            if loss is not None and loss >= threshold:
-                breached.append({
-                    "symbol": symbol,
-                    "loss_percent": loss,
-                })
+    observations_by_symbol: dict[str, list[dict]] = defaultdict(list)
+    for row in fail_safe_observation_rows:
+        symbol = str(row.get("symbol") or "").upper()
+        timestamp = _parse_timestamp(row.get("timestamp"))
+        if (
+            symbol
+            and timestamp is not None
+            and timestamp.astimezone(EASTERN).date().isoformat()
+            == trade_date
+        ):
+            observations_by_symbol[symbol].append(row)
+
+    for rows in observations_by_symbol.values():
+        rows.sort(key=lambda row: str(row.get("timestamp") or ""))
+
+    fail_safe_exits: dict[str, list[dict]] = defaultdict(list)
+    for row in enriched_orders:
+        if (
+            row.get("side") == "sell"
+            and row.get("trade_attribution_detail")
+            == "forced_risk_liquidation"
+        ):
+            fail_safe_exits[row["symbol"]].append(row)
+    for rows in fail_safe_exits.values():
+        rows.sort(key=lambda row: str(row.get("filled_at") or ""))
+
+    for threshold in (2, 3, 4, 5):
+        crossing_field = f"confirmed_crossing_{threshold}_percent"
+        symbols = []
+        for symbol, rows in sorted(observations_by_symbol.items()):
+            crossings = [
+                row
+                for row in rows
+                if str(row.get(crossing_field) or "").lower()
+                in {"true", "1", "yes"}
+            ]
+            if not crossings:
+                continue
+            crossing = crossings[0]
+            crossed_at = _parse_timestamp(crossing.get("timestamp"))
+            quantity = _safe_float(crossing.get("position_qty"))
+            exit_price = _safe_float(crossing.get("current_price"))
+            close_price = close_prices.get(symbol, 0.0)
+            actual_exit = next(
+                (
+                    row
+                    for row in fail_safe_exits.get(symbol, [])
+                    if (
+                        crossed_at is None
+                        or _parse_timestamp(row.get("filled_at")) is None
+                        or _parse_timestamp(row.get("filled_at"))
+                        >= crossed_at
+                    )
+                ),
+                None,
+            )
+            actual_exit_price = _safe_float(
+                (actual_exit or {}).get("filled_avg_price")
+            )
+            symbols.append({
+                "symbol": symbol,
+                "confirmed_crossing_at": crossing.get("timestamp"),
+                "position_qty_at_crossing": quantity,
+                "entry_price": _safe_float(
+                    crossing.get("entry_price")
+                ),
+                "hypothetical_exit_price": exit_price,
+                "observed_loss_percent": _safe_float(
+                    crossing.get("loss_percent")
+                ),
+                "maximum_observed_loss_percent": max(
+                    _safe_float(row.get("loss_percent"))
+                    for row in rows
+                ),
+                "regular_close_price": close_price or None,
+                "hypothetical_pnl_vs_regular_close": (
+                    quantity * (exit_price - close_price)
+                    if quantity > 0
+                    and exit_price > 0
+                    and close_price > 0
+                    else None
+                ),
+                "actual_fail_safe_exit_at": (
+                    (actual_exit or {}).get("filled_at")
+                ),
+                "actual_fail_safe_exit_price": (
+                    actual_exit_price or None
+                ),
+                "hypothetical_pnl_vs_actual_fail_safe_exit": (
+                    quantity * (exit_price - actual_exit_price)
+                    if quantity > 0
+                    and exit_price > 0
+                    and actual_exit_price > 0
+                    else None
+                ),
+            })
+
+        vs_close_values = [
+            row["hypothetical_pnl_vs_regular_close"]
+            for row in symbols
+            if row["hypothetical_pnl_vs_regular_close"] is not None
+        ]
+        vs_actual_values = [
+            row["hypothetical_pnl_vs_actual_fail_safe_exit"]
+            for row in symbols
+            if row[
+                "hypothetical_pnl_vs_actual_fail_safe_exit"
+            ] is not None
+        ]
         threshold_comparison.append({
-            "threshold_percent": threshold,
-            "snapshot_type": threshold_snapshot_type,
-            "after_hours_breach_count": len(breached),
-            "after_hours_breaches": breached,
+            "threshold_percent": float(threshold),
+            "data_source": (
+                "intraday_position_loss_observations"
+                if observations_by_symbol
+                else "no_intraday_observations"
+            ),
+            "symbols_observed": len(observations_by_symbol),
+            "observation_count": sum(
+                len(rows) for rows in observations_by_symbol.values()
+            ),
+            "confirmed_crossing_count": len(symbols),
+            "confirmed_crossings": symbols,
+            "estimated_total_pnl_vs_regular_close": (
+                sum(vs_close_values) if vs_close_values else None
+            ),
+            "estimated_total_pnl_vs_actual_fail_safe_exit": (
+                sum(vs_actual_values) if vs_actual_values else None
+            ),
             "measurement_only": True,
         })
     earnings_calendar = closing.get("earnings_calendar", {}) or {}

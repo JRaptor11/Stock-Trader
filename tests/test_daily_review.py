@@ -70,6 +70,11 @@ class DailyReviewTests(unittest.IsolatedAsyncioTestCase):
                     return_value=(Account(), [Position()], []),
                 ),
             ):
+                (root / "fail_safe_position_observations.csv").write_text(
+                    "timestamp,symbol,loss_percent\n"
+                    "2026-07-31T15:00:00+00:00,AMD,4.0\n",
+                    encoding="utf-8",
+                )
                 await daily_review.capture_daily_snapshot(
                     "open",
                     capture_reason="test_open",
@@ -92,6 +97,10 @@ class DailyReviewTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIn("config_redacted.json", names)
                     self.assertIn("daily_account_snapshots.csv", names)
                     self.assertIn("daily_position_snapshots.csv", names)
+                    self.assertIn(
+                        "fail_safe_position_observations.csv",
+                        names,
+                    )
 
 
 if __name__ == "__main__":

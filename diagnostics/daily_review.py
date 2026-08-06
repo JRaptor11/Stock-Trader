@@ -389,6 +389,7 @@ def _daily_summary(
     trade_date: str | None = None,
     execution_rows: list[dict] | None = None,
     plan_rows: list[dict] | None = None,
+    fail_safe_observation_rows: list[dict] | None = None,
 ) -> dict:
     opening = snapshots.get("open", {})
     closing = snapshots.get("close", {})
@@ -416,6 +417,7 @@ def _daily_summary(
         trade_date=trade_date,
         execution_rows=execution_rows,
         plan_rows=plan_rows,
+        fail_safe_observation_rows=fail_safe_observation_rows,
     )
     return {
         "open_equity": open_equity or None,
@@ -477,15 +479,28 @@ def _read_diagnostic_rows(filename: str, trade_date: str) -> list[dict]:
             exc_info=True,
         )
         return []
-    return [
-        row for row in rows
-        if str(
+    filtered = []
+    for row in rows:
+        raw = (
             row.get("timestamp")
             or row.get("broker_submitted_at")
             or row.get("plan_created_at")
             or ""
-        )[:10] == trade_date
-    ]
+        )
+        try:
+            timestamp = datetime.fromisoformat(
+                str(raw).replace("Z", "+00:00")
+            )
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=timezone.utc)
+            row_trade_date = (
+                timestamp.astimezone(EASTERN).date().isoformat()
+            )
+        except (TypeError, ValueError):
+            row_trade_date = str(raw)[:10]
+        if row_trade_date == trade_date:
+            filtered.append(row)
+    return filtered
 
 
 def build_daily_review_package(trade_date: str | None = None) -> Path:
@@ -500,11 +515,16 @@ def build_daily_review_package(trade_date: str | None = None) -> Path:
     plan_rows = _read_diagnostic_rows(
         LAYER_CSV_FILES["plans"], trade_date
     )
+    fail_safe_observation_rows = _read_diagnostic_rows(
+        LAYER_CSV_FILES["fail-safe-position-observations"],
+        trade_date,
+    )
     daily_summary = _daily_summary(
         snapshots,
         trade_date=trade_date,
         execution_rows=execution_rows,
         plan_rows=plan_rows,
+        fail_safe_observation_rows=fail_safe_observation_rows,
     )
     metadata = {
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -518,6 +538,7 @@ def build_daily_review_package(trade_date: str | None = None) -> Path:
         filename: layer_csv_path(filename)
         for filename in set(LAYER_CSV_FILES.values()) | {
             "fail_safe_lifecycle.csv",
+            "fail_safe_position_observations.csv",
             "daily_account_snapshots.csv",
             "daily_position_snapshots.csv",
             "daily_benchmark_snapshots.csv",

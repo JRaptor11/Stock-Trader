@@ -29,6 +29,9 @@ LAYER_CSV_FILES = {
     "shadow": "layer4_shadow.csv",
     "portfolio-snapshots": "layer_portfolio_snapshots.csv",
     "fail-safe-lifecycle": "fail_safe_lifecycle.csv",
+    "fail-safe-position-observations": (
+        "fail_safe_position_observations.csv"
+    ),
     "daily-account-snapshots": "daily_account_snapshots.csv",
     "daily-position-snapshots": "daily_position_snapshots.csv",
     "daily-benchmark-snapshots": "daily_benchmark_snapshots.csv",
