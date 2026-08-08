@@ -14,6 +14,7 @@ from typing import Any
 
 
 _LAYER_CSV_LOCK = threading.Lock()
+_SESSION_EQUITY_PEAKS: dict[str, dict] = {}
 
 
 LAYER_CSV_FILES = {
@@ -27,6 +28,11 @@ LAYER_CSV_FILES = {
         "layer_order_outcome_cycles.csv"
     ),
     "shadow": "layer4_shadow.csv",
+    "shadow-lifecycle": "layer4_shadow_lifecycle.csv",
+    "research-strategy-cycles": "layer_research_strategy_cycles.csv",
+    "research-strategy-decisions": "layer_research_strategy_decisions.csv",
+    "research-strategy-orders": "layer_research_strategy_orders.csv",
+    "research-strategy-portfolios": "layer_research_strategy_portfolios.csv",
     "portfolio-snapshots": "layer_portfolio_snapshots.csv",
     "fail-safe-lifecycle": "fail_safe_lifecycle.csv",
     "fail-safe-position-observations": (
@@ -211,6 +217,10 @@ LAYER_CYCLE_FIELDS = [
     "layer4_shadow_block",
 
     "equity",
+    "session_peak_equity",
+    "session_peak_timestamp",
+    "equity_giveback_from_peak",
+    "equity_giveback_from_peak_pct",
     "cash",
     "target_cash_pct",
     "market_strength",
@@ -248,6 +258,10 @@ LAYER3_PLAN_FIELDS = [
 
     "delta_weight",
     "relative_drift",
+    "shadow_effective_qty",
+    "shadow_effective_notional",
+    "shadow_deferred_qty",
+    "shadow_deferred_notional",
     "current_qty",
     "target_qty",
     "qty_delta",
@@ -760,6 +774,10 @@ LAYER_LIVE_STRATEGY_SHADOW_CYCLE_FIELDS = [
     "live_timeframe_seconds",
     "live_min_required_bars",
     "live_symbols_ready",
+    "live_cohort_status",
+    "live_cohort_timestamp",
+    "live_cohort_symbol_count",
+    "live_cohort_symbols",
     "symbol_count",
     "rest_ranked_count",
     "live_ranked_count",
@@ -787,7 +805,63 @@ LAYER_LIVE_STRATEGY_SHADOW_CYCLE_FIELDS = [
     "live_planner_bootstrap_confirmation_applied",
     "live_planner_rolling_trade_limits",
     "live_planner_target_hysteresis",
+    "rest_ranker_code_hash",
+    "live_ranker_code_hash",
+    "ranker_code_match",
+    "rest_layer2_config_hash",
+    "live_layer2_config_hash",
+    "layer2_config_match",
+    "layer3_code_hash",
+    "layer3_config_hash",
+    "simulator_config_hash",
+    "strategy_parity_verified",
     "error",
+]
+
+
+LAYER4_SHADOW_LIFECYCLE_FIELDS = [
+    "timestamp", "cycle_id", "plan_id", "row_id", "symbol", "side",
+    "event", "status", "original_cycle_id", "original_plan_id",
+    "original_row_id", "original_action", "original_qty", "original_price",
+    "current_action", "current_qty", "current_price", "age_cycles",
+    "price_change_pct", "estimated_entry_improvement", "resolution_reason",
+]
+
+
+LAYER_RESEARCH_STRATEGY_CYCLE_FIELDS = [
+    "timestamp", "cycle_id", "strategy_name", "status", "config_hash",
+    "source_bar_timestamp", "production_equity", "shadow_equity",
+    "shadow_minus_production_equity", "shadow_minus_control_equity",
+    "shadow_pnl_since_initialization",
+    "cash", "cash_pct", "peak_equity", "drawdown_pct",
+    "cumulative_trade_count", "cumulative_gross_turnover", "gross_turnover_pct",
+    "follow_up_trade_count", "direction_reversal_count",
+    "same_day_round_trip_symbol_count",
+    "pnl_after_1bp_cost", "pnl_after_5bp_cost", "pnl_after_10bp_cost",
+    "pnl_after_20bp_cost", "qualified_count", "selected_count",
+    "rejected_count", "deteriorating_count", "target_cash_pct",
+    "target_summary", "planner_status", "planner_decision_counts",
+    "planner_rolling_trade_limits", "planner_target_hysteresis",
+]
+
+LAYER_RESEARCH_STRATEGY_DECISION_FIELDS = [
+    "timestamp", "cycle_id", "strategy_name", "symbol", "production_rank",
+    "base_score", "ret_30m", "ret_60m", "ret_150m", "ret_300m",
+    "momentum_acceleration", "volatility_300m", "positive_absolute_signal",
+    "severe_deterioration", "moderate_deterioration",
+    "qualification_multiplier", "effective_score", "qualification_reason",
+    "qualified", "selected", "raw_target_weight", "smoothed_target_weight",
+]
+
+LAYER_RESEARCH_STRATEGY_ORDER_FIELDS = [
+    "timestamp", "cycle_id", "strategy_name", "symbol", "side", "status",
+    "qty", "price", "notional", "requested_qty", "cash_before", "cash_after",
+    "position_qty_before", "position_qty_after", "reason", "is_follow_up",
+]
+
+LAYER_RESEARCH_STRATEGY_PORTFOLIO_FIELDS = [
+    "timestamp", "cycle_id", "strategy_name", "symbol", "qty", "price",
+    "market_value", "weight", "target_weight", "cash", "equity",
 ]
 
 
@@ -1805,6 +1879,10 @@ def append_layer4_shadow_rows(result: dict | None) -> None:
             "target_weight": shadow.get("target_weight"),
             "delta_weight": shadow.get("delta_weight"),
             "relative_drift": shadow.get("relative_drift"),
+            "shadow_effective_qty": shadow.get("shadow_effective_qty"),
+            "shadow_effective_notional": shadow.get("shadow_effective_notional"),
+            "shadow_deferred_qty": shadow.get("shadow_deferred_qty"),
+            "shadow_deferred_notional": shadow.get("shadow_deferred_notional"),
             "shadow_row_count": result.get("row_count"),
             "shadow_execute_count": result.get("execute_count"),
             "shadow_delay_count": result.get("delay_count"),
@@ -1822,6 +1900,49 @@ def append_layer4_shadow_rows(result: dict | None) -> None:
         )
     except Exception:
         logging.warning("[LayerCSV] Failed to append Layer 4 shadow rows.", exc_info=True)
+
+
+def append_layer4_shadow_lifecycle_rows(rows: list[dict] | None) -> None:
+    rows = [row for row in (rows or []) if isinstance(row, dict)]
+    if not rows:
+        return
+    try:
+        _append_csv_rows(
+            LAYER_CSV_FILES["shadow-lifecycle"],
+            LAYER4_SHADOW_LIFECYCLE_FIELDS,
+            rows,
+        )
+    except Exception:
+        logging.warning(
+            "[LayerCSV] Failed to append Layer 4 shadow lifecycle rows.",
+            exc_info=True,
+        )
+
+
+def _append_research_rows(logical_name: str, fields: list[str], rows) -> None:
+    rows = [row for row in (rows or []) if isinstance(row, dict)]
+    if not rows:
+        return
+    try:
+        _append_csv_rows(LAYER_CSV_FILES[logical_name], fields, rows)
+    except Exception:
+        logging.warning("[LayerCSV] Failed appending %s rows.", logical_name, exc_info=True)
+
+
+def append_layer_research_strategy_cycle_rows(rows) -> None:
+    _append_research_rows("research-strategy-cycles", LAYER_RESEARCH_STRATEGY_CYCLE_FIELDS, rows)
+
+
+def append_layer_research_strategy_decision_rows(rows) -> None:
+    _append_research_rows("research-strategy-decisions", LAYER_RESEARCH_STRATEGY_DECISION_FIELDS, rows)
+
+
+def append_layer_research_strategy_order_rows(rows) -> None:
+    _append_research_rows("research-strategy-orders", LAYER_RESEARCH_STRATEGY_ORDER_FIELDS, rows)
+
+
+def append_layer_research_strategy_portfolio_rows(rows) -> None:
+    _append_research_rows("research-strategy-portfolios", LAYER_RESEARCH_STRATEGY_PORTFOLIO_FIELDS, rows)
 
 
 def append_layer_live_bar_health_rows(rows: list[dict] | None) -> None:
@@ -2040,6 +2161,22 @@ def append_layer_cycle_row(
         )
         or {}
     )
+
+    now_iso = datetime.utcnow().isoformat()
+    session_key = str(layer3_summary.get("open_session_date") or now_iso[:10])
+    equity_value = layer3_summary.get("equity")
+    try:
+        equity_number = float(equity_value)
+    except (TypeError, ValueError):
+        equity_number = 0.0
+    peak_state = _SESSION_EQUITY_PEAKS.setdefault(
+        session_key,
+        {"equity": equity_number, "timestamp": now_iso},
+    )
+    if equity_number > float(peak_state.get("equity") or 0.0):
+        peak_state.update({"equity": equity_number, "timestamp": now_iso})
+    peak_equity = float(peak_state.get("equity") or 0.0)
+    giveback = max(0.0, peak_equity - equity_number) if equity_number > 0 else None
 
     rolling_limits = (
         layer3_summary.get(
@@ -2406,7 +2543,14 @@ def append_layer_cycle_row(
         "layer4_shadow_reduce": layer4_shadow_result.get("reduce_count"),
         "layer4_shadow_block": layer4_shadow_result.get("block_count"),
 
-        "equity": layer3_summary.get("equity"),
+        "equity": equity_value,
+        "session_peak_equity": round(peak_equity, 2) if peak_equity > 0 else None,
+        "session_peak_timestamp": peak_state.get("timestamp"),
+        "equity_giveback_from_peak": round(giveback, 2) if giveback is not None else None,
+        "equity_giveback_from_peak_pct": (
+            round(giveback / peak_equity, 8)
+            if giveback is not None and peak_equity > 0 else None
+        ),
         "cash": layer3_summary.get("cash"),
         "target_cash_pct": layer3_summary.get("target_cash_pct") or target_summary.get("cash_pct"),
         "market_strength": layer3_summary.get("market_strength") or target_summary.get("market_strength"),

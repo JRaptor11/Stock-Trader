@@ -209,6 +209,10 @@ def load_environment_config() -> None:
         "LIVE_STRATEGY_SHADOW_REST_BOOTSTRAP_ENABLED",
         True,
     )
+    config.RESEARCH_STRATEGY_SHADOW_ENABLED = get_bool_env(
+        "RESEARCH_STRATEGY_SHADOW_ENABLED",
+        True,
+    )
 
     config.LAYER_MONITOR_RUN_24_7 = get_bool_env(
         "LAYER_MONITOR_RUN_24_7",
@@ -348,6 +352,9 @@ def apply_runtime_config_to_app_state() -> None:
 
     app_state["execution"]["live_strategy_shadow_rest_bootstrap_enabled"] = (
         config.LIVE_STRATEGY_SHADOW_REST_BOOTSTRAP_ENABLED
+    )
+    app_state["execution"]["research_strategy_shadow_enabled"] = (
+        config.RESEARCH_STRATEGY_SHADOW_ENABLED
     )
     app_state["execution"]["layer3_rolling_trade_limits_enabled"] = (
         config.LAYER3_ROLLING_TRADE_LIMITS_ENABLED

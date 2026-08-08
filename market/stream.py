@@ -178,8 +178,26 @@ class ThreadedAlpacaStream:
                     app_state["stream"]["instance"] = new_stream
 
                 try:
-                    for symbol in self.symbols:
-                        self._stream.subscribe_trades(self._handle_trade, symbol)
+                    normalized_symbols = tuple(dict.fromkeys(
+                        str(symbol or "").upper().strip()
+                        for symbol in self.symbols
+                        if str(symbol or "").strip()
+                    ))
+                    if not normalized_symbols:
+                        raise RuntimeError("No valid symbols available for trade subscription")
+
+                    # Subscribe atomically so a partial universe cannot be
+                    # reported as a successful stream connection.
+                    self._stream.subscribe_trades(
+                        self._handle_trade,
+                        *normalized_symbols,
+                    )
+                    app_state.setdefault("stream", {})["subscribed_trade_symbols"] = list(
+                        normalized_symbols
+                    )
+                    app_state["stream"]["subscribed_trade_symbol_count"] = len(
+                        normalized_symbols
+                    )
 
                     logging.info(
                         f"✅ Subscribed to trades for: {self.symbols}"

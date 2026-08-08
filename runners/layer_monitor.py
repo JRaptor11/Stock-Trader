@@ -1,6 +1,9 @@
 # runners/layer_monitor.py
 
 import asyncio
+import hashlib
+import inspect
+import json
 import logging
 import math
 import os
@@ -54,6 +57,7 @@ from layers.layer_csv import (
 from layers.layer_rest_live_attribution import (
     rebuild_rest_live_attribution_csvs,
 )
+from layers.layer_research_strategy import run_research_strategy_shadow
 
 
 def _execution_setting(name: str, default):
@@ -2465,16 +2469,16 @@ def _opening_live_cohort_dedupe_state(
     return state
 
 
-def _live_shadow_evaluation_context(market_is_open: bool, *, count_live_cycle: bool) -> dict:
+def _live_shadow_evaluation_context(
+    market_is_open: bool,
+    *,
+    count_live_cycle: bool,
+    source_bar_timestamp=None,
+) -> dict:
+    """Build LIVE Layer 2 context with production's timestamp rules."""
     layers = app_state.setdefault("layers", {})
     shadow = layers.setdefault("live_strategy_shadow", {})
     state = shadow.setdefault("opening_transition", {})
-
-    today = datetime.now(timezone.utc).date().isoformat()
-    if state.get("date") != today:
-        state.clear()
-        state["date"] = today
-        state["live_evaluation_count"] = 0
 
     transition_cycles = safe_int(
         _execution_setting(
@@ -2484,24 +2488,86 @@ def _live_shadow_evaluation_context(market_is_open: bool, *, count_live_cycle: b
         6,
     )
 
-    if market_is_open and count_live_cycle:
-        state["live_evaluation_count"] = safe_int(
-            state.get("live_evaluation_count", 0),
-            0,
-        ) + 1
+    session_info = source_bar_market_session_info(
+        source_bar_timestamp,
+        transition_cycles=transition_cycles,
+    )
+    live_cycle = session_info.get("opening_transition_cycle")
+    active = bool(market_is_open and session_info.get("opening_transition_active"))
 
-    live_cycle = safe_int(state.get("live_evaluation_count", 0), 0)
-    active = bool(market_is_open and live_cycle > 0 and live_cycle <= transition_cycles)
-
-    state["transition_cycles"] = transition_cycles
-    state["active"] = active
-    state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    state.update({
+        "date": session_info.get("session_date"),
+        "source_bar_timestamp": session_info.get("source_bar_timestamp"),
+        "source_bar_market_time": session_info.get("source_bar_market_time"),
+        "source_phase": session_info.get("phase"),
+        "source_opening_cycle": live_cycle,
+        "transition_cycles": transition_cycles,
+        "active": active,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    })
 
     return {
         "market_is_open": bool(market_is_open),
         "opening_transition_active": active,
         "opening_transition_cycle": live_cycle if market_is_open else None,
         "opening_transition_cycles": transition_cycles,
+        "opening_transition_phase": session_info.get("phase"),
+        "opening_transition_source_market_time": session_info.get("source_bar_market_time"),
+    }
+
+
+def _stable_diagnostic_hash(value) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _strategy_parity_evidence(
+    *, ranker, portfolio_builder, timeframe_seconds: int, top_n: int,
+) -> dict:
+    """Return auditable code/config fingerprints for REST/LIVE parity."""
+    production_engine = app_state.get("layers", {}).get("engine")
+    rest_ranker = getattr(production_engine, "ranker", None)
+    rest_builder = getattr(production_engine, "portfolio_builder", None)
+    live_layer2_config = {
+        key: value for key, value in vars(portfolio_builder).items()
+        if key != "previous_target_portfolio"
+    }
+    rest_layer2_config = {
+        key: value for key, value in vars(rest_builder).items()
+        if key != "previous_target_portfolio"
+    } if rest_builder is not None else {}
+    layer3_keys = (
+        "layer3_target_hysteresis_enabled", "layer3_target_material_change",
+        "layer3_target_candidate_tolerance", "layer3_target_increase_confirmation_bars",
+        "layer3_target_decrease_confirmation_bars", "layer3_target_removal_confirmation_bars",
+        "layer3_rolling_window_seconds", "layer3_rolling_max_trades",
+        "layer3_rolling_max_buys", "layer3_rolling_max_sells",
+        "layer3_rolling_max_buy_notional", "layer3_rolling_max_sell_notional",
+        "layer3_rolling_max_gross_notional", "layer3_max_trade_notional_pct",
+        "layer3_min_trade_notional",
+    )
+    layer3_config = {key: _execution_setting(key, None) for key in layer3_keys}
+    rest_ranker_hash = _stable_diagnostic_hash(
+        inspect.getsource(type(rest_ranker)) if rest_ranker is not None else "missing"
+    )
+    live_ranker_hash = _stable_diagnostic_hash(inspect.getsource(type(ranker)))
+    rest_layer2_hash = _stable_diagnostic_hash(rest_layer2_config)
+    live_layer2_hash = _stable_diagnostic_hash(live_layer2_config)
+    return {
+        "rest_ranker_code_hash": rest_ranker_hash,
+        "live_ranker_code_hash": live_ranker_hash,
+        "ranker_code_match": rest_ranker_hash == live_ranker_hash,
+        "rest_layer2_config_hash": rest_layer2_hash,
+        "live_layer2_config_hash": live_layer2_hash,
+        "layer2_config_match": bool(rest_layer2_config) and rest_layer2_hash == live_layer2_hash,
+        "layer3_code_hash": _stable_diagnostic_hash(inspect.getsource(build_layer3_shadow_plan)),
+        "layer3_config_hash": _stable_diagnostic_hash(layer3_config),
+        "simulator_config_hash": _stable_diagnostic_hash({
+            "timeframe_seconds": timeframe_seconds,
+            "top_n": top_n,
+            "execution_price_policy": "common_current_live_price",
+            "whole_share_rounding": True,
+        }),
     }
 
 
@@ -4784,6 +4850,21 @@ def run_live_strategy_shadow_comparison(
         )
     )
 
+    # Bootstrap history can make a stale symbol look numerically "ready".
+    # Require one completed local cohort shared by the entire production
+    # universe and trim all inputs to that exact timestamp.
+    live_cohort = _latest_completed_live_cohort(
+        live_bars_by_symbol,
+        timeframe_seconds=timeframe_seconds,
+        required_symbols=max(1, len(symbols or [])),
+    )
+    if live_cohort.get("status") == "ready":
+        live_bars_by_symbol, live_bar_counts, live_prices = _trim_live_inputs_to_cohort(
+            live_bars_by_symbol,
+            cohort_start_epoch=live_cohort.get("bucket_start_epoch"),
+        )
+        live_source_bar_timestamp = live_cohort.get("bucket_start_timestamp")
+
     live_symbols_ready = [
         symbol
         for symbol, count in live_bar_counts.items()
@@ -4803,6 +4884,10 @@ def run_live_strategy_shadow_comparison(
         "live_symbols_ready": live_symbols_ready,
         "symbol_count": symbol_count,
         "rest_ranked_count": rest_ranked_count,
+        "live_cohort_status": live_cohort.get("status"),
+        "live_cohort_timestamp": live_cohort.get("bucket_start_timestamp"),
+        "live_cohort_symbol_count": live_cohort.get("symbol_count", 0),
+        "live_cohort_symbols": live_cohort.get("symbols", []),
     }
 
     # True comparison rule:
@@ -4825,6 +4910,16 @@ def run_live_strategy_shadow_comparison(
             rest_status,
             rest_ranked_count,
         )
+        return row
+
+    if live_cohort.get("status") != "ready":
+        row = {
+            **cycle_base,
+            "live_status": "incomplete_live_cohort",
+            "live_ranked_count": 0,
+            "error": json.dumps(live_cohort, sort_keys=True, default=str),
+        }
+        append_layer_live_strategy_shadow_cycle_row(row)
         return row
 
     # True comparison rule:
@@ -4890,7 +4985,15 @@ def run_live_strategy_shadow_comparison(
             context=_live_shadow_evaluation_context(
                 market_is_open=market_is_open,
                 count_live_cycle=market_is_open,
+                source_bar_timestamp=live_source_bar_timestamp,
             ),
+        )
+
+        parity_evidence = _strategy_parity_evidence(
+            ranker=ranker,
+            portfolio_builder=portfolio_builder,
+            timeframe_seconds=timeframe_seconds,
+            top_n=top_n,
         )
 
         if not market_is_open:
@@ -5434,6 +5537,11 @@ def run_live_strategy_shadow_comparison(
             live_planner_summary.get(
                 "target_hysteresis"
             )
+        ),
+        **parity_evidence,
+        "strategy_parity_verified": bool(
+            parity_evidence.get("ranker_code_match")
+            and parity_evidence.get("layer2_config_match")
         ),
         "error": None,
     }
@@ -6541,23 +6649,50 @@ async def run_layer_monitor(
                         ),
                     )
 
-                    run_live_strategy_shadow_comparison(
-                        symbols=evaluation_symbols,
-                        cycle_id=next_layer3_cycle_id,
-                        market_is_open=market_is_open,
-                        rest_ranked=ranked,
-                        rest_target=target,
-                        rest_status="ok",
-                        layer3_plan=layer3_plan,
-                        layer3_summary=layer3_summary,
-                        rest_bars_by_symbol=fresh_bars_by_symbol,
-                    )
-
                     layer4_execution_result = await asyncio.to_thread(
                         execute_layer4_plan,
                         layer3_plan,
                         layer3_summary,
                     )
+
+                    # All strategy comparisons are diagnostic-only and run
+                    # after broker execution so they cannot delay live orders.
+                    try:
+                        await asyncio.to_thread(
+                            run_live_strategy_shadow_comparison,
+                            symbols=evaluation_symbols,
+                            cycle_id=next_layer3_cycle_id,
+                            market_is_open=market_is_open,
+                            rest_ranked=ranked,
+                            rest_target=target,
+                            rest_status="ok",
+                            layer3_plan=layer3_plan,
+                            layer3_summary=layer3_summary,
+                            rest_bars_by_symbol=fresh_bars_by_symbol,
+                        )
+                    except Exception:
+                        logging.warning(
+                            "[LiveStrategyShadow] Post-execution comparison failed.",
+                            exc_info=True,
+                        )
+
+                    # Research runs only after production execution so its
+                    # simulation and CSV writes cannot delay broker orders.
+                    try:
+                        await asyncio.to_thread(
+                            run_research_strategy_shadow,
+                            ranked=ranked,
+                            production_target=target,
+                            bars_by_symbol=fresh_bars_by_symbol,
+                            layer3_plan=layer3_plan,
+                            layer3_summary=layer3_summary,
+                            source_bar_timestamp=rest_source_bar_timestamp,
+                        )
+                    except Exception:
+                        logging.warning(
+                            "[ResearchStrategyShadow] Evaluation failed; production is unchanged.",
+                            exc_info=True,
+                        )
 
                     append_layer_cycle_row(
                         status="ok",

@@ -8,7 +8,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from core.state import app_state
-from layers.layer_csv import append_layer4_shadow_rows
+from layers.layer_csv import (
+    append_layer4_shadow_lifecycle_rows,
+    append_layer4_shadow_rows,
+)
 from layers.layer5_executor import execute_layer5_plan
 from utils.numeric import safe_float
 from utils.symbols import normalize_symbol
@@ -501,6 +504,10 @@ def score_layer4_shadow_for_row(row: dict) -> dict:
         sell_classification = ""
         sell_strength_protection = 0.0
 
+    multiplier = safe_float(decision_result.get("recommended_qty_multiplier"), 0.0)
+    shadow_effective_qty = max(0.0, values["qty"] * multiplier)
+    shadow_effective_notional = max(0.0, values["notional"] * multiplier)
+
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "row_id": row.get("row_id"),
@@ -519,6 +526,10 @@ def score_layer4_shadow_for_row(row: dict) -> dict:
         "target_weight": row.get("target_weight"),
         "delta_weight": row.get("delta_weight"),
         "relative_drift": row.get("relative_drift"),
+        "shadow_effective_qty": shadow_effective_qty,
+        "shadow_effective_notional": shadow_effective_notional,
+        "shadow_deferred_qty": max(0.0, values["qty"] - shadow_effective_qty),
+        "shadow_deferred_notional": max(0.0, values["notional"] - shadow_effective_notional),
 
         "live_tick_count": metrics.get("live_tick_count"),
         "live_1m_bar_count": metrics.get("live_1m_bar_count"),
@@ -545,6 +556,110 @@ def score_layer4_shadow_for_row(row: dict) -> dict:
 
         **decision_result,
     }
+
+
+def _update_layer4_shadow_lifecycle(rows: list[dict], *, cycle_id, plan_id) -> list[dict]:
+    """Maintain a path-dependent ledger for delayed shadow instructions.
+
+    A delay now remains pending until a later Layer 3 plan confirms execution,
+    changes the target, or the diagnostic horizon expires. This does not alter
+    production orders.
+    """
+    shadow_state = app_state.setdefault("layers", {}).setdefault("layer4_shadow", {})
+    pending = shadow_state.setdefault("pending_delays", {})
+    current = {str(row.get("symbol") or "").upper(): row for row in rows}
+    now_iso = datetime.now(timezone.utc).isoformat()
+    events = []
+    max_cycles = int(
+        app_state.get("execution", {}).get("layer4_shadow_delay_max_cycles", 6) or 6
+    )
+    processed_pending_symbols = set()
+
+    for symbol, item in list(pending.items()):
+        processed_pending_symbols.add(symbol)
+        row = current.get(symbol)
+        age_cycles = max(1, int(cycle_id or 0) - int(item.get("original_cycle_id") or 0))
+        current_price = safe_float((row or {}).get("live_price"), 0.0)
+        original_price = safe_float(item.get("original_price"), 0.0)
+        current_action = (row or {}).get("shadow_action")
+
+        if row is None:
+            status = "canceled"
+            event = "delay_canceled_by_new_target"
+            reason = "symbol_no_longer_has_executable_layer3_order"
+        elif row.get("would_delay") and age_cycles < max_cycles:
+            status = "pending"
+            event = "delay_rechecked_still_pending"
+            reason = row.get("shadow_reason")
+        elif row.get("would_delay"):
+            status = "expired"
+            event = "delay_expired_unfilled"
+            reason = f"maximum_delay_cycles_reached:{max_cycles}"
+        else:
+            status = "resolved"
+            event = "delay_executed_later"
+            reason = row.get("shadow_reason")
+
+        qty = safe_float(item.get("original_qty"), 0.0)
+        improvement = (
+            (original_price - current_price) * qty
+            if original_price > 0 and current_price > 0 else None
+        )
+        events.append({
+            "timestamp": now_iso, "cycle_id": cycle_id, "plan_id": plan_id,
+            "row_id": (row or {}).get("row_id"), "symbol": symbol, "side": "buy",
+            "event": event, "status": status,
+            "original_cycle_id": item.get("original_cycle_id"),
+            "original_plan_id": item.get("original_plan_id"),
+            "original_row_id": item.get("original_row_id"),
+            "original_action": item.get("original_action"),
+            "original_qty": qty, "original_price": original_price,
+            "current_action": current_action,
+            "current_qty": (row or {}).get("qty"), "current_price": current_price or None,
+            "age_cycles": age_cycles,
+            "price_change_pct": (
+                round((current_price - original_price) / original_price, 8)
+                if original_price > 0 and current_price > 0 else None
+            ),
+            "estimated_entry_improvement": (
+                round(improvement, 2) if improvement is not None else None
+            ),
+            "resolution_reason": reason,
+        })
+        if status != "pending":
+            pending.pop(symbol, None)
+
+    for row in rows:
+        symbol = str(row.get("symbol") or "").upper()
+        if (
+            not row.get("would_delay")
+            or symbol in pending
+            or symbol in processed_pending_symbols
+        ):
+            continue
+        pending[symbol] = {
+            "original_cycle_id": cycle_id,
+            "original_plan_id": plan_id,
+            "original_row_id": row.get("row_id"),
+            "original_action": row.get("shadow_action"),
+            "original_qty": row.get("qty"),
+            "original_price": row.get("live_price") or row.get("price"),
+        }
+        events.append({
+            "timestamp": now_iso, "cycle_id": cycle_id, "plan_id": plan_id,
+            "row_id": row.get("row_id"), "symbol": symbol, "side": "buy",
+            "event": "delay_created", "status": "pending",
+            **pending[symbol], "current_action": row.get("shadow_action"),
+            "current_qty": row.get("qty"),
+            "current_price": row.get("live_price") or row.get("price"),
+            "age_cycles": 0, "price_change_pct": 0.0,
+            "estimated_entry_improvement": 0.0,
+            "resolution_reason": row.get("shadow_reason"),
+        })
+
+    shadow_state["pending_delay_count"] = len(pending)
+    shadow_state["last_lifecycle_events"] = events
+    return events
 
 
 def score_layer4_shadow_for_plan(plan: Any, summary: dict | None = None) -> dict:
@@ -593,6 +708,18 @@ def score_layer4_shadow_for_plan(plan: Any, summary: dict | None = None) -> dict
         result["delay_count"] = sum(1 for row in rows if row.get("would_delay"))
         result["reduce_count"] = sum(1 for row in rows if row.get("would_reduce"))
         result["block_count"] = sum(1 for row in rows if row.get("would_block"))
+        lifecycle_events = _update_layer4_shadow_lifecycle(
+            rows,
+            cycle_id=cycle_id,
+            plan_id=plan_id,
+        )
+        result["pending_delay_count"] = len(
+            app_state.setdefault("layers", {}).setdefault("layer4_shadow", {}).get(
+                "pending_delays", {}
+            )
+        )
+        result["lifecycle_event_count"] = len(lifecycle_events)
+        append_layer4_shadow_lifecycle_rows(lifecycle_events)
 
     except Exception as exc:
         result["error"] = str(exc)
