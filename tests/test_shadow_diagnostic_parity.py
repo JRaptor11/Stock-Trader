@@ -33,7 +33,11 @@ sys.modules.setdefault("alpaca.trading.requests", alpaca_requests)
 
 from core.state import app_state
 from layers.layer4_executor import _update_layer4_shadow_lifecycle
-from layers.layer_research_strategy import _raw_research_target, _smooth_target
+from layers.layer_research_strategy import (
+    STRATEGIES,
+    _raw_research_target,
+    _smooth_target,
+)
 
 
 class _Ranked:
@@ -88,6 +92,38 @@ class ShadowDiagnosticParityTests(unittest.TestCase):
         conservative = _smooth_target(raw, previous, {"alpha": 0.20, "max_step": 0.035})
         responsive = _smooth_target(raw, previous, {"alpha": 0.40, "max_step": 0.075})
         self.assertLess(conservative["AMD"], responsive["AMD"])
+
+    def test_shorter_lookback_rejects_stale_five_hour_momentum(self):
+        closes = [100 + index * 0.2 for index in range(49)]
+        # The long trend remains strongly positive while the last hour turns
+        # modestly negative (not negative enough to invoke the emergency
+        # deterioration rejection shared by every variant).
+        closes.extend([109.6 - index * 0.03 for index in range(12)])
+        bars = {"AMD": [{"close": close} for close in closes]}
+        ranked = [_Ranked("AMD", 0.02)]
+
+        target_300, decision_300 = _raw_research_target(
+            ranked, bars, STRATEGIES["LOOKBACK_300M"],
+        )
+        target_60, decision_60 = _raw_research_target(
+            ranked, bars, STRATEGIES["LOOKBACK_60M"],
+        )
+
+        self.assertGreater(decision_300[0]["ret_300m"], 0)
+        self.assertLess(decision_60[0]["ret_60m"], 0)
+        self.assertGreater(target_300.get("AMD", 0), 0)
+        self.assertEqual(target_60["CASH"], 1.0)
+
+    def test_timing_variants_share_rebalance_settings(self):
+        names = [
+            "LOOKBACK_60M", "LOOKBACK_150M", "LOOKBACK_300M",
+            "MULTI_HORIZON_BLEND", "ADAPTIVE_REVERSAL",
+        ]
+        settings = {
+            (STRATEGIES[name]["alpha"], STRATEGIES[name]["max_step"])
+            for name in names
+        }
+        self.assertEqual(settings, {(0.40, 0.075)})
 
 
 if __name__ == "__main__":

@@ -19,10 +19,34 @@ from utils.numeric import safe_float, safe_int
 
 STRATEGIES = {
     "CURRENT_CONTROL": {"mode": "control"},
-    "REDESIGN_CONSERVATIVE": {"alpha": 0.20, "max_step": 0.035},
-    "REDESIGN_RESPONSIVE": {"alpha": 0.40, "max_step": 0.075},
+    "REDESIGN_CONSERVATIVE": {
+        "target_mode": "legacy", "alpha": 0.20, "max_step": 0.035,
+    },
+    "REDESIGN_RESPONSIVE": {
+        "target_mode": "legacy", "alpha": 0.40, "max_step": 0.075,
+    },
+    # These variants intentionally share smoothing/execution settings. Their
+    # results therefore isolate target-signal timing instead of conflating a
+    # shorter lookback with a faster rebalance policy.
+    "LOOKBACK_60M": {
+        "target_mode": "single_horizon", "horizon_minutes": 60,
+        "alpha": 0.40, "max_step": 0.075,
+    },
+    "LOOKBACK_150M": {
+        "target_mode": "single_horizon", "horizon_minutes": 150,
+        "alpha": 0.40, "max_step": 0.075,
+    },
+    "LOOKBACK_300M": {
+        "target_mode": "single_horizon", "horizon_minutes": 300,
+        "alpha": 0.40, "max_step": 0.075,
+    },
+    "MULTI_HORIZON_BLEND": {
+        "target_mode": "blend", "alpha": 0.40, "max_step": 0.075,
+    },
+    "ADAPTIVE_REVERSAL": {
+        "target_mode": "adaptive", "alpha": 0.40, "max_step": 0.075,
+    },
 }
-
 
 def _return(closes: list[float], bars: int) -> float:
     if len(closes) <= bars or not closes[-bars - 1]:
@@ -57,7 +81,39 @@ def _rank_map(ranked) -> dict[str, dict]:
     return out
 
 
-def _raw_research_target(ranked, bars_by_symbol: dict) -> tuple[dict, list[dict]]:
+def _strategy_signal(
+    *, base_score: float, ret_30m: float, ret_60m: float,
+    ret_150m: float, ret_300m: float, acceleration: float,
+    config: dict,
+) -> tuple[float, str, int, bool]:
+    """Return a comparable absolute signal and timing diagnostics."""
+    mode = config.get("target_mode", "legacy")
+    returns = {60: ret_60m, 150: ret_150m, 300: ret_300m}
+    agreement = sum(value > 0 for value in returns.values())
+    reversal = ret_30m < 0 and ret_60m < 0 and acceleration < 0
+    if mode == "single_horizon":
+        horizon = int(config["horizon_minutes"])
+        return returns[horizon], f"{horizon}m", agreement, reversal
+    if mode == "blend":
+        # Recent information has the greatest influence, while the longer
+        # windows prevent a single noisy 5-minute move from dominating.
+        signal = 0.50 * ret_60m + 0.30 * ret_150m + 0.20 * ret_300m
+        return signal, "60/150/300_blend", agreement, reversal
+    if mode == "adaptive":
+        if reversal or (ret_60m * ret_300m < 0):
+            signal = 0.65 * ret_60m + 0.25 * ret_150m + 0.10 * ret_300m
+            label = "adaptive_recent"
+        else:
+            signal = 0.25 * ret_60m + 0.35 * ret_150m + 0.40 * ret_300m
+            label = "adaptive_stable"
+        return signal, label, agreement, reversal
+    return base_score, "production_composite", agreement, reversal
+
+
+def _raw_research_target(
+    ranked, bars_by_symbol: dict, config: dict | None = None,
+) -> tuple[dict, list[dict]]:
+    config = dict(config or {"target_mode": "legacy"})
     rank_map = _rank_map(ranked)
     decisions = []
     qualified = []
@@ -74,7 +130,21 @@ def _raw_research_target(ranked, bars_by_symbol: dict) -> tuple[dict, list[dict]
         volatility = _volatility(closes)
         base_score = info["score"]
 
-        positive_absolute_signal = base_score >= 0.001 and ret_60 > 0.0
+        signal_score, signal_horizon, horizon_agreement, reversal_detected = (
+            _strategy_signal(
+                base_score=base_score, ret_30m=ret_6, ret_60m=ret_12,
+                ret_150m=ret_30, ret_300m=ret_60,
+                acceleration=acceleration, config=config,
+            )
+        )
+
+        mode = config.get("target_mode", "legacy")
+        if mode == "legacy":
+            positive_absolute_signal = base_score >= 0.001 and ret_60 > 0.0
+        elif mode in {"blend", "adaptive"}:
+            positive_absolute_signal = signal_score >= 0.001 and horizon_agreement >= 2
+        else:
+            positive_absolute_signal = signal_score >= 0.001
         severe_deterioration = ret_6 <= -0.003 and ret_12 <= -0.005
         moderate_deterioration = ret_6 < 0 and ret_12 < 0 and acceleration < 0
 
@@ -94,11 +164,14 @@ def _raw_research_target(ranked, bars_by_symbol: dict) -> tuple[dict, list[dict]
             multiplier = 0.70
             reason = "qualified_mixed_recent_confirmation"
 
-        effective_score = max(0.0, base_score) * multiplier
+        effective_score = max(0.0, signal_score) * multiplier
         row = {
             "symbol": symbol, "production_rank": info["rank"],
             "base_score": base_score, "ret_30m": ret_6, "ret_60m": ret_12,
             "ret_150m": ret_30, "ret_300m": ret_60,
+            "signal_horizon": signal_horizon, "signal_score": signal_score,
+            "horizon_agreement_count": horizon_agreement,
+            "reversal_detected": reversal_detected,
             "momentum_acceleration": acceleration, "volatility_300m": volatility,
             "positive_absolute_signal": positive_absolute_signal,
             "severe_deterioration": severe_deterioration,
@@ -153,6 +226,8 @@ def _raw_research_target(ranked, bars_by_symbol: dict) -> tuple[dict, list[dict]
 
     target["_meta"] = {
         "strategy": "redesigned_absolute_momentum",
+        "target_mode": config.get("target_mode", "legacy"),
+        "horizon_minutes": config.get("horizon_minutes"),
         "qualified_count": len(qualified), "selected_count": len(selected),
         "rejected_count": len(decisions) - len(qualified),
         "deteriorating_count": sum(1 for row in decisions if row["severe_deterioration"] or row["moderate_deterioration"]),
@@ -311,18 +386,22 @@ def run_research_strategy_shadow(
     if not state.get("initialized"):
         _initialize(state, layer3_plan, layer3_summary, prices)
 
-    raw_target, base_decisions = _raw_research_target(ranked, bars_by_symbol)
-    config_hash = hashlib.sha256(json.dumps({"strategies": STRATEGIES, "rules": "v1"}, sort_keys=True).encode()).hexdigest()[:16]
+    config_hash = hashlib.sha256(json.dumps({"strategies": STRATEGIES, "rules": "v2"}, sort_keys=True).encode()).hexdigest()[:16]
     cycle_rows, decision_rows, order_rows, portfolio_rows = [], [], [], []
 
     control_equity = None
     for name, config in STRATEGIES.items():
         portfolio = state["portfolios"][name]
-        target = (
-            dict(production_target or {})
-            if config.get("mode") == "control"
-            else _smooth_target(raw_target, portfolio.get("previous_target"), config)
-        )
+        if config.get("mode") == "control":
+            raw_target, base_decisions = {"_meta": {}}, []
+            target = dict(production_target or {})
+        else:
+            raw_target, base_decisions = _raw_research_target(
+                ranked, bars_by_symbol, config,
+            )
+            target = _smooth_target(
+                raw_target, portfolio.get("previous_target"), config,
+            )
         portfolio["previous_target"] = dict(target)
         account = {
             "source": name.lower(), "broker_snapshot_ok": True,
@@ -360,6 +439,21 @@ def run_research_strategy_shadow(
         pnl = equity - portfolio["initial_equity"]
         turnover = portfolio["cumulative_turnover"]
         meta = raw_target.get("_meta", {})
+        reversal_symbols = {
+            row["symbol"] for row in base_decisions
+            if row.get("reversal_detected")
+        }
+        reversal_exposure = sum(
+            safe_float(portfolio["positions"].get(symbol), 0.0)
+            * safe_float(prices.get(symbol), 0.0)
+            for symbol in reversal_symbols
+        )
+        reversal_sell_count = sum(
+            1 for row in variant_orders
+            if row.get("status") == "executed"
+            and str(row.get("side") or "").lower() == "sell"
+            and row.get("symbol") in reversal_symbols
+        )
         cycle_rows.append({
             "timestamp": timestamp, "cycle_id": cycle_id, "strategy_name": name,
             "status": "ok", "config_hash": config_hash,
@@ -372,6 +466,16 @@ def run_research_strategy_shadow(
             "shadow_pnl_since_initialization": round(pnl, 2), "cash": round(portfolio["cash"], 2),
             "cash_pct": round(portfolio["cash"] / equity, 6) if equity else None,
             "peak_equity": round(portfolio["peak_equity"], 2), "drawdown_pct": round(drawdown, 8),
+            "peak_giveback": round(equity - portfolio["peak_equity"], 2),
+            "invested_pct": round(1.0 - portfolio["cash"] / equity, 6) if equity else None,
+            "target_mode": config.get("target_mode", "control"),
+            "signal_horizon_minutes": config.get("horizon_minutes"),
+            "reversal_detected_count": len(reversal_symbols),
+            "reversal_sell_count": reversal_sell_count,
+            "reversal_exposure": round(reversal_exposure, 2),
+            "reversal_exposure_pct": (
+                round(reversal_exposure / equity, 8) if equity else None
+            ),
             "cumulative_trade_count": portfolio["cumulative_trade_count"],
             "cumulative_gross_turnover": round(turnover, 2),
             "gross_turnover_pct": round(turnover / portfolio["initial_equity"], 8) if portfolio["initial_equity"] else None,
