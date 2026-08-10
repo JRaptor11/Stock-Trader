@@ -325,6 +325,58 @@ Run all tests from the repository root:
 python -m unittest discover -s tests -v
 ```
 
+## Historical Replay and ML Dataset Preparation
+
+The repository includes an offline, shadow-only historical replay workflow. It
+feeds completed five-minute bars through the same ranking and portfolio-planning
+components used by the layered application, maintains independent portfolio
+state for each research strategy, and executes eligible decisions at the next
+bar's opening price. Configurable spread, slippage, commission, whole-share,
+cash, hysteresis, and rolling-trade constraints are included so historical
+results do not assume cost-free or same-bar execution.
+
+Input is a long-form CSV with one row per symbol and timestamp. Required columns
+are `timestamp`, `symbol`, `open`, `high`, `low`, `close`, and `volume`.
+`trade_count` and `vwap` are optional. Timestamps must include a UTC offset, and
+each symbol/timestamp pair must be unique. If SPY is present, it is treated as
+benchmark context by default rather than as a candidate security.
+
+Example:
+
+```powershell
+python -m research.historical_replay historical_5m_bars.csv `
+  --output replay_output `
+  --symbols AAPL,AMD,AMZN,AVGO,COST,GOOGL,META,MSFT,NVDA,TSLA `
+  --benchmark-symbol SPY `
+  --spread-bps 1 `
+  --slippage-bps 1
+```
+
+The output contains portfolio cycles, decisions, simulated orders, strategy
+summaries, chronological walk-forward folds, and an ML-ready feature/outcome
+dataset. Outcome columns are calculated only from later timestamps and are kept
+separate from decision-time features. The manifest records the source-file hash
+and replay configuration for reproducibility.
+
+Replay parity can then be measured against a downloaded paper-session package:
+
+```powershell
+python -m research.replay_parity `
+  replay_output\replay_cycles.csv `
+  layer_research_strategy_cycles.csv `
+  --output replay_output\replay_parity.json
+```
+
+The parity report aligns each strategy by source-bar timestamp and reports mean,
+maximum, and final differences in equity, turnover, trade count, and drawdown.
+Material differences should be explained before historical results are used for
+model selection.
+
+Historical replay remains a research tool rather than evidence of live-trading
+readiness. Results should be validated against recorded paper sessions and
+evaluated chronologically across multiple market regimes before model training
+or strategy promotion.
+
 ## Deploying on Render
 
 The repository contains `render.yaml`, `runtime.txt`, and `build.sh` for a Render web service. The service starts with:
@@ -363,7 +415,9 @@ A typical validation session follows this sequence:
 - The system remains in paper-trading validation and is not approved for live capital.
 - The available market-day sample is still too small to support profitability conclusions.
 - There is not yet evidence of sustained outperformance versus buying and holding SPY after accounting for risk, turnover, slippage, and changing market regimes.
-- The project does not yet include a full historical backtesting and walk-forward validation framework.
+- Historical replay currently models next-bar fills and configurable costs but
+  still requires validation against a larger collection of recorded broker
+  sessions before its results can be treated as production-equivalent.
 - Runtime history is stored primarily in CSV, JSON, and logs rather than a durable transactional database.
 - Render filesystem output may be ephemeral unless artifacts are downloaded or exported.
 - External availability depends on Alpaca, IEX data, SMTP, Telegram, network connectivity, and hosted-service uptime.
@@ -377,7 +431,7 @@ Planned areas of work include:
 
 - longer paper-trading validation across different market regimes
 - formal SPY-relative benchmarking with risk and drawdown analysis
-- backtesting, walk-forward evaluation, and parameter-stability testing
+- expanded replay-parity, walk-forward, and parameter-stability testing
 - durable storage for orders, decisions, snapshots, and review artifacts
 - expanded integration and fault-injection testing
 - a production monitoring dashboard
