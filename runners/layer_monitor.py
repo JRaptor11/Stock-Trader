@@ -44,12 +44,14 @@ from layers.layer4_executor import execute_layer4_plan
 from layers.layer_csv import (
     append_layer_cycle_row,
     append_layer_live_bar_health_rows,
+    append_layer_live_cohort_diagnostic_rows,
     append_layer_live_strategy_outcome_rows,
     append_layer_live_strategy_shadow_cycle_row,
     append_layer_live_strategy_shadow_rows,
     append_layer_opening_shadow_cycle_row,
     append_layer_opening_shadow_outcome_rows,
     append_layer_opening_shadow_trade_rows,
+    append_layer4_shadow_outcome_rows,
     append_layer_strategy_shadow_comparison_row,
     append_layer_strategy_shadow_order_rows,
     append_layer_strategy_shadow_portfolio_rows,
@@ -58,6 +60,8 @@ from layers.layer_rest_live_attribution import (
     rebuild_rest_live_attribution_csvs,
 )
 from layers.layer_research_strategy import run_research_strategy_shadow
+from layers.live_cohort import latest_completed_live_cohort
+from layers.layer4_shadow_outcomes import update_layer4_shadow_outcome
 
 
 def _execution_setting(name: str, default):
@@ -2180,150 +2184,6 @@ def _build_live_bars_by_symbol(
     return bars_by_symbol, bar_counts, live_prices
 
 
-def _latest_completed_live_cohort(
-    bars_by_symbol: dict,
-    *,
-    timeframe_seconds: int,
-    required_symbols: int,
-) -> dict:
-    """
-    Find the newest completed local-live bar bucket shared by enough symbols.
-
-    Only bars containing bucket_start count as internally constructed LIVE
-    bars. REST bootstrap bars are intentionally ignored when selecting the
-    cohort, although they may remain in the historical ranking inputs.
-    """
-    required_symbols = max(
-        1,
-        safe_int(
-            required_symbols,
-            1,
-        ),
-    )
-
-    count_by_epoch: dict[float, int] = {}
-    symbols_by_epoch: dict[float, list[str]] = {}
-
-    for raw_symbol, bars in (
-        bars_by_symbol or {}
-    ).items():
-        symbol = str(
-            raw_symbol or ""
-        ).upper().strip()
-
-        if not symbol:
-            continue
-
-        # Count each symbol no more than once for a given bucket.
-        symbol_epochs = set()
-
-        for bar in bars or []:
-            bucket_start = safe_float(
-                _bar_value(
-                    bar,
-                    "bucket_start",
-                ),
-                0.0,
-            )
-
-            if bucket_start > 0:
-                symbol_epochs.add(
-                    float(bucket_start)
-                )
-
-        for bucket_start in symbol_epochs:
-            count_by_epoch[bucket_start] = (
-                count_by_epoch.get(
-                    bucket_start,
-                    0,
-                )
-                + 1
-            )
-
-            symbols_by_epoch.setdefault(
-                bucket_start,
-                [],
-            ).append(symbol)
-
-    eligible_epochs = [
-        bucket_start
-        for bucket_start, symbol_count
-        in count_by_epoch.items()
-        if symbol_count >= required_symbols
-    ]
-
-    if not eligible_epochs:
-        return {
-            "status": (
-                "waiting_for_completed_live_cohort"
-            ),
-            "required_symbol_count": (
-                required_symbols
-            ),
-            "available_cohort_counts": {
-                datetime.fromtimestamp(
-                    bucket_start,
-                    tz=timezone.utc,
-                ).isoformat(): symbol_count
-                for bucket_start, symbol_count
-                in sorted(
-                    count_by_epoch.items()
-                )
-            },
-        }
-
-    bucket_start_epoch = max(
-        eligible_epochs
-    )
-
-    bucket_end_epoch = (
-        bucket_start_epoch
-        + max(
-            1,
-            safe_int(
-                timeframe_seconds,
-                300,
-            ),
-        )
-    )
-
-    cohort_symbols = sorted(
-        symbols_by_epoch.get(
-            bucket_start_epoch,
-            [],
-        )
-    )
-
-    return {
-        "status": "ready",
-        "bucket_start_epoch": (
-            bucket_start_epoch
-        ),
-        "bucket_end_epoch": (
-            bucket_end_epoch
-        ),
-        "bucket_start_timestamp": (
-            datetime.fromtimestamp(
-                bucket_start_epoch,
-                tz=timezone.utc,
-            ).isoformat()
-        ),
-        "bucket_end_timestamp": (
-            datetime.fromtimestamp(
-                bucket_end_epoch,
-                tz=timezone.utc,
-            ).isoformat()
-        ),
-        "symbol_count": len(
-            cohort_symbols
-        ),
-        "symbols": cohort_symbols,
-        "required_symbol_count": (
-            required_symbols
-        ),
-    }
-
-
 def _trim_live_inputs_to_cohort(
     bars_by_symbol: dict,
     *,
@@ -2974,7 +2834,7 @@ def run_opening_live_fallback_shadow(
     )
 
     live_cohort = (
-        _latest_completed_live_cohort(
+        latest_completed_live_cohort(
             live_bars_by_symbol,
             timeframe_seconds=(
                 timeframe_seconds
@@ -3611,6 +3471,36 @@ def _append_mature_live_strategy_shadow_outcomes(*, market_is_open: bool) -> Non
             len(matured_rows),
             len(keep),
         )
+
+
+def _append_mature_layer4_shadow_outcomes(*, market_is_open: bool) -> None:
+    """Mark delayed Layer 4 buys at 10/30/60 minutes and session end."""
+    shadow = app_state.setdefault("layers", {}).setdefault("layer4_shadow", {})
+    pending = shadow.setdefault("pending_outcomes", [])
+    if not pending:
+        return
+    md = app_state.get("market_data", {}).get("buffer")
+    now_epoch = time.time()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    matured_rows, keep = [], []
+    for item in pending:
+        symbol = str(item.get("symbol") or "").upper().strip()
+        created_epoch = safe_float(item.get("created_epoch"), 0.0)
+        start_price = safe_float(item.get("start_live_price"), 0.0)
+        current_price = _latest_live_price_for_symbol(md, symbol)
+        if not symbol or created_epoch <= 0 or start_price <= 0 or current_price <= 0:
+            keep.append(item)
+            continue
+        outcome_row, remain_pending = update_layer4_shadow_outcome(
+            item, current_price=current_price, now_epoch=now_epoch,
+            now_iso=now_iso, market_is_open=market_is_open,
+        )
+        if remain_pending:
+            keep.append(item)
+            continue
+        matured_rows.append(outcome_row)
+    shadow["pending_outcomes"] = keep
+    append_layer4_shadow_outcome_rows(matured_rows)
 
 
 # ================================================================
@@ -4485,7 +4375,12 @@ def run_strategy_shadow_portfolio_simulation(
 
     now_iso = datetime.now(timezone.utc).isoformat()
 
-    if not market_is_open or rest_status != "ok" or live_status != "ok":
+    comparable_live_statuses = {"ok", "ok_partial_cohort"}
+    if (
+        not market_is_open
+        or rest_status != "ok"
+        or live_status not in comparable_live_statuses
+    ):
         row = {
             "timestamp": now_iso,
             "cycle_id": cycle_id,
@@ -4773,6 +4668,7 @@ def run_live_strategy_shadow_comparison(
     - does not submit orders
     """
     enabled = bool(_execution_setting("live_strategy_shadow_enabled", True))
+    _append_mature_layer4_shadow_outcomes(market_is_open=market_is_open)
     _append_mature_opening_shadow_outcomes(market_is_open=market_is_open)
 
     if not enabled:
@@ -4832,6 +4728,8 @@ def run_live_strategy_shadow_comparison(
         rest_bars_by_symbol=rest_bars_by_symbol,
         rest_bootstrap_enabled=rest_bootstrap_enabled,
     )
+    untrimmed_live_bars_by_symbol = dict(live_bars_by_symbol)
+    untrimmed_live_bar_counts = dict(live_bar_counts)
 
     rest_source_bar_timestamp = (
         layer3_summary.get(
@@ -4849,20 +4747,41 @@ def run_live_strategy_shadow_comparison(
             symbols,
         )
     )
+    requested_min_cohort = safe_int(
+        _execution_setting("live_strategy_shadow_min_cohort_symbols", 9),
+        9,
+    )
 
     # Bootstrap history can make a stale symbol look numerically "ready".
-    # Require one completed local cohort shared by the entire production
-    # universe and trim all inputs to that exact timestamp.
-    live_cohort = _latest_completed_live_cohort(
+    # Prefer the full production universe, but permit the configured minimum
+    # cohort and label it partial. Trim every input to that exact timestamp.
+    full_symbol_count = max(1, len(symbols or []))
+    minimum_cohort_symbols = max(
+        1, min(full_symbol_count, requested_min_cohort)
+    )
+    live_cohort = latest_completed_live_cohort(
         live_bars_by_symbol,
         timeframe_seconds=timeframe_seconds,
-        required_symbols=max(1, len(symbols or [])),
+        required_symbols=minimum_cohort_symbols,
     )
     if live_cohort.get("status") == "ready":
         live_bars_by_symbol, live_bar_counts, live_prices = _trim_live_inputs_to_cohort(
             live_bars_by_symbol,
             cohort_start_epoch=live_cohort.get("bucket_start_epoch"),
         )
+        selected_cohort_symbols = set(live_cohort.get("symbols", []) or [])
+        live_bars_by_symbol = {
+            symbol: bars for symbol, bars in live_bars_by_symbol.items()
+            if symbol in selected_cohort_symbols
+        }
+        live_bar_counts = {
+            symbol: count for symbol, count in live_bar_counts.items()
+            if symbol in selected_cohort_symbols
+        }
+        live_prices = {
+            symbol: price for symbol, price in live_prices.items()
+            if symbol in selected_cohort_symbols
+        }
         live_source_bar_timestamp = live_cohort.get("bucket_start_timestamp")
 
     live_symbols_ready = [
@@ -4872,7 +4791,106 @@ def run_live_strategy_shadow_comparison(
     ]
 
     symbol_count = len(symbols or [])
+    cohort_symbols = set(live_cohort.get("symbols", []) or [])
+    missing_cohort_symbols = sorted(
+        set(str(symbol or "").upper().strip() for symbol in symbols or [])
+        - cohort_symbols
+    )
+    cohort_is_partial = bool(
+        live_cohort.get("status") == "ready" and missing_cohort_symbols
+    )
     rest_ranked_count = len(rest_ranked or [])
+
+    diagnostic_state = app_state.setdefault("layers", {}).setdefault(
+        "live_cohort_diagnostics", {}
+    )
+    miss_streaks = diagnostic_state.setdefault("miss_streaks", {})
+    cohort_epoch = safe_float(live_cohort.get("bucket_start_epoch"), 0.0)
+    cohort_diagnostic_rows = []
+    for raw_symbol in symbols or []:
+        symbol = str(raw_symbol or "").upper().strip()
+        bars = untrimmed_live_bars_by_symbol.get(symbol, []) or []
+        local_epochs = sorted({
+            safe_float(_bar_value(bar, "bucket_start"), 0.0)
+            for bar in bars
+            if safe_float(_bar_value(bar, "bucket_start"), 0.0) > 0
+        })
+        latest_local_epoch = local_epochs[-1] if local_epochs else 0.0
+        selected = symbol in cohort_symbols
+        if selected:
+            reason_code = "READY"
+            miss_streaks[symbol] = 0
+        elif not local_epochs:
+            reason_code = "NO_LOCAL_BUCKET"
+            miss_streaks[symbol] = safe_int(miss_streaks.get(symbol), 0) + 1
+        elif cohort_epoch > 0 and latest_local_epoch < cohort_epoch:
+            reason_code = "LAGGING_BUCKET"
+            miss_streaks[symbol] = safe_int(miss_streaks.get(symbol), 0) + 1
+        elif cohort_epoch > 0 and latest_local_epoch > cohort_epoch:
+            reason_code = "MISALIGNED_BUCKET"
+            miss_streaks[symbol] = safe_int(miss_streaks.get(symbol), 0) + 1
+        else:
+            reason_code = "BUCKET_NOT_SELECTED"
+            miss_streaks[symbol] = safe_int(miss_streaks.get(symbol), 0) + 1
+
+        points = []
+        try:
+            points = list(md.get_recent_prices_ts(symbol, limit=2000) or [])
+        except Exception:
+            logging.debug(
+                "[LiveCohortDiagnostic] Failed reading ticks for %s", symbol,
+                exc_info=True,
+            )
+        latest_tick_epoch = safe_float(points[-1][0], 0.0) if points else 0.0
+        latest_tick_age = now_epoch - latest_tick_epoch if latest_tick_epoch > 0 else None
+        if not selected and not points:
+            reason_code = "NO_TICKS"
+        elif not selected and not local_epochs:
+            reason_code = "NO_LOCAL_BUCKET_WITH_TICKS"
+        elif (
+            not selected and latest_tick_age is not None
+            and latest_tick_age > max(60, timeframe_seconds * 2)
+        ):
+            reason_code = "STALE_TICKS"
+        rest_bars = rest_bars_by_symbol.get(symbol, []) or []
+        rest_epoch = _bar_epoch_seconds(rest_bars[-1]) if rest_bars else 0.0
+        cohort_diagnostic_rows.append({
+            "timestamp": now_iso, "cycle_id": cycle_id, "symbol": symbol,
+            "market_is_open": market_is_open,
+            "cohort_status": live_cohort.get("status"),
+            "cohort_is_partial": cohort_is_partial,
+            "selected_for_cohort": selected, "reason_code": reason_code,
+            "required_symbol_count": minimum_cohort_symbols,
+            "selected_symbol_count": len(cohort_symbols),
+            "expected_bucket_start": live_cohort.get("bucket_start_timestamp"),
+            "latest_local_bucket_start": (
+                datetime.fromtimestamp(latest_local_epoch, tz=timezone.utc).isoformat()
+                if latest_local_epoch > 0 else None
+            ),
+            "local_bucket_gap_seconds": (
+                round(cohort_epoch - latest_local_epoch, 3)
+                if cohort_epoch > 0 and latest_local_epoch > 0 else None
+            ),
+            "completed_local_bucket_count": len(local_epochs),
+            "live_bar_count": untrimmed_live_bar_counts.get(symbol, 0),
+            "live_tick_count": len(points),
+            "latest_tick_timestamp": (
+                datetime.fromtimestamp(latest_tick_epoch, tz=timezone.utc).isoformat()
+                if latest_tick_epoch > 0 else None
+            ),
+            "latest_tick_age_seconds": (
+                round(latest_tick_age, 3) if latest_tick_age is not None else None
+            ),
+            "rest_latest_bar_timestamp": (
+                datetime.fromtimestamp(rest_epoch, tz=timezone.utc).isoformat()
+                if rest_epoch > 0 else None
+            ),
+            "rest_latest_bar_age_seconds": (
+                round(now_epoch - rest_epoch, 3) if rest_epoch > 0 else None
+            ),
+            "consecutive_missing_cycles": miss_streaks.get(symbol, 0),
+        })
+    append_layer_live_cohort_diagnostic_rows(cohort_diagnostic_rows)
 
     cycle_base = {
         "timestamp": now_iso,
@@ -4888,6 +4906,9 @@ def run_live_strategy_shadow_comparison(
         "live_cohort_timestamp": live_cohort.get("bucket_start_timestamp"),
         "live_cohort_symbol_count": live_cohort.get("symbol_count", 0),
         "live_cohort_symbols": live_cohort.get("symbols", []),
+        "live_cohort_is_partial": cohort_is_partial,
+        "live_cohort_missing_symbols": missing_cohort_symbols,
+        "live_cohort_required_symbol_count": minimum_cohort_symbols,
     }
 
     # True comparison rule:
@@ -4926,22 +4947,25 @@ def run_live_strategy_shadow_comparison(
     # Every symbol that REST evaluated must also have enough completed local
     # 5-minute live bars. This prevents LIVE from ranking 1 symbol while REST
     # ranks the full universe.
-    if len(live_symbols_ready) < symbol_count:
+    ready_cohort_symbols = [
+        symbol for symbol in live_symbols_ready if symbol in cohort_symbols
+    ]
+    if len(ready_cohort_symbols) < len(cohort_symbols):
         row = {
             **cycle_base,
             "live_status": "insufficient_live_bars",
             "live_ranked_count": 0,
             "error": (
-                f"requires_all_symbols_ready ready={len(live_symbols_ready)}/"
-                f"{symbol_count} counts={live_bar_counts}"
+                f"requires_all_cohort_symbols_ready ready={len(ready_cohort_symbols)}/"
+                f"{len(cohort_symbols)} counts={live_bar_counts}"
             ),
         }
         append_layer_live_strategy_shadow_cycle_row(row)
         logging.info(
             "[LiveStrategyShadow] Insufficient completed 5-minute live bars | "
             "ready=%s/%s min_bars=%s timeframe=%ss counts=%s",
-            len(live_symbols_ready),
-            symbol_count,
+            len(ready_cohort_symbols),
+            len(cohort_symbols),
             min_live_bars,
             timeframe_seconds,
             live_bar_counts,
@@ -4961,14 +4985,14 @@ def run_live_strategy_shadow_comparison(
         # If REST ranked N symbols, LIVE must rank N symbols before we build
         # a target. This avoids updating the live Layer 2 smoothing state with
         # a partial universe.
-        if len(live_ranked or []) < rest_ranked_count:
+        if len(live_ranked or []) < len(cohort_symbols):
             row = {
                 **cycle_base,
                 "live_status": "insufficient_live_ranked_symbols",
                 "live_ranked_count": len(live_ranked or []),
                 "error": (
                     f"live_ranked_count={len(live_ranked or [])} "
-                    f"rest_ranked_count={rest_ranked_count}"
+                    f"cohort_symbol_count={len(cohort_symbols)}"
                 ),
             }
             append_layer_live_strategy_shadow_cycle_row(row)
@@ -4976,7 +5000,7 @@ def run_live_strategy_shadow_comparison(
                 "[LiveStrategyShadow] Insufficient live ranked symbols | "
                 "live_ranked=%s rest_ranked=%s",
                 len(live_ranked or []),
-                rest_ranked_count,
+                len(cohort_symbols),
             )
             return row
 
@@ -5007,7 +5031,7 @@ def run_live_strategy_shadow_comparison(
                 live_target or {}
             )
 
-        live_status = "ok"
+        live_status = "ok_partial_cohort" if cohort_is_partial else "ok"
 
     except Exception as exc:
         logging.warning("[LiveStrategyShadow] Evaluation failed.", exc_info=True)
@@ -5547,6 +5571,26 @@ def run_live_strategy_shadow_comparison(
     }
 
     append_layer_live_strategy_shadow_cycle_row(cycle_row)
+
+    # Run every timing/redesign portfolio through the same LIVE inputs and
+    # planner effects as the live strategy comparison. This remains shadow-only.
+    try:
+        research_summary = dict(layer3_summary)
+        research_summary["status"] = "ok"
+        run_research_strategy_shadow(
+            ranked=live_ranked,
+            production_target=live_target,
+            bars_by_symbol=live_bars_by_symbol,
+            layer3_plan=live_plan,
+            layer3_summary=research_summary,
+            source_bar_timestamp=live_source_bar_timestamp,
+            source="LIVE",
+        )
+    except Exception:
+        logging.warning(
+            "[ResearchStrategyShadow] LIVE-source evaluation failed; production is unchanged.",
+            exc_info=True,
+        )
 
     try:
         run_strategy_shadow_portfolio_simulation(
@@ -6687,6 +6731,7 @@ async def run_layer_monitor(
                             layer3_plan=layer3_plan,
                             layer3_summary=layer3_summary,
                             source_bar_timestamp=rest_source_bar_timestamp,
+                            source="REST",
                         )
                     except Exception:
                         logging.warning(

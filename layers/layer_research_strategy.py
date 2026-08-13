@@ -369,6 +369,7 @@ def _apply_plan(portfolio: dict, plan: list[dict], prices: dict, *, timestamp: s
 def run_research_strategy_shadow(
     *, ranked, production_target: dict, bars_by_symbol: dict,
     layer3_plan: list[dict], layer3_summary: dict, source_bar_timestamp,
+    source: str = "REST",
 ) -> dict:
     """Run redesigned portfolios without changing production targets/orders."""
     if app_state.get("execution", {}).get("research_strategy_shadow_enabled", True) is False:
@@ -377,7 +378,13 @@ def run_research_strategy_shadow(
         return {"status": "skipped", "reason": "production_layer3_not_ok"}
     timestamp = datetime.now(timezone.utc).isoformat()
     cycle_id = layer3_summary.get("cycle_id")
-    state = app_state.setdefault("layers", {}).setdefault("research_strategy_shadow", {})
+    source = str(source or "REST").upper().strip()
+    root_state = app_state.setdefault("layers", {}).setdefault(
+        "research_strategy_shadow", {}
+    )
+    # REST and LIVE must have completely independent path-dependent portfolios
+    # and planner state. Sharing this state would make the comparison invalid.
+    state = root_state.setdefault("sources", {}).setdefault(source, {})
     session_date = str(layer3_summary.get("open_session_date") or timestamp[:10])
     if state.get("date") != session_date:
         state.clear()
@@ -429,6 +436,7 @@ def run_research_strategy_shadow(
         )
         for row in variant_orders:
             row["strategy_name"] = name
+            row["source"] = source
         order_rows.extend(variant_orders)
 
         equity = _equity(portfolio, prices)
@@ -456,6 +464,7 @@ def run_research_strategy_shadow(
         )
         cycle_rows.append({
             "timestamp": timestamp, "cycle_id": cycle_id, "strategy_name": name,
+            "source": source,
             "status": "ok", "config_hash": config_hash,
             "source_bar_timestamp": source_bar_timestamp,
             "production_equity": layer3_summary.get("equity"), "shadow_equity": round(equity, 2),
@@ -500,6 +509,7 @@ def run_research_strategy_shadow(
         for base in ([] if name == "CURRENT_CONTROL" else base_decisions):
             decision_rows.append({
                 "timestamp": timestamp, "cycle_id": cycle_id, "strategy_name": name,
+                "source": source,
                 **base, "smoothed_target_weight": safe_float(target.get(base["symbol"]), 0.0),
             })
         for symbol in sorted(set(portfolio["positions"]) | set(target) - {"CASH", "_meta"}):
@@ -508,6 +518,7 @@ def run_research_strategy_shadow(
             value = qty * price
             portfolio_rows.append({
                 "timestamp": timestamp, "cycle_id": cycle_id, "strategy_name": name,
+                "source": source,
                 "symbol": symbol, "qty": qty, "price": price, "market_value": value,
                 "weight": value / equity if equity else 0.0,
                 "target_weight": safe_float(target.get(symbol), 0.0),
@@ -519,6 +530,8 @@ def run_research_strategy_shadow(
     append_layer_research_strategy_order_rows(order_rows)
     append_layer_research_strategy_portfolio_rows(portfolio_rows)
     state["last_result"] = cycle_rows
+    root_state["last_result_by_source"] = root_state.get("last_result_by_source", {})
+    root_state["last_result_by_source"][source] = cycle_rows
     logging.info(
         "[ResearchStrategyShadow] cycle=%s results=%s",
         cycle_id,

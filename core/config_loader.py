@@ -209,6 +209,10 @@ def load_environment_config() -> None:
         "LIVE_STRATEGY_SHADOW_REST_BOOTSTRAP_ENABLED",
         True,
     )
+    config.LIVE_STRATEGY_SHADOW_MIN_COHORT_SYMBOLS = get_int_env(
+        "LIVE_STRATEGY_SHADOW_MIN_COHORT_SYMBOLS",
+        9,
+    )
     config.RESEARCH_STRATEGY_SHADOW_ENABLED = get_bool_env(
         "RESEARCH_STRATEGY_SHADOW_ENABLED",
         True,
@@ -352,6 +356,9 @@ def apply_runtime_config_to_app_state() -> None:
 
     app_state["execution"]["live_strategy_shadow_rest_bootstrap_enabled"] = (
         config.LIVE_STRATEGY_SHADOW_REST_BOOTSTRAP_ENABLED
+    )
+    app_state["execution"]["live_strategy_shadow_min_cohort_symbols"] = (
+        config.LIVE_STRATEGY_SHADOW_MIN_COHORT_SYMBOLS
     )
     app_state["execution"]["research_strategy_shadow_enabled"] = (
         config.RESEARCH_STRATEGY_SHADOW_ENABLED

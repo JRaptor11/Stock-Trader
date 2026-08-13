@@ -75,6 +75,11 @@ class DailyReviewTests(unittest.IsolatedAsyncioTestCase):
                     "2026-07-31T15:00:00+00:00,AMD,4.0\n",
                     encoding="utf-8",
                 )
+                (root / "layer_live_cohort_diagnostics.csv").write_text(
+                    "timestamp,symbol,reason_code\n"
+                    "2026-07-31T15:00:00+00:00,COST,LAGGING_BUCKET\n",
+                    encoding="utf-8",
+                )
                 await daily_review.capture_daily_snapshot(
                     "open",
                     capture_reason="test_open",
@@ -101,6 +106,7 @@ class DailyReviewTests(unittest.IsolatedAsyncioTestCase):
                         "fail_safe_position_observations.csv",
                         names,
                     )
+                    self.assertIn("layer_live_cohort_diagnostics.csv", names)
 
 
 if __name__ == "__main__":

@@ -567,6 +567,7 @@ def _update_layer4_shadow_lifecycle(rows: list[dict], *, cycle_id, plan_id) -> l
     """
     shadow_state = app_state.setdefault("layers", {}).setdefault("layer4_shadow", {})
     pending = shadow_state.setdefault("pending_delays", {})
+    pending_outcomes = shadow_state.setdefault("pending_outcomes", [])
     current = {str(row.get("symbol") or "").upper(): row for row in rows}
     now_iso = datetime.now(timezone.utc).isoformat()
     events = []
@@ -626,6 +627,12 @@ def _update_layer4_shadow_lifecycle(rows: list[dict], *, cycle_id, plan_id) -> l
             ),
             "resolution_reason": reason,
         })
+        for outcome in pending_outcomes:
+            if outcome.get("original_row_id") == item.get("original_row_id"):
+                outcome["resolution_event"] = event
+                outcome["resolution_timestamp"] = now_iso
+                outcome["resolution_price"] = current_price or None
+                break
         if status != "pending":
             pending.pop(symbol, None)
 
@@ -645,6 +652,17 @@ def _update_layer4_shadow_lifecycle(rows: list[dict], *, cycle_id, plan_id) -> l
             "original_qty": row.get("qty"),
             "original_price": row.get("live_price") or row.get("price"),
         }
+        pending_outcomes.append({
+            "created_epoch": time.time(), "source_timestamp": now_iso,
+            "source_cycle_id": cycle_id, "symbol": symbol, "side": "buy",
+            "original_action": row.get("shadow_action"),
+            "original_row_id": row.get("row_id"),
+            "original_qty": safe_float(row.get("qty"), 0.0),
+            "start_live_price": safe_float(
+                row.get("live_price") or row.get("price"), 0.0
+            ),
+        })
+        del pending_outcomes[:-5000]
         events.append({
             "timestamp": now_iso, "cycle_id": cycle_id, "plan_id": plan_id,
             "row_id": row.get("row_id"), "symbol": symbol, "side": "buy",

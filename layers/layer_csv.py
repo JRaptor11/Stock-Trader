@@ -29,6 +29,7 @@ LAYER_CSV_FILES = {
     ),
     "shadow": "layer4_shadow.csv",
     "shadow-lifecycle": "layer4_shadow_lifecycle.csv",
+    "shadow-outcomes": "layer4_shadow_outcomes.csv",
     "research-strategy-cycles": "layer_research_strategy_cycles.csv",
     "research-strategy-decisions": "layer_research_strategy_decisions.csv",
     "research-strategy-orders": "layer_research_strategy_orders.csv",
@@ -42,6 +43,7 @@ LAYER_CSV_FILES = {
     "daily-position-snapshots": "daily_position_snapshots.csv",
     "daily-benchmark-snapshots": "daily_benchmark_snapshots.csv",
     "live-bar-health": "layer_live_bar_health.csv",
+    "live-cohort-diagnostics": "layer_live_cohort_diagnostics.csv",
 
     # Shadow diagnostics for comparing the current delayed REST-bar Layer 1/2
     # pipeline against an independent live-bar Layer 1/2 pipeline.
@@ -778,6 +780,9 @@ LAYER_LIVE_STRATEGY_SHADOW_CYCLE_FIELDS = [
     "live_cohort_timestamp",
     "live_cohort_symbol_count",
     "live_cohort_symbols",
+    "live_cohort_is_partial",
+    "live_cohort_missing_symbols",
+    "live_cohort_required_symbol_count",
     "symbol_count",
     "rest_ranked_count",
     "live_ranked_count",
@@ -819,6 +824,18 @@ LAYER_LIVE_STRATEGY_SHADOW_CYCLE_FIELDS = [
 ]
 
 
+LAYER_LIVE_COHORT_DIAGNOSTIC_FIELDS = [
+    "timestamp", "cycle_id", "symbol", "market_is_open",
+    "cohort_status", "cohort_is_partial", "selected_for_cohort",
+    "reason_code", "required_symbol_count", "selected_symbol_count",
+    "expected_bucket_start", "latest_local_bucket_start",
+    "local_bucket_gap_seconds", "completed_local_bucket_count",
+    "live_bar_count", "live_tick_count", "latest_tick_timestamp",
+    "latest_tick_age_seconds", "rest_latest_bar_timestamp",
+    "rest_latest_bar_age_seconds", "consecutive_missing_cycles",
+]
+
+
 LAYER4_SHADOW_LIFECYCLE_FIELDS = [
     "timestamp", "cycle_id", "plan_id", "row_id", "symbol", "side",
     "event", "status", "original_cycle_id", "original_plan_id",
@@ -827,9 +844,18 @@ LAYER4_SHADOW_LIFECYCLE_FIELDS = [
     "price_change_pct", "estimated_entry_improvement", "resolution_reason",
 ]
 
+LAYER4_SHADOW_OUTCOME_FIELDS = [
+    "source_timestamp", "outcome_timestamp", "source_cycle_id", "symbol",
+    "side", "original_action", "original_qty", "start_live_price",
+    "resolution_event", "resolution_timestamp", "outcome_live_price",
+    "forward_return_10m", "forward_return_30m", "forward_return_60m",
+    "avoided_pnl_10m", "avoided_pnl_30m", "avoided_pnl_60m",
+    "avoided_pnl_to_outcome", "finalized_reason",
+]
+
 
 LAYER_RESEARCH_STRATEGY_CYCLE_FIELDS = [
-    "timestamp", "cycle_id", "strategy_name", "status", "config_hash",
+    "timestamp", "cycle_id", "strategy_name", "source", "status", "config_hash",
     "source_bar_timestamp", "production_equity", "shadow_equity",
     "shadow_minus_production_equity", "shadow_minus_control_equity",
     "shadow_pnl_since_initialization",
@@ -848,7 +874,7 @@ LAYER_RESEARCH_STRATEGY_CYCLE_FIELDS = [
 ]
 
 LAYER_RESEARCH_STRATEGY_DECISION_FIELDS = [
-    "timestamp", "cycle_id", "strategy_name", "symbol", "production_rank",
+    "timestamp", "cycle_id", "strategy_name", "source", "symbol", "production_rank",
     "base_score", "ret_30m", "ret_60m", "ret_150m", "ret_300m",
     "signal_horizon", "signal_score", "horizon_agreement_count",
     "reversal_detected",
@@ -859,13 +885,13 @@ LAYER_RESEARCH_STRATEGY_DECISION_FIELDS = [
 ]
 
 LAYER_RESEARCH_STRATEGY_ORDER_FIELDS = [
-    "timestamp", "cycle_id", "strategy_name", "symbol", "side", "status",
+    "timestamp", "cycle_id", "strategy_name", "source", "symbol", "side", "status",
     "qty", "price", "notional", "requested_qty", "cash_before", "cash_after",
     "position_qty_before", "position_qty_after", "reason", "is_follow_up",
 ]
 
 LAYER_RESEARCH_STRATEGY_PORTFOLIO_FIELDS = [
-    "timestamp", "cycle_id", "strategy_name", "symbol", "qty", "price",
+    "timestamp", "cycle_id", "strategy_name", "source", "symbol", "qty", "price",
     "market_value", "weight", "target_weight", "cash", "equity",
 ]
 
@@ -1924,6 +1950,23 @@ def append_layer4_shadow_lifecycle_rows(rows: list[dict] | None) -> None:
         )
 
 
+def append_layer4_shadow_outcome_rows(rows: list[dict] | None) -> None:
+    rows = [row for row in (rows or []) if isinstance(row, dict)]
+    if not rows:
+        return
+    try:
+        _append_csv_rows(
+            LAYER_CSV_FILES["shadow-outcomes"],
+            LAYER4_SHADOW_OUTCOME_FIELDS,
+            rows,
+        )
+    except Exception:
+        logging.warning(
+            "[LayerCSV] Failed to append Layer 4 shadow outcome rows.",
+            exc_info=True,
+        )
+
+
 def _append_research_rows(logical_name: str, fields: list[str], rows) -> None:
     rows = [row for row in (rows or []) if isinstance(row, dict)]
     if not rows:
@@ -1964,6 +2007,23 @@ def append_layer_live_bar_health_rows(rows: list[dict] | None) -> None:
         )
     except Exception:
         logging.warning("[LayerCSV] Failed to append live bar health rows.", exc_info=True)
+
+
+def append_layer_live_cohort_diagnostic_rows(rows: list[dict] | None) -> None:
+    rows = [row for row in (rows or []) if isinstance(row, dict)]
+    if not rows:
+        return
+    try:
+        _append_csv_rows(
+            LAYER_CSV_FILES["live-cohort-diagnostics"],
+            LAYER_LIVE_COHORT_DIAGNOSTIC_FIELDS,
+            rows,
+        )
+    except Exception:
+        logging.warning(
+            "[LayerCSV] Failed to append live cohort diagnostic rows.",
+            exc_info=True,
+        )
 
 
 def append_layer_live_strategy_shadow_rows(rows: list[dict] | None) -> None:

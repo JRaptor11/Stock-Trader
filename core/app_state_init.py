@@ -43,6 +43,7 @@ def ensure_app_state_structure() -> None:
         2,
     )
     execution.setdefault("live_strategy_shadow_rest_bootstrap_enabled", True)
+    execution.setdefault("live_strategy_shadow_min_cohort_symbols", 9)
     execution.setdefault("research_strategy_shadow_enabled", True)
 
     execution.setdefault("layer_monitor_run_24_7", True)
