@@ -13,6 +13,15 @@ class ArtifactStore:
     def upload_file(self, path: str | Path, key: str) -> str | None:
         return None
 
+    def download_file(self, key: str, path: str | Path) -> bool:
+        return False
+
+    def list_keys(self, prefix: str = "") -> list[str]:
+        return []
+
+    def total_bytes(self) -> int:
+        return 0
+
 
 class LocalOnlyArtifactStore(ArtifactStore):
     """Explicit no-op store used when durable storage is not configured."""
@@ -43,6 +52,41 @@ class S3ArtifactStore(ArtifactStore):
         normalized = "/".join(part for part in (self.prefix.strip("/"), key.lstrip("/")) if part)
         self._client().upload_file(str(path), self.bucket, normalized)
         return f"s3://{self.bucket}/{normalized}"
+
+    def _normalized_key(self, key: str) -> str:
+        return "/".join(part for part in (self.prefix.strip("/"), key.lstrip("/")) if part)
+
+    def download_file(self, key: str, path: str | Path) -> bool:
+        destination = Path(path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self._client().download_file(self.bucket, self._normalized_key(key), str(destination))
+        except Exception as exc:
+            response = getattr(exc, "response", {})
+            if str(response.get("Error", {}).get("Code")) in {"404", "NoSuchKey"}:
+                return False
+            raise
+        return True
+
+    def list_keys(self, prefix: str = "") -> list[str]:
+        base = self.prefix.strip("/")
+        requested = self._normalized_key(prefix)
+        paginator = self._client().get_paginator("list_objects_v2")
+        output = []
+        for page in paginator.paginate(Bucket=self.bucket, Prefix=requested):
+            for item in page.get("Contents", []):
+                key = str(item["Key"])
+                output.append(key[len(base) + 1:] if base and key.startswith(base + "/") else key)
+        return output
+
+    def total_bytes(self) -> int:
+        base = self.prefix.strip("/")
+        paginator = self._client().get_paginator("list_objects_v2")
+        return sum(
+            int(item.get("Size", 0))
+            for page in paginator.paginate(Bucket=self.bucket, Prefix=base)
+            for item in page.get("Contents", [])
+        )
 
 
 def artifact_store_from_env() -> ArtifactStore:

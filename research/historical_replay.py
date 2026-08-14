@@ -8,6 +8,7 @@ import math
 import os
 import platform
 import statistics
+import time
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -285,7 +286,7 @@ def _daily_summaries(cycles: list[dict], orders: list[dict]) -> list[dict]:
     return output
 
 
-def run_replay(rows: list[dict], config: ReplayConfig | None = None) -> dict:
+def run_replay(rows: list[dict], config: ReplayConfig | None = None, progress_callback=None) -> dict:
     config = config or ReplayConfig()
     grouped, price_index = defaultdict(dict), {}
     for row in rows:
@@ -313,7 +314,10 @@ def run_replay(rows: list[dict], config: ReplayConfig | None = None) -> dict:
     last_decision = None
     cycle_id = 0
 
-    for ts in sorted(grouped):
+    timestamps = [ts for ts in sorted(grouped) if _is_regular_session(ts)]
+    started = time.monotonic()
+    completed_sessions: set[str] = set()
+    for timestamp_index, ts in enumerate(timestamps, 1):
         bars = grouped[ts]
         if not _is_regular_session(ts):
             continue
@@ -406,6 +410,19 @@ def run_replay(rows: list[dict], config: ReplayConfig | None = None) -> dict:
             })
             for item in decisions:
                 decision_rows.append({"timestamp": ts.isoformat(), "cycle_id": cycle_id, "strategy_name": name, **item})
+
+        session_date = ts.astimezone(MARKET_TZ).date().isoformat()
+        completed_sessions.add(session_date)
+        if progress_callback and (timestamp_index % 25 == 0 or timestamp_index == len(timestamps)):
+            progress_callback({
+                "completed_timestamps": timestamp_index,
+                "total_timestamps": len(timestamps),
+                "completed_cycles": cycle_id,
+                "completed_sessions": len(completed_sessions),
+                "completed_session": session_date,
+                "percent_complete": round(timestamp_index / len(timestamps) * 100.0, 2) if timestamps else 100.0,
+                "elapsed_seconds": round(time.monotonic() - started, 1),
+            })
 
     dataset = _future_labels(feature_rows, price_index)
     daily = _daily_summaries(cycle_rows, order_rows)

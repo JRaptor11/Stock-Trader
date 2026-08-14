@@ -20,3 +20,15 @@ services:
         value: /tmp/research/data
       - key: RESEARCH_RESULTS_DIR
         value: /tmp/research/results
+      - key: RESEARCH_MAX_QUEUED_JOBS
+        value: "20"
+      - key: RESEARCH_STATUS_UPLOAD_SECONDS
+        value: "60"
+      - key: RESEARCH_MAX_RETRIES
+        value: "3"
+      - key: RESEARCH_RETRY_BASE_SECONDS
+        value: "30"
+      - key: RESEARCH_RETRY_MAX_SECONDS
+        value: "300"
+      - key: RESEARCH_R2_STORAGE_BUDGET_BYTES
+        value: "8589934592"

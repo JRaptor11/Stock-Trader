@@ -77,19 +77,37 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
     started_at = datetime.now(UTC).isoformat()
     status_path = results_root / f"{job_id}.status.json"
     staging = results_root / f".{job_id}.{uuid.uuid4().hex}.tmp"
-    _write_json_atomic(status_path, {
+    previous_status = {}
+    if status_path.is_file():
+        try:
+            previous_status = json.loads(status_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            pass
+    base_status = {
+        **previous_status,
         "job_id": job_id, "status": "running", "started_at": started_at,
         "job_path": str(job_path), "bars_path": str(bars_path),
-    })
+        "worker_pid": os.getpid(), "heartbeat_at": started_at,
+    }
+    _write_json_atomic(status_path, base_status)
     try:
-        result = run_replay(load_bar_csv(bars_path), _config_from_job(job))
+        def update_progress(progress: dict) -> None:
+            _write_json_atomic(status_path, {
+                **base_status, **progress,
+                "heartbeat_at": datetime.now(UTC).isoformat(),
+            })
+
+        result = run_replay(
+            load_bar_csv(bars_path), _config_from_job(job),
+            progress_callback=update_progress,
+        )
         write_replay(
             result, staging, source_path=bars_path,
             experiment={"job_id": job_id, "job": job, "job_path": str(job_path)},
         )
         staging.replace(output)
         _write_json_atomic(status_path, {
-            "job_id": job_id, "status": "complete", "started_at": started_at,
+            **base_status, "job_id": job_id, "status": "complete", "started_at": started_at,
             "completed_at": datetime.now(UTC).isoformat(), "output": str(output),
         })
         return output
@@ -97,8 +115,9 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
         if staging.exists():
             shutil.rmtree(staging)
         _write_json_atomic(status_path, {
-            "job_id": job_id, "status": "failed", "started_at": started_at,
+            **base_status, "job_id": job_id, "status": "failed", "started_at": started_at,
             "failed_at": datetime.now(UTC).isoformat(), "error": str(exc),
+            "error_type": type(exc).__name__,
             "traceback": traceback.format_exc(),
         })
         raise
@@ -141,6 +160,11 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
     validate_service_startup(ServiceMode.HISTORICAL_RESEARCH)
+    if hasattr(os, "nice"):
+        try:
+            os.nice(max(0, int(os.getenv("RESEARCH_WORKER_NICE", "10"))))
+        except OSError:
+            logging.warning("Could not lower research worker priority", exc_info=True)
     if args.poll_seconds < 1:
         parser.error("--poll-seconds must be at least 1")
     if args.job:

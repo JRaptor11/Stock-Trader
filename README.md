@@ -307,6 +307,11 @@ Copy `.env.example` to `.env` and replace placeholders. The most important group
 | `RESEARCH_API_TOKEN` | Required Bearer token for every research API route except health |
 | `RESEARCH_*_DIR` | Isolated dataset, job, and result working directories |
 | `RESEARCH_S3_*` | Optional durable S3-compatible artifact storage configuration |
+| `RESEARCH_MAX_QUEUED_JOBS` | Caps pending experiments to prevent accidental workload growth |
+| `RESEARCH_STATUS_UPLOAD_SECONDS` | Controls deduplicated durable progress updates; minimum 30 seconds |
+| `RESEARCH_MAX_RETRIES` | Automatic retries allowed after transient job failures |
+| `RESEARCH_RETRY_*_SECONDS` | Exponential retry delay and maximum backoff |
+| `RESEARCH_R2_STORAGE_BUDGET_BYTES` | Refuses large uploads above the configured object-storage safety budget |
 
 The template documents additional data-quality, restart-recovery, hysteresis, and rolling-limit switches. Defaults in the repository are deliberately conservative, but configuration should still be reviewed before every deployment.
 
@@ -408,17 +413,33 @@ For hosted use, `research.app:app` provides public `/healthz` and
 `/api/public/uptime-health` endpoints and
 Bearer-token-protected dataset upload, job submission, status, listing, and ZIP
 download endpoints under `/api`. It permits one active experiment at a time so
-the research workload cannot multiply unexpectedly on a small instance.
+the research workload cannot multiply unexpectedly on a small instance. Further
+submissions enter a durable FIFO queue. A successful result is archived before
+the next job starts. A failure stops the queue; after the cause is reviewed, an
+authenticated `POST /api/queue/resume` clears the failure block and continues
+with the oldest queued job.
+
+Transient worker or object-storage failures are retried automatically up to
+three times with exponential backoff. Deterministic failures such as malformed
+input, invalid configuration, missing files, or exceeding the storage safety
+budget stop immediately. Exhausting the transient retry allowance also stops
+the queue, and failed experiments are never silently skipped.
 
 Render's local filesystem is treated only as working storage. When
 `RESEARCH_S3_BUCKET` and the accompanying S3-compatible credentials are set,
 the service automatically uploads each dataset, accepted job definition, final
 status, and completed result archive to durable object storage. This works with
 Amazon S3 and compatible providers such as Cloudflare R2. A restart can still
-lose computation since the most recent checkpoint, but it does not lose the
-source dataset, experiment definition, or completed results. Without durable
+require the active replay to restart, but it does not lose the durable queue,
+source dataset, experiment definition, progress record, or completed results. Without durable
 storage, result ZIP files must be downloaded before a redeploy or instance
 replacement.
+
+Hosted defaults also limit the queue to 20 jobs, deduplicate progress uploads,
+persist changed progress no more than once per minute, and stop large artifact
+uploads at an 8 GiB storage budget. These safeguards leave margin below R2's
+free Standard-storage allowance; usage from other applications sharing the same
+Cloudflare account must still be monitored separately.
 
 Replay parity can then be measured against a downloaded paper-session package:
 
