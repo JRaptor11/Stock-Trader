@@ -6,7 +6,7 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn research.app:app --host 0.0.0.0 --port $PORT
     plan: free
-    healthCheckPath: /healthz
+    healthCheckPath: /api/public/uptime-health
     envVars:
       - key: SERVICE_MODE
         value: historical_research

@@ -51,6 +51,8 @@ class ResearchAppTests(unittest.TestCase):
             }
             with patch.dict(os.environ, env, clear=False), TestClient(app) as client:
                 self.assertEqual(client.get("/healthz").status_code, 200)
+                self.assertEqual(client.get("/api/public/uptime-health").status_code, 200)
+                self.assertEqual(client.head("/api/public/uptime-health").status_code, 200)
                 self.assertEqual(client.get("/api/jobs").status_code, 401)
                 headers = {"Authorization": f"Bearer {self.token}"}
                 uploaded = client.put(

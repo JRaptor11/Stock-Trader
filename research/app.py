@@ -91,7 +91,8 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-@app.get("/healthz")
+@app.api_route("/healthz", methods=["GET", "HEAD"])
+@app.api_route("/api/public/uptime-health", methods=["GET", "HEAD"])
 def health() -> dict:
     return {
         "status": "ok",

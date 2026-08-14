@@ -404,7 +404,8 @@ The job's `bars_csv` value is resolved relative to `--data-root`. The continuous
 worker atomically claims each `.json` request before execution, preventing a
 single worker from running the same queued file twice.
 
-For hosted use, `research.app:app` provides a public `/healthz` endpoint and
+For hosted use, `research.app:app` provides public `/healthz` and
+`/api/public/uptime-health` endpoints and
 Bearer-token-protected dataset upload, job submission, status, listing, and ZIP
 download endpoints under `/api`. It permits one active experiment at a time so
 the research workload cannot multiply unexpectedly on a small instance.
