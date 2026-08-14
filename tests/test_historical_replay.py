@@ -7,6 +7,7 @@ from pathlib import Path
 from research.historical_replay import ReplayConfig, load_bar_csv, run_replay, write_replay
 from research.replay_parity import compare_replay_to_live
 from research.walk_forward import build_walk_forward_folds
+from layers.layer_research_strategy import STRATEGIES
 
 
 class HistoricalReplayTests(unittest.TestCase):
@@ -30,7 +31,10 @@ class HistoricalReplayTests(unittest.TestCase):
         self.assertTrue(result["orders"])
         self.assertTrue(result["dataset"])
         self.assertIn("forward_return_30m", result["dataset"][0])
-        self.assertEqual(len({row["strategy_name"] for row in result["cycles"]}), 8)
+        self.assertEqual(
+            len({row["strategy_name"] for row in result["cycles"]}),
+            len(STRATEGIES),
+        )
         first_order = result["orders"][0]
         self.assertGreater(first_order["timestamp"], first_order["source_bar_timestamp"])
         self.assertGreaterEqual(first_order["timestamp"], first_order["decision_available_at"])

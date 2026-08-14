@@ -48,6 +48,16 @@ STRATEGIES = {
     },
 }
 
+# Pair every timing signal with the same moderately invested sizing policy so
+# signal horizon and capital allocation can be evaluated independently.
+for _strategy_name in (
+    "LOOKBACK_60M", "LOOKBACK_150M", "LOOKBACK_300M",
+    "MULTI_HORIZON_BLEND", "ADAPTIVE_REVERSAL",
+):
+    STRATEGIES[f"{_strategy_name}_MODERATE"] = {
+        **STRATEGIES[_strategy_name], "sizing_mode": "moderate",
+    }
+
 def _return(closes: list[float], bars: int) -> float:
     if len(closes) <= bars or not closes[-bars - 1]:
         return 0.0
@@ -188,16 +198,32 @@ def _raw_research_target(
     selected = qualified[:5]
     selected_symbols = {row["symbol"] for row in selected}
 
+    sizing_mode = str(config.get("sizing_mode") or "defensive")
+    sizing_baseline = 0.0
+    sizing_strength_component = 0.0
+    requested_investable = 0.0
+
     if not selected:
         target = {"CASH": 1.0}
     else:
         average_score = sum(row["effective_score"] for row in selected) / len(selected)
-        strength = max(0.0, min(1.0, average_score / 0.04))
         breadth = len(selected) / 5.0
         average_volatility = sum(row["volatility_300m"] for row in selected) / len(selected)
         volatility_factor = max(0.50, min(1.0, 1.0 - average_volatility * 12.0))
-        investable = min(0.90, 0.85 * strength * breadth * volatility_factor)
-        investable = max(0.0, investable)
+        if sizing_mode == "moderate":
+            strength = max(0.0, min(1.0, average_score / 0.02))
+            sizing_baseline = 0.10 + 0.08 * len(selected)
+            sizing_strength_component = (
+                0.70 * strength * max(0.60, breadth) * volatility_factor
+            )
+            requested_investable = min(
+                0.75, max(sizing_baseline, sizing_strength_component)
+            )
+        else:
+            strength = max(0.0, min(1.0, average_score / 0.04))
+            sizing_strength_component = 0.85 * strength * breadth * volatility_factor
+            requested_investable = min(0.90, sizing_strength_component)
+        investable = max(0.0, requested_investable)
         total_score = sum(row["effective_score"] for row in selected)
         raw_weights = {
             row["symbol"]: investable * row["effective_score"] / total_score
@@ -232,6 +258,13 @@ def _raw_research_target(
         "rejected_count": len(decisions) - len(qualified),
         "deteriorating_count": sum(1 for row in decisions if row["severe_deterioration"] or row["moderate_deterioration"]),
         "weighting_mode": "absolute_confidence",
+        "sizing_mode": sizing_mode,
+        "sizing_baseline_pct": round(sizing_baseline, 6),
+        "sizing_strength_component_pct": round(sizing_strength_component, 6),
+        "requested_investable_pct": round(requested_investable, 6),
+        "deployed_investable_pct": round(
+            1.0 - safe_float(target.get("CASH"), 1.0), 6
+        ),
     }
     return target, decisions
 
@@ -397,6 +430,7 @@ def run_research_strategy_shadow(
     cycle_rows, decision_rows, order_rows, portfolio_rows = [], [], [], []
 
     control_equity = None
+    equity_by_strategy = {}
     for name, config in STRATEGIES.items():
         portfolio = state["portfolios"][name]
         if config.get("mode") == "control":
@@ -440,6 +474,7 @@ def run_research_strategy_shadow(
         order_rows.extend(variant_orders)
 
         equity = _equity(portfolio, prices)
+        equity_by_strategy[name] = equity
         if name == "CURRENT_CONTROL":
             control_equity = equity
         portfolio["peak_equity"] = max(portfolio["peak_equity"], equity)
@@ -447,6 +482,10 @@ def run_research_strategy_shadow(
         pnl = equity - portfolio["initial_equity"]
         turnover = portfolio["cumulative_turnover"]
         meta = raw_target.get("_meta", {})
+        sizing_pair_name = (
+            name.removesuffix("_MODERATE") if name.endswith("_MODERATE") else name
+        )
+        defensive_pair_equity = equity_by_strategy.get(sizing_pair_name)
         reversal_symbols = {
             row["symbol"] for row in base_decisions
             if row.get("reversal_detected")
@@ -478,6 +517,13 @@ def run_research_strategy_shadow(
             "peak_giveback": round(equity - portfolio["peak_equity"], 2),
             "invested_pct": round(1.0 - portfolio["cash"] / equity, 6) if equity else None,
             "target_mode": config.get("target_mode", "control"),
+            "sizing_mode": config.get("sizing_mode", "production_control"),
+            "sizing_pair_name": sizing_pair_name,
+            "sizing_minus_defensive_equity": (
+                round(equity - defensive_pair_equity, 2)
+                if name.endswith("_MODERATE") and defensive_pair_equity is not None
+                else 0.0
+            ),
             "signal_horizon_minutes": config.get("horizon_minutes"),
             "reversal_detected_count": len(reversal_symbols),
             "reversal_sell_count": reversal_sell_count,
@@ -500,6 +546,10 @@ def run_research_strategy_shadow(
             "pnl_after_20bp_cost": round(pnl - turnover * 0.0020, 2),
             "qualified_count": meta.get("qualified_count"), "selected_count": meta.get("selected_count"),
             "rejected_count": meta.get("rejected_count"), "deteriorating_count": meta.get("deteriorating_count"),
+            "sizing_baseline_pct": meta.get("sizing_baseline_pct"),
+            "sizing_strength_component_pct": meta.get("sizing_strength_component_pct"),
+            "requested_investable_pct": meta.get("requested_investable_pct"),
+            "deployed_investable_pct": meta.get("deployed_investable_pct"),
             "target_cash_pct": target.get("CASH"), "target_summary": target,
             "planner_status": planner.get("summary", {}).get("status"),
             "planner_decision_counts": planner.get("summary", {}).get("decision_counts"),
