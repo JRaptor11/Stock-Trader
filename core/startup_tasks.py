@@ -36,6 +36,7 @@ from utils.lifecycle_utils import (
 )
 from integrations.telegram_bot import start_telegram_bot
 from diagnostics.daily_review import run_daily_review_monitor
+from config.service_mode import ServiceMode, validate_service_startup
 
 
 _startup_alert_tasks: set[asyncio.Task] = set()
@@ -64,6 +65,7 @@ async def background_startup_after_bind() -> None:
     Alpaca clients, services, layer monitors, stream, fail-safes,
     portfolio reconciler, and Telegram.
     """
+    validate_service_startup(ServiceMode.PAPER_TRADING)
     try:
         await asyncio.sleep(2)
 

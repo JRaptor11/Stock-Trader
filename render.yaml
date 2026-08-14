@@ -5,3 +5,8 @@ services:
     buildCommand: ./build.sh
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     plan: free
+    envVars:
+      - key: SERVICE_MODE
+        value: paper_trading
+      - key: BROKER_EXECUTION_ENABLED
+        value: "true"

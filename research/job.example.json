@@ -1,0 +1,20 @@
+{
+  "job_id": "five-minute-replay-example",
+  "bars_csv": "historical_5m_bars.csv",
+  "replay_config": {
+    "initial_cash": 100000.0,
+    "warmup_bars": 61,
+    "decision_interval_minutes": 5,
+    "spread_bps": 1.0,
+    "slippage_bps": 1.0,
+    "commission_per_order": 0.0,
+    "min_train_sessions": 60,
+    "test_sessions": 20,
+    "step_sessions": 20,
+    "benchmark_symbol": "SPY",
+    "candidate_symbols": [
+      "AAPL", "AMD", "AMZN", "AVGO", "COST",
+      "GOOGL", "META", "MSFT", "NVDA", "TSLA"
+    ]
+  }
+}

@@ -291,6 +291,8 @@ Copy `.env.example` to `.env` and replace placeholders. The most important group
 
 | Variable | Purpose |
 | --- | --- |
+| `SERVICE_MODE` | Required identity: `paper_trading` or `historical_research` |
+| `BROKER_EXECUTION_ENABLED` | Must explicitly match the selected service mode |
 | `API_KEY`, `SECRET_KEY` | Alpaca paper-account credentials |
 | `ALPACA_URL` | Alpaca paper API URL used by integrations/configuration |
 | `SYMBOL` | Comma-separated research universe |
@@ -302,6 +304,9 @@ Copy `.env.example` to `.env` and replace placeholders. The most important group
 | `LAYER3_MARKET_HOURS_ONLY` | Restricts normal layered execution to market hours |
 | `FAIL_SAFE_REENTRY_COOLDOWN_SECONDS` | Blocks immediate repurchase after liquidation |
 | `LAYER_CSV_DIR` | Optional directory for runtime diagnostic CSVs |
+| `RESEARCH_API_TOKEN` | Required Bearer token for every research API route except health |
+| `RESEARCH_*_DIR` | Isolated dataset, job, and result working directories |
+| `RESEARCH_S3_*` | Optional durable S3-compatible artifact storage configuration |
 
 The template documents additional data-quality, restart-recovery, hysteresis, and rolling-limit switches. Defaults in the repository are deliberately conservative, but configuration should still be reviewed before every deployment.
 
@@ -344,6 +349,8 @@ benchmark context by default rather than as a candidate security.
 Example:
 
 ```powershell
+$env:SERVICE_MODE = "historical_research"
+$env:BROKER_EXECUTION_ENABLED = "false"
 python -m research.historical_replay historical_5m_bars.csv `
   --output replay_output `
   --symbols AAPL,AMD,AMZN,AVGO,COST,GOOGL,META,MSFT,NVDA,TSLA `
@@ -356,7 +363,61 @@ The output contains portfolio cycles, decisions, simulated orders, strategy
 summaries, chronological walk-forward folds, and an ML-ready feature/outcome
 dataset. Outcome columns are calculated only from later timestamps and are kept
 separate from decision-time features. The manifest records the source-file hash
-and replay configuration for reproducibility.
+and replay configuration for reproducibility. It also records the service mode,
+Python version, deployed Git metadata when available, and a hash of the strategy
+registry.
+
+### Independent research service
+
+Historical replay can run concurrently with the paper-trading application in a
+separate process or Render service. Both the web coordinator and worker avoid
+the trading application and Alpaca trading client, require
+`SERVICE_MODE=historical_research`, and refuses to start when
+`BROKER_EXECUTION_ENABLED` is anything except `false`.
+
+Jobs are JSON files based on `research/job.example.json`. Historical CSV files,
+job requests, and results use separate configured roots. Paths that escape those
+roots are rejected, existing experiment output is never overwritten, and every
+job receives an atomic running/complete/failed status file.
+
+Run one job locally:
+
+```powershell
+$env:SERVICE_MODE = "historical_research"
+$env:BROKER_EXECUTION_ENABLED = "false"
+python -m research.worker `
+  --job research\job.example.json `
+  --data-root C:\historical-research\data `
+  --results-root C:\historical-research\results
+```
+
+Run continuously and poll an inbox:
+
+```powershell
+python -m research.worker `
+  --job-dir C:\historical-research\jobs\inbox `
+  --data-root C:\historical-research\data `
+  --results-root C:\historical-research\results
+```
+
+The job's `bars_csv` value is resolved relative to `--data-root`. The continuous
+worker atomically claims each `.json` request before execution, preventing a
+single worker from running the same queued file twice.
+
+For hosted use, `research.app:app` provides a public `/healthz` endpoint and
+Bearer-token-protected dataset upload, job submission, status, listing, and ZIP
+download endpoints under `/api`. It permits one active experiment at a time so
+the research workload cannot multiply unexpectedly on a small instance.
+
+Render's local filesystem is treated only as working storage. When
+`RESEARCH_S3_BUCKET` and the accompanying S3-compatible credentials are set,
+the service automatically uploads each dataset, accepted job definition, final
+status, and completed result archive to durable object storage. This works with
+Amazon S3 and compatible providers such as Cloudflare R2. A restart can still
+lose computation since the most recent checkpoint, but it does not lose the
+source dataset, experiment definition, or completed results. Without durable
+storage, result ZIP files must be downloaded before a redeploy or instance
+replacement.
 
 Replay parity can then be measured against a downloaded paper-session package:
 
@@ -379,7 +440,8 @@ or strategy promotion.
 
 ## Deploying on Render
 
-The repository contains `render.yaml`, `runtime.txt`, and `build.sh` for a Render web service. The service starts with:
+The repository contains `render.yaml`, `runtime.txt`, and `build.sh` for the
+paper-trading web service. It starts with:
 
 ```text
 uvicorn main:app --host 0.0.0.0 --port $PORT
@@ -394,6 +456,20 @@ Recommended deployment workflow:
 5. Deploy and confirm `/api/admin/healthz`, startup logs, Alpaca connectivity, stream state, and alert delivery.
 6. Review dry-run layer diagnostics across complete market sessions.
 7. Enable paper execution only after confirming the selected account, symbols, safeguards, and downloadable diagnostics.
+
+The web service is explicitly configured with
+`SERVICE_MODE=paper_trading` and `BROKER_EXECUTION_ENABLED=true`. Both settings
+must be present and consistent or startup fails before any broker client is
+created.
+
+`render.research.yaml` is a separate Blueprint for the broker-free research web
+service. Keeping it outside `render.yaml` makes creating or updating the second
+service an explicit deployment decision. It uses
+`uvicorn research.app:app --host 0.0.0.0 --port $PORT`, a generated API token,
+separate data/job/result directories, and no trading entry point. Do not copy
+the trading service's environment group or broker credentials into it. The free
+filesystem is ephemeral; configure the optional S3-compatible artifact store
+before relying on unattended experiments.
 
 Runtime files on a hosted instance may not be durable across redeployments or instance replacement. Daily review packages should therefore be downloaded after each session or moved to durable external storage in a future revision.
 

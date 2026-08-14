@@ -20,6 +20,7 @@ from core.config_loader import (
 from core.startup_tasks import background_startup_after_bind
 
 from core.shutdown_tasks import shutdown_trading_bot
+from config.service_mode import ServiceMode, validate_service_startup
 
 
 @asynccontextmanager
@@ -33,6 +34,9 @@ async def lifespan(app_fastapi):
     ensure_app_state_structure()
 
     try:
+        # Reject a missing or incorrect process identity before creating any
+        # background task or broker client.
+        validate_service_startup(ServiceMode.PAPER_TRADING)
         logging.info("🚀 Initializing trading bot...")
 
         # Always reset shutdown event for a fresh process start

@@ -1,0 +1,22 @@
+# Optional standalone Blueprint for the broker-free historical research API.
+services:
+  - type: web
+    name: stock-trader-historical-research
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn research.app:app --host 0.0.0.0 --port $PORT
+    plan: free
+    healthCheckPath: /healthz
+    envVars:
+      - key: SERVICE_MODE
+        value: historical_research
+      - key: BROKER_EXECUTION_ENABLED
+        value: "false"
+      - key: RESEARCH_API_TOKEN
+        generateValue: true
+      - key: RESEARCH_JOB_DIR
+        value: /tmp/research/jobs
+      - key: RESEARCH_DATA_DIR
+        value: /tmp/research/data
+      - key: RESEARCH_RESULTS_DIR
+        value: /tmp/research/results

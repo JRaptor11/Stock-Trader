@@ -5,6 +5,8 @@ import csv
 import hashlib
 import json
 import math
+import os
+import platform
 import statistics
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
@@ -450,7 +452,13 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
             writer.writerow({key: json.dumps(value, sort_keys=True) if isinstance(value, (dict, list)) else value for key, value in row.items()})
 
 
-def write_replay(result: dict, output_dir: str | Path, *, source_path: str | Path | None = None) -> Path:
+def write_replay(
+    result: dict,
+    output_dir: str | Path,
+    *,
+    source_path: str | Path | None = None,
+    experiment: dict | None = None,
+) -> Path:
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     for key, filename in {
@@ -463,6 +471,14 @@ def write_replay(result: dict, output_dir: str | Path, *, source_path: str | Pat
     manifest = {
         "created_at": datetime.now(UTC).isoformat(), "source_path": str(source_path) if source_path else None,
         "source_sha256": hashlib.sha256(Path(source_path).read_bytes()).hexdigest() if source_path else None,
+        "service_mode": os.getenv("SERVICE_MODE"),
+        "git_commit": os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT"),
+        "git_branch": os.getenv("RENDER_GIT_BRANCH") or os.getenv("GIT_BRANCH"),
+        "python_version": platform.python_version(),
+        "strategy_registry_sha256": hashlib.sha256(
+            json.dumps(STRATEGIES, sort_keys=True).encode("utf-8")
+        ).hexdigest(),
+        "experiment": experiment,
         "config": result["config"], "symbols": result["symbols"],
         "session_dates": result["session_dates"], "row_counts": {
             key: len(result[key]) for key in ("cycles", "daily", "decisions", "orders", "dataset")
@@ -473,6 +489,9 @@ def write_replay(result: dict, output_dir: str | Path, *, source_path: str | Pat
 
 
 def main(argv=None) -> int:
+    from config.service_mode import ServiceMode, validate_service_startup
+
+    validate_service_startup(ServiceMode.HISTORICAL_RESEARCH)
     parser = argparse.ArgumentParser(description="Replay strategy variants over long-form historical five-minute OHLCV bars.")
     parser.add_argument("bars_csv")
     parser.add_argument("--output", default="replay_output")

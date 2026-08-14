@@ -1,0 +1,155 @@
+"""Broker-free historical replay worker.
+
+The worker polls a private job directory for JSON experiment requests. It never
+imports the trading application, startup lifecycle, or Alpaca trading client.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+import shutil
+import time
+import traceback
+import uuid
+from dataclasses import fields
+from datetime import datetime, timezone
+from pathlib import Path
+
+from config.service_mode import ServiceMode, validate_service_startup
+from research.historical_replay import ReplayConfig, load_bar_csv, run_replay, write_replay
+
+
+UTC = timezone.utc
+
+
+def _resolved_child(root: Path, value: str | Path) -> Path:
+    root = root.resolve()
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    candidate = candidate.resolve()
+    if candidate != root and root not in candidate.parents:
+        raise ValueError(f"path escapes configured root {root}: {candidate}")
+    return candidate
+
+
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    temporary.replace(path)
+
+
+def _config_from_job(job: dict) -> ReplayConfig:
+    supplied = dict(job.get("replay_config") or {})
+    allowed = {item.name for item in fields(ReplayConfig)}
+    unknown = set(supplied) - allowed
+    if unknown:
+        raise ValueError(f"unknown replay_config fields: {sorted(unknown)}")
+    if "candidate_symbols" in supplied:
+        symbols = supplied["candidate_symbols"]
+        if not isinstance(symbols, (list, tuple)):
+            raise ValueError("candidate_symbols must be a JSON list")
+        supplied["candidate_symbols"] = tuple(str(symbol) for symbol in symbols)
+    return ReplayConfig(**supplied)
+
+
+def execute_job(job_path: str | Path, data_root: str | Path, results_root: str | Path) -> Path:
+    validate_service_startup(ServiceMode.HISTORICAL_RESEARCH)
+    job_path = Path(job_path).resolve()
+    job = json.loads(job_path.read_text(encoding="utf-8"))
+    job_id = str(job.get("job_id") or "").strip()
+    allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+    if not job_id or any(character not in allowed for character in job_id):
+        raise ValueError("job_id is required and may contain only letters, numbers, hyphens, and underscores")
+
+    bars_path = _resolved_child(Path(data_root), job["bars_csv"])
+    results_root = Path(results_root).resolve()
+    output = _resolved_child(results_root, job_id)
+    if not bars_path.is_file():
+        raise FileNotFoundError(f"historical bars file does not exist: {bars_path}")
+    if output.exists():
+        raise FileExistsError(f"result directory already exists: {output}")
+
+    started_at = datetime.now(UTC).isoformat()
+    status_path = results_root / f"{job_id}.status.json"
+    staging = results_root / f".{job_id}.{uuid.uuid4().hex}.tmp"
+    _write_json_atomic(status_path, {
+        "job_id": job_id, "status": "running", "started_at": started_at,
+        "job_path": str(job_path), "bars_path": str(bars_path),
+    })
+    try:
+        result = run_replay(load_bar_csv(bars_path), _config_from_job(job))
+        write_replay(
+            result, staging, source_path=bars_path,
+            experiment={"job_id": job_id, "job": job, "job_path": str(job_path)},
+        )
+        staging.replace(output)
+        _write_json_atomic(status_path, {
+            "job_id": job_id, "status": "complete", "started_at": started_at,
+            "completed_at": datetime.now(UTC).isoformat(), "output": str(output),
+        })
+        return output
+    except Exception as exc:
+        if staging.exists():
+            shutil.rmtree(staging)
+        _write_json_atomic(status_path, {
+            "job_id": job_id, "status": "failed", "started_at": started_at,
+            "failed_at": datetime.now(UTC).isoformat(), "error": str(exc),
+            "traceback": traceback.format_exc(),
+        })
+        raise
+
+
+def run_worker(job_dir: Path, data_root: Path, results_root: Path, poll_seconds: float) -> None:
+    validate_service_startup(ServiceMode.HISTORICAL_RESEARCH)
+    job_dir.mkdir(parents=True, exist_ok=True)
+    data_root.mkdir(parents=True, exist_ok=True)
+    results_root.mkdir(parents=True, exist_ok=True)
+    logging.info("Research worker ready; polling %s", job_dir)
+    while True:
+        jobs = sorted(job_dir.glob("*.json"), key=lambda path: path.stat().st_mtime)
+        if not jobs:
+            time.sleep(poll_seconds)
+            continue
+        job_path = jobs[0]
+        # A unique claim name ensures that two workers racing on the same job
+        # cannot rename or complete one another's claimed file.
+        claimed = job_path.with_name(
+            f"{job_path.name}.{os.getpid()}.{uuid.uuid4().hex}.running"
+        )
+        try:
+            job_path.replace(claimed)
+            execute_job(claimed, data_root, results_root)
+            claimed.replace(claimed.with_name(f"{job_path.stem}.complete"))
+        except Exception:
+            logging.exception("Historical research job failed: %s", claimed)
+            if claimed.exists():
+                claimed.replace(claimed.with_name(f"{job_path.stem}.failed"))
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="Run the broker-free historical research worker.")
+    parser.add_argument("--job", help="Run one JSON job and exit instead of polling")
+    parser.add_argument("--job-dir", default=os.getenv("RESEARCH_JOB_DIR", "research_jobs/inbox"))
+    parser.add_argument("--data-root", default=os.getenv("RESEARCH_DATA_DIR", "research_data"))
+    parser.add_argument("--results-root", default=os.getenv("RESEARCH_RESULTS_DIR", "research_results"))
+    parser.add_argument("--poll-seconds", type=float, default=float(os.getenv("RESEARCH_POLL_SECONDS", "10")))
+    args = parser.parse_args(argv)
+    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
+    validate_service_startup(ServiceMode.HISTORICAL_RESEARCH)
+    if args.poll_seconds < 1:
+        parser.error("--poll-seconds must be at least 1")
+    if args.job:
+        output = execute_job(args.job, args.data_root, args.results_root)
+        logging.info("Historical research job complete: %s", output)
+        return 0
+    run_worker(Path(args.job_dir), Path(args.data_root), Path(args.results_root), args.poll_seconds)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

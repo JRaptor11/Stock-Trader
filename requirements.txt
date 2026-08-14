@@ -1,4 +1,5 @@
 alpaca-py==0.40.1
+boto3>=1.40,<2
 annotated-types==0.7.0
 certifi==2025.4.26
 charset-normalizer==3.4.2
