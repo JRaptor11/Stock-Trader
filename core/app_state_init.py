@@ -190,6 +190,14 @@ def ensure_app_state_structure() -> None:
     portfolio_reconcile.setdefault("last_mismatches", [])
     portfolio_reconcile.setdefault("last_repairs", [])
     portfolio_reconcile.setdefault("last_error", None)
+    portfolio_reconcile.setdefault("position_disappearance_quarantine", {
+        "active": False,
+        "execution_blocked": False,
+        "symbols": [],
+        "confirmed_symbols": [],
+        "entries": {},
+        "reason": None,
+    })
 
     telegram = app_state.setdefault("telegram", {})
     telegram.setdefault("bot_started", False)

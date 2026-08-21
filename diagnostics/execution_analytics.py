@@ -550,6 +550,7 @@ def build_execution_analytics(
     for threshold in (2, 3, 4, 5):
         crossing_field = f"confirmed_crossing_{threshold}_percent"
         symbols = []
+        episodes = []
         for symbol, rows in sorted(observations_by_symbol.items()):
             crossings = [
                 row
@@ -559,6 +560,47 @@ def build_execution_analytics(
             ]
             if not crossings:
                 continue
+
+            active_episode = None
+            previous_confirmed = False
+            for observation in rows:
+                confirmed = str(
+                    observation.get(crossing_field) or ""
+                ).lower() in {"true", "1", "yes"}
+                if confirmed and not previous_confirmed:
+                    active_episode = {
+                        "symbol": symbol,
+                        "confirmed_crossing_at": observation.get("timestamp"),
+                        "position_qty_at_crossing": _safe_float(
+                            observation.get("position_qty")
+                        ),
+                        "entry_price": _safe_float(
+                            observation.get("entry_price")
+                        ),
+                        "crossing_price": _safe_float(
+                            observation.get("current_price")
+                        ),
+                        "crossing_loss_percent": _safe_float(
+                            observation.get("loss_percent")
+                        ),
+                        "maximum_loss_percent_before_recovery": _safe_float(
+                            observation.get("loss_percent")
+                        ),
+                        "recovered_at": None,
+                    }
+                    episodes.append(active_episode)
+                elif confirmed and active_episode is not None:
+                    active_episode["maximum_loss_percent_before_recovery"] = max(
+                        active_episode["maximum_loss_percent_before_recovery"],
+                        _safe_float(observation.get("loss_percent")),
+                    )
+                elif not confirmed and previous_confirmed and active_episode is not None:
+                    active_episode["recovered_at"] = observation.get("timestamp")
+                    active_episode["recovery_price"] = _safe_float(
+                        observation.get("current_price")
+                    )
+                    active_episode = None
+                previous_confirmed = confirmed
             crossing = crossings[0]
             crossed_at = _parse_timestamp(crossing.get("timestamp"))
             quantity = _safe_float(crossing.get("position_qty"))
@@ -643,6 +685,11 @@ def build_execution_analytics(
             ),
             "confirmed_crossing_count": len(symbols),
             "confirmed_crossings": symbols,
+            "distinct_episode_count": len(episodes),
+            "distinct_episodes": episodes,
+            "recovered_episode_count": sum(
+                bool(row.get("recovered_at")) for row in episodes
+            ),
             "estimated_total_pnl_vs_regular_close": (
                 sum(vs_close_values) if vs_close_values else None
             ),

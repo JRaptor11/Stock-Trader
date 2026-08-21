@@ -11,6 +11,7 @@ def _value(bar, name: str):
 
 def latest_completed_live_cohort(
     bars_by_symbol: dict, *, timeframe_seconds: int, required_symbols: int,
+    expected_symbols: list[str] | None = None,
 ) -> dict:
     """Return the newest local-live bucket shared by the required universe."""
     required_symbols = max(1, safe_int(required_symbols, 1))
@@ -29,11 +30,18 @@ def latest_completed_live_cohort(
             count_by_epoch[bucket_start] = count_by_epoch.get(bucket_start, 0) + 1
             symbols_by_epoch.setdefault(bucket_start, []).append(symbol)
 
+    expected = {
+        str(symbol or "").upper().strip()
+        for symbol in (expected_symbols or bars_by_symbol.keys())
+        if str(symbol or "").strip()
+    }
     eligible = [epoch for epoch, count in count_by_epoch.items() if count >= required_symbols]
     if not eligible:
         return {
             "status": "waiting_for_completed_live_cohort",
             "required_symbol_count": required_symbols,
+            "expected_symbol_count": len(expected),
+            "full_universe_parity": False,
             "available_cohort_counts": {
                 datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat(): count
                 for epoch, count in sorted(count_by_epoch.items())
@@ -42,6 +50,7 @@ def latest_completed_live_cohort(
     start = max(eligible)
     end = start + max(1, safe_int(timeframe_seconds, 300))
     symbols = sorted(symbols_by_epoch.get(start, []))
+    missing = sorted(expected - set(symbols))
     return {
         "status": "ready", "bucket_start_epoch": start,
         "bucket_end_epoch": end,
@@ -49,4 +58,8 @@ def latest_completed_live_cohort(
         "bucket_end_timestamp": datetime.fromtimestamp(end, tz=timezone.utc).isoformat(),
         "symbol_count": len(symbols), "symbols": symbols,
         "required_symbol_count": required_symbols,
+        "expected_symbol_count": len(expected),
+        "missing_symbols": missing,
+        "coverage_pct": (len(set(symbols) & expected) / len(expected) * 100.0) if expected else 100.0,
+        "full_universe_parity": not missing,
     }

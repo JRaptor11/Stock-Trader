@@ -197,6 +197,8 @@ class ExecutionAnalyticsTests(unittest.TestCase):
             if row["threshold_percent"] == 4
         )
         self.assertEqual(1, comparison["confirmed_crossing_count"])
+        self.assertEqual(1, comparison["distinct_episode_count"])
+        self.assertEqual(0, comparison["recovered_episode_count"])
         crossing = comparison["confirmed_crossings"][0]
         self.assertEqual("GOOGL", crossing["symbol"])
         self.assertAlmostEqual(-5, crossing[
@@ -204,6 +206,42 @@ class ExecutionAnalyticsTests(unittest.TestCase):
         ])
         self.assertAlmostEqual(15, crossing[
             "hypothetical_pnl_vs_actual_fail_safe_exit"
+        ])
+
+    def test_threshold_counterfactual_counts_distinct_recovered_episodes(self):
+        snapshots = {
+            "open": {"account": {"equity": 100000}, "positions": []},
+            "close": {
+                "account": {"equity": 100000}, "positions": [],
+                "traded_symbol_prices": [{"symbol": "AMD", "price": 99}],
+                "orders": [],
+            },
+        }
+        observations = []
+        for timestamp, price, confirmed in (
+            ("2026-08-03T14:00:00+00:00", 97, True),
+            ("2026-08-03T14:05:00+00:00", 96, True),
+            ("2026-08-03T14:10:00+00:00", 99, False),
+            ("2026-08-03T15:00:00+00:00", 97, True),
+        ):
+            observations.append({
+                "timestamp": timestamp, "symbol": "AMD", "position_qty": 5,
+                "entry_price": 100, "current_price": price,
+                "loss_percent": 100 - price,
+                "confirmed_crossing_3_percent": str(confirmed).lower(),
+            })
+        result = build_execution_analytics(
+            snapshots, trade_date="2026-08-03",
+            execution_rows=[], fail_safe_observation_rows=observations,
+        )
+        comparison = next(
+            row for row in result["position_loss_threshold_comparison"]
+            if row["threshold_percent"] == 3
+        )
+        self.assertEqual(2, comparison["distinct_episode_count"])
+        self.assertEqual(1, comparison["recovered_episode_count"])
+        self.assertEqual(4, comparison["distinct_episodes"][0][
+            "maximum_loss_percent_before_recovery"
         ])
 
 
