@@ -135,6 +135,27 @@ class HistoricalReplayTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "coverage"):
             run_replay(rows, ReplayConfig(warmup_bars=61, require_benchmark=False))
 
+    def test_future_labels_allow_sparse_symbol_at_decision_timestamp(self):
+        rows = self._bars(80)
+        missing_timestamp = datetime(2026, 1, 5, 19, 35, tzinfo=timezone.utc)
+        rows = [
+            row for row in rows
+            if not (row["symbol"] == "BBB" and row["timestamp"] == missing_timestamp)
+        ]
+        result = run_replay(
+            rows,
+            ReplayConfig(
+                warmup_bars=61, require_benchmark=False,
+                minimum_average_coverage_pct=95.0,
+            ),
+        )
+        sparse = [
+            row for row in result["dataset"]
+            if row["symbol"] == "BBB" and row["timestamp"] == missing_timestamp.isoformat()
+        ]
+        self.assertEqual(len(sparse), 1)
+        self.assertIn("forward_return_30m", sparse[0])
+
     def test_replay_parity_matches_on_source_bar_and_strategy(self):
         replay = [{
             "timestamp": "2026-01-05T15:00:00+00:00", "strategy_name": "LOOKBACK_60M",

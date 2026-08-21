@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import bisect
 import csv
 import gzip
 import hashlib
@@ -270,17 +271,23 @@ def _future_labels(features, price_index: dict, output=None):
     by_symbol = defaultdict(list)
     for (ts, symbol), bar in price_index.items():
         by_symbol[symbol].append((ts, bar))
-    lookup = {}
+    series = {}
     for symbol, values in by_symbol.items():
         values.sort(key=lambda item: item[0])
-        value_map = {ts: bar for ts, bar in values}
-        for index, (ts, _) in enumerate(values):
-            lookup[(ts, symbol)] = (values, value_map, index)
+        series[symbol] = (
+            values,
+            {ts: bar for ts, bar in values},
+            [ts for ts, _ in values],
+        )
     for feature in features:
         ts, symbol = _timestamp(feature["timestamp"]), feature["symbol"]
-        values, value_map, index = lookup[(ts, symbol)]
+        values, value_map, timestamps = series[symbol]
+        next_index = bisect.bisect_right(timestamps, ts)
         row = dict(feature)
-        start = float(values[index][1]["close"])
+        # A sparse feed can legitimately have no bar for this symbol at the
+        # cohort timestamp. The feature close is the exact stale-safe value
+        # available to the strategy at that decision point.
+        start = float(feature["close"])
         for label, minutes in horizons.items():
             target_ts = ts + timedelta(minutes=minutes)
             target_bar = value_map.get(target_ts)
@@ -289,11 +296,12 @@ def _future_labels(features, price_index: dict, output=None):
                 round(float(target_bar["close"]) / start - 1.0, 10) if valid else None
             )
         window_end = ts + timedelta(minutes=60)
-        window = [
-            item[1] for item in values[index + 1:]
-            if item[0] <= window_end
-            and item[0].astimezone(MARKET_TZ).date() == ts.astimezone(MARKET_TZ).date()
-        ]
+        window = []
+        for future_ts, future_bar in itertools.islice(values, next_index, None):
+            if future_ts > window_end:
+                break
+            if future_ts.astimezone(MARKET_TZ).date() == ts.astimezone(MARKET_TZ).date():
+                window.append(future_bar)
         row["max_favorable_excursion_60m"] = (
             round(max(float(item["high"]) for item in window) / start - 1.0, 10) if window else None
         )
