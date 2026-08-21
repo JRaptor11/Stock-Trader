@@ -41,6 +41,8 @@ class ReplayConfig:
     step_sessions: int = 20
     benchmark_symbol: str = "SPY"
     candidate_symbols: tuple[str, ...] = ()
+    require_benchmark: bool = True
+    minimum_symbol_coverage_pct: float = 98.0
     bar_timestamp_semantics: str = "bar_start"
 
     @property
@@ -286,6 +288,121 @@ def _daily_summaries(cycles: list[dict], orders: list[dict]) -> list[dict]:
     return output
 
 
+def _dataset_quality(rows: list[dict], symbols: list[str], benchmark_symbol: str) -> dict:
+    """Measure whether each requested security has a comparable regular-session sample."""
+    regular = [row for row in rows if _is_regular_session(row["timestamp"])]
+    timestamps_by_session = defaultdict(set)
+    observed = defaultdict(set)
+    for row in regular:
+        session_date = row["timestamp"].astimezone(MARKET_TZ).date().isoformat()
+        timestamps_by_session[session_date].add(row["timestamp"])
+        observed[(session_date, row["symbol"])].add(row["timestamp"])
+    requested = list(symbols)
+    if benchmark_symbol and benchmark_symbol not in requested:
+        requested.append(benchmark_symbol)
+    details = []
+    for session_date, expected in sorted(timestamps_by_session.items()):
+        for symbol in requested:
+            count = len(observed.get((session_date, symbol), set()))
+            details.append({
+                "session_date": session_date,
+                "symbol": symbol,
+                "observed_bars": count,
+                "expected_bars": len(expected),
+                "coverage_pct": round(count / len(expected) * 100.0, 4) if expected else 0.0,
+            })
+    return {
+        "regular_session_rows": len(regular),
+        "session_count": len(timestamps_by_session),
+        "requested_symbols": requested,
+        "minimum_coverage_pct": min((row["coverage_pct"] for row in details), default=0.0),
+        "coverage": details,
+    }
+
+
+def _benchmark_daily(rows: list[dict], benchmark_symbol: str) -> list[dict]:
+    grouped = defaultdict(list)
+    for row in rows:
+        if row["symbol"] == benchmark_symbol and _is_regular_session(row["timestamp"]):
+            grouped[row["timestamp"].astimezone(MARKET_TZ).date().isoformat()].append(row)
+    output = []
+    previous_close = None
+    for session_date, values in sorted(grouped.items()):
+        values.sort(key=lambda row: row["timestamp"])
+        first_open, last_close = float(values[0]["open"]), float(values[-1]["close"])
+        start = previous_close if previous_close is not None else first_open
+        output.append({
+            "session_date": session_date, "symbol": benchmark_symbol,
+            "start_price": start, "end_price": last_close,
+            "session_return": last_close / start - 1.0 if start else 0.0,
+        })
+        previous_close = last_close
+    return output
+
+
+def _benchmark_summary(rows: list[dict], benchmark_symbol: str) -> dict:
+    values = [
+        row for row in rows
+        if row["symbol"] == benchmark_symbol and _is_regular_session(row["timestamp"])
+    ]
+    values.sort(key=lambda row: row["timestamp"])
+    if not values:
+        return {"symbol": benchmark_symbol, "return": None, "start_price": None, "end_price": None}
+    start, end = float(values[0]["open"]), float(values[-1]["close"])
+    return {
+        "symbol": benchmark_symbol, "start_price": start, "end_price": end,
+        "return": round(end / start - 1.0, 10) if start else None,
+    }
+
+
+def _compound(returns: list[float]) -> float:
+    value = 1.0
+    for item in returns:
+        value *= 1.0 + float(item)
+    return value - 1.0
+
+
+def _walk_forward_results(daily: list[dict], benchmark_daily: list[dict], folds) -> list[dict]:
+    """Select on each training window, then report only held-out test performance."""
+    by_strategy = defaultdict(dict)
+    previous_equity = {}
+    for row in sorted(daily, key=lambda item: (item["strategy_name"], item["session_date"])):
+        strategy = row["strategy_name"]
+        prior = previous_equity.get(strategy, row["first_equity"])
+        by_strategy[strategy][row["session_date"]] = row["last_equity"] / prior - 1.0 if prior else 0.0
+        previous_equity[strategy] = row["last_equity"]
+    benchmark = {row["session_date"]: row["session_return"] for row in benchmark_daily}
+    output = []
+    for fold in folds:
+        candidates = []
+        for strategy, values in sorted(by_strategy.items()):
+            train_returns = [values[day] for day in fold.train_dates if day in values]
+            if len(train_returns) != len(fold.train_dates):
+                continue
+            candidates.append({
+                "strategy_name": strategy,
+                "train_return": _compound(train_returns),
+                "train_daily_volatility": statistics.pstdev(train_returns) if len(train_returns) > 1 else 0.0,
+            })
+        if not candidates:
+            continue
+        selected = max(candidates, key=lambda row: (row["train_return"], -row["train_daily_volatility"]))
+        test_returns = [by_strategy[selected["strategy_name"]][day] for day in fold.test_dates]
+        benchmark_returns = [benchmark[day] for day in fold.test_dates if day in benchmark]
+        test_return = _compound(test_returns)
+        benchmark_return = _compound(benchmark_returns) if len(benchmark_returns) == len(fold.test_dates) else None
+        output.append({
+            **fold.as_dict(), "selected_strategy": selected["strategy_name"],
+            "selection_metric": "highest_compounded_train_return_after_configured_costs",
+            "selected_train_return": round(selected["train_return"], 10),
+            "selected_test_return": round(test_return, 10),
+            "benchmark_test_return": round(benchmark_return, 10) if benchmark_return is not None else None,
+            "test_excess_return": round(test_return - benchmark_return, 10) if benchmark_return is not None else None,
+            "candidate_train_metrics": candidates,
+        })
+    return output
+
+
 def run_replay(rows: list[dict], config: ReplayConfig | None = None, progress_callback=None) -> dict:
     config = config or ReplayConfig()
     grouped, price_index = defaultdict(dict), {}
@@ -302,6 +419,17 @@ def run_replay(rows: list[dict], config: ReplayConfig | None = None, progress_ca
     missing_candidates = set(symbols) - set(all_symbols)
     if missing_candidates:
         raise ValueError(f"candidate symbols missing from bar data: {sorted(missing_candidates)}")
+    benchmark_symbol = config.benchmark_symbol.upper()
+    if config.require_benchmark and benchmark_symbol not in all_symbols:
+        raise ValueError(f"required benchmark symbol missing from bar data: {benchmark_symbol}")
+    quality = _dataset_quality(
+        rows, symbols, benchmark_symbol if benchmark_symbol in all_symbols else ""
+    )
+    if quality["minimum_coverage_pct"] < config.minimum_symbol_coverage_pct:
+        raise ValueError(
+            "historical bar coverage is below the configured minimum: "
+            f'{quality["minimum_coverage_pct"]:.4f}% < {config.minimum_symbol_coverage_pct:.4f}%'
+        )
     history = {symbol: [] for symbol in all_symbols}
     strategy_configs = dict(STRATEGIES)
     portfolios = {
@@ -427,10 +555,21 @@ def run_replay(rows: list[dict], config: ReplayConfig | None = None, progress_ca
     dataset = _future_labels(feature_rows, price_index)
     daily = _daily_summaries(cycle_rows, order_rows)
     session_dates = sorted({row["session_date"] for row in feature_rows})
+    first_cycle_by_session = {}
+    for row in cycle_rows:
+        first_cycle_by_session.setdefault(row["session_date"], _timestamp(row["timestamp"]))
+    evaluation_session_dates = [
+        day for day in session_dates
+        if first_cycle_by_session[day].astimezone(MARKET_TZ).hour == 9
+        and first_cycle_by_session[day].astimezone(MARKET_TZ).minute == 30
+    ]
     folds = build_walk_forward_folds(
-        session_dates, min_train_sessions=config.min_train_sessions,
+        evaluation_session_dates, min_train_sessions=config.min_train_sessions,
         test_sessions=config.test_sessions, step_sessions=config.step_sessions,
     )
+    benchmark_daily = _benchmark_daily(rows, benchmark_symbol)
+    benchmark_summary = _benchmark_summary(rows, benchmark_symbol)
+    walk_forward_results = _walk_forward_results(daily, benchmark_daily, folds)
     summaries = []
     for name, portfolio in portfolios.items():
         relevant = [row for row in cycle_rows if row["strategy_name"] == name]
@@ -447,8 +586,12 @@ def run_replay(rows: list[dict], config: ReplayConfig | None = None, progress_ca
         })
     return {
         "config": asdict(config), "symbols": symbols, "session_dates": session_dates,
+        "evaluation_session_dates": evaluation_session_dates,
         "cycles": cycle_rows, "daily": daily, "decisions": decision_rows, "orders": order_rows,
         "dataset": dataset, "walk_forward_folds": [fold.as_dict() for fold in folds],
+        "walk_forward_results": walk_forward_results,
+        "benchmark_daily": benchmark_daily, "benchmark_summary": benchmark_summary,
+        "dataset_quality": quality,
         "summary": summaries,
     }
 
@@ -481,10 +624,14 @@ def write_replay(
     for key, filename in {
         "cycles": "replay_cycles.csv", "daily": "replay_daily.csv", "decisions": "replay_decisions.csv",
         "orders": "replay_orders.csv", "dataset": "ml_dataset.csv",
+        "benchmark_daily": "benchmark_daily.csv",
+        "walk_forward_results": "walk_forward_results.csv",
     }.items():
         _write_csv(output / filename, result[key])
     (output / "walk_forward_folds.json").write_text(json.dumps(result["walk_forward_folds"], indent=2), encoding="utf-8")
+    (output / "dataset_quality.json").write_text(json.dumps(result["dataset_quality"], indent=2), encoding="utf-8")
     (output / "replay_summary.json").write_text(json.dumps(result["summary"], indent=2), encoding="utf-8")
+    (output / "benchmark_summary.json").write_text(json.dumps(result["benchmark_summary"], indent=2), encoding="utf-8")
     manifest = {
         "created_at": datetime.now(UTC).isoformat(), "source_path": str(source_path) if source_path else None,
         "source_sha256": hashlib.sha256(Path(source_path).read_bytes()).hexdigest() if source_path else None,
@@ -497,8 +644,12 @@ def write_replay(
         ).hexdigest(),
         "experiment": experiment,
         "config": result["config"], "symbols": result["symbols"],
-        "session_dates": result["session_dates"], "row_counts": {
-            key: len(result[key]) for key in ("cycles", "daily", "decisions", "orders", "dataset")
+        "session_dates": result["session_dates"],
+        "evaluation_session_dates": result["evaluation_session_dates"], "row_counts": {
+            key: len(result[key]) for key in (
+                "cycles", "daily", "decisions", "orders", "dataset",
+                "benchmark_daily", "walk_forward_results",
+            )
         },
     }
     (output / "replay_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")

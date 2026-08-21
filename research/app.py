@@ -146,10 +146,13 @@ def health() -> dict:
     return {
         "status": "ok",
         "service_mode": "historical_research",
+        "git_commit": os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT"),
+        "git_branch": os.getenv("RENDER_GIT_BRANCH") or os.getenv("GIT_BRANCH"),
         "busy": runtime.active_job_id is not None,
         "active_job_id": runtime.active_job_id,
         "queued_jobs": _queued_job_count(),
         "durable_storage_configured": bool(runtime.store and runtime.store.durable),
+        "storage_budget_bytes": runtime.storage_budget_bytes,
     }
 
 

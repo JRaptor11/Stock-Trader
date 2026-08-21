@@ -348,8 +348,10 @@ results do not assume cost-free or same-bar execution.
 Input is a long-form CSV with one row per symbol and timestamp. Required columns
 are `timestamp`, `symbol`, `open`, `high`, `low`, `close`, and `volume`.
 `trade_count` and `vwap` are optional. Timestamps must include a UTC offset, and
-each symbol/timestamp pair must be unique. If SPY is present, it is treated as
-benchmark context by default rather than as a candidate security.
+each symbol/timestamp pair must be unique. SPY is required by default and is
+treated as benchmark context rather than as a candidate security. A configurable
+per-symbol/session coverage gate rejects materially incomplete datasets before
+they can produce misleading comparisons.
 
 Example:
 
@@ -365,10 +367,12 @@ python -m research.historical_replay historical_5m_bars.csv `
 ```
 
 The output contains portfolio cycles, decisions, simulated orders, strategy
-summaries, chronological walk-forward folds, and an ML-ready feature/outcome
-dataset. Outcome columns are calculated only from later timestamps and are kept
-separate from decision-time features. The manifest records the source-file hash
-and replay configuration for reproducibility. It also records the service mode,
+summaries, data-coverage diagnostics, SPY buy-and-hold returns, and an ML-ready
+feature/outcome dataset. Walk-forward evaluation selects a strategy using only
+each chronological training window, then records its return and SPY-relative
+excess return on the untouched test window. Outcome columns are calculated only
+from later timestamps and are kept separate from decision-time features. The
+manifest records the source-file hash, replay configuration, service mode,
 Python version, deployed Git metadata when available, and a hash of the strategy
 registry.
 

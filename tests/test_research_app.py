@@ -61,7 +61,10 @@ class ResearchAppTests(unittest.TestCase):
                 self.assertEqual(uploaded.status_code, 200, uploaded.text)
                 submitted = client.post("/api/jobs", headers=headers, json={
                     "job_id": "api-smoke", "bars_csv": "bars.csv",
-                    "replay_config": {"warmup_bars": 61, "min_train_sessions": 1, "test_sessions": 1},
+                    "replay_config": {
+                        "warmup_bars": 61, "min_train_sessions": 1,
+                        "test_sessions": 1, "require_benchmark": False,
+                    },
                 })
                 self.assertEqual(submitted.status_code, 202, submitted.text)
                 deadline = time.monotonic() + 10

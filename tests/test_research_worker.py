@@ -38,7 +38,10 @@ class ResearchWorkerTests(unittest.TestCase):
             job = root / "experiment.json"
             job.write_text(json.dumps({
                 "job_id": "smoke-test", "bars_csv": "bars.csv",
-                "replay_config": {"warmup_bars": 61, "min_train_sessions": 1, "test_sessions": 1},
+                "replay_config": {
+                    "warmup_bars": 61, "min_train_sessions": 1,
+                    "test_sessions": 1, "require_benchmark": False,
+                },
             }), encoding="utf-8")
             env = {
                 "SERVICE_MODE": "historical_research",
