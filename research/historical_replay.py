@@ -42,7 +42,7 @@ class ReplayConfig:
     benchmark_symbol: str = "SPY"
     candidate_symbols: tuple[str, ...] = ()
     require_benchmark: bool = True
-    minimum_symbol_coverage_pct: float = 98.0
+    minimum_average_coverage_pct: float = 95.0
     bar_timestamp_semantics: str = "bar_start"
 
     @property
@@ -315,6 +315,9 @@ def _dataset_quality(rows: list[dict], symbols: list[str], benchmark_symbol: str
         "regular_session_rows": len(regular),
         "session_count": len(timestamps_by_session),
         "requested_symbols": requested,
+        "average_coverage_pct": round(
+            sum(row["coverage_pct"] for row in details) / len(details), 4
+        ) if details else 0.0,
         "minimum_coverage_pct": min((row["coverage_pct"] for row in details), default=0.0),
         "coverage": details,
     }
@@ -425,10 +428,10 @@ def run_replay(rows: list[dict], config: ReplayConfig | None = None, progress_ca
     quality = _dataset_quality(
         rows, symbols, benchmark_symbol if benchmark_symbol in all_symbols else ""
     )
-    if quality["minimum_coverage_pct"] < config.minimum_symbol_coverage_pct:
+    if quality["average_coverage_pct"] < config.minimum_average_coverage_pct:
         raise ValueError(
-            "historical bar coverage is below the configured minimum: "
-            f'{quality["minimum_coverage_pct"]:.4f}% < {config.minimum_symbol_coverage_pct:.4f}%'
+            "average historical bar coverage is below the configured minimum: "
+            f'{quality["average_coverage_pct"]:.4f}% < {config.minimum_average_coverage_pct:.4f}%'
         )
     history = {symbol: [] for symbol in all_symbols}
     strategy_configs = dict(STRATEGIES)

@@ -73,6 +73,7 @@ class HistoricalReplayTests(unittest.TestCase):
         self.assertIn("benchmark_ret_60m", result["dataset"][0])
         self.assertTrue(result["benchmark_daily"])
         self.assertEqual(result["dataset_quality"]["minimum_coverage_pct"], 100.0)
+        self.assertEqual(result["dataset_quality"]["average_coverage_pct"], 100.0)
 
     def test_walk_forward_is_strictly_chronological(self):
         dates = [f"2026-01-{day:02d}" for day in range(1, 11)]

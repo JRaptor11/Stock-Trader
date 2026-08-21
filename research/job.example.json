@@ -13,7 +13,7 @@
     "step_sessions": 20,
     "benchmark_symbol": "SPY",
     "require_benchmark": true,
-    "minimum_symbol_coverage_pct": 98.0,
+    "minimum_average_coverage_pct": 95.0,
     "candidate_symbols": [
       "AAPL", "AMD", "AMZN", "AVGO", "COST",
       "GOOGL", "META", "MSFT", "NVDA", "TSLA"

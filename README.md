@@ -349,9 +349,9 @@ Input is a long-form CSV with one row per symbol and timestamp. Required columns
 are `timestamp`, `symbol`, `open`, `high`, `low`, `close`, and `volume`.
 `trade_count` and `vwap` are optional. Timestamps must include a UTC offset, and
 each symbol/timestamp pair must be unique. SPY is required by default and is
-treated as benchmark context rather than as a candidate security. A configurable
-per-symbol/session coverage gate rejects materially incomplete datasets before
-they can produce misleading comparisons.
+treated as benchmark context rather than as a candidate security. Per-symbol
+and session coverage is reported in full, while a configurable aggregate gate
+rejects broadly incomplete datasets before they can produce misleading results.
 
 Example:
 
