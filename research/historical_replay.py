@@ -313,28 +313,41 @@ def _future_labels(features, price_index: dict, output=None):
     return output
 
 
-def _daily_summaries(cycles: list[dict], orders: list[dict]) -> list[dict]:
-    grouped = defaultdict(list)
-    order_grouped = defaultdict(list)
+def _daily_summaries(cycles, orders) -> list[dict]:
+    grouped = {}
+    order_grouped = defaultdict(lambda: {"trade_count": 0, "gross_turnover": 0.0})
     for row in cycles:
-        grouped[(row["session_date"], row["strategy_name"])].append(row)
+        key = (row["session_date"], row["strategy_name"])
+        aggregate = grouped.setdefault(key, {
+            "first": row, "last": row,
+            "maximum_drawdown_pct": float(row["drawdown_pct"]),
+            "peak_giveback": float(row["peak_giveback"]),
+        })
+        aggregate["last"] = row
+        aggregate["maximum_drawdown_pct"] = min(
+            aggregate["maximum_drawdown_pct"], float(row["drawdown_pct"])
+        )
+        aggregate["peak_giveback"] = min(
+            aggregate["peak_giveback"], float(row["peak_giveback"])
+        )
     for row in orders:
         session_date = _timestamp(row["timestamp"]).astimezone(MARKET_TZ).date().isoformat()
-        order_grouped[(session_date, row["strategy_name"])].append(row)
+        aggregate = order_grouped[(session_date, row["strategy_name"])]
+        aggregate["trade_count"] += 1
+        aggregate["gross_turnover"] += float(row["notional"])
     output = []
-    for (session_date, strategy), values in sorted(grouped.items()):
-        values.sort(key=lambda row: row["timestamp"])
-        trades = order_grouped.get((session_date, strategy), [])
-        start, end = values[0], values[-1]
+    for (session_date, strategy), aggregate in sorted(grouped.items()):
+        trades = order_grouped[(session_date, strategy)]
+        start, end = aggregate["first"], aggregate["last"]
         output.append({
             "session_date": session_date, "strategy_name": strategy,
             "first_equity": start["equity"], "last_equity": end["equity"],
             "intraday_pnl": round(end["equity"] - start["equity"], 2),
             "intraday_return": round(end["equity"] / start["equity"] - 1.0, 10) if start["equity"] else None,
-            "maximum_drawdown_pct": min(row["drawdown_pct"] for row in values),
-            "peak_giveback": min(row["peak_giveback"] for row in values),
-            "trade_count": len(trades),
-            "gross_turnover": round(sum(float(row["notional"]) for row in trades), 2),
+            "maximum_drawdown_pct": aggregate["maximum_drawdown_pct"],
+            "peak_giveback": aggregate["peak_giveback"],
+            "trade_count": trades["trade_count"],
+            "gross_turnover": round(trades["gross_turnover"], 2),
             "ending_cash_pct": end["cash_pct"],
             "ending_reversal_exposure_pct": end["reversal_exposure_pct"],
         })
@@ -633,7 +646,11 @@ def run_replay(
                 "elapsed_seconds": round(time.monotonic() - started, 1),
             })
 
+    if progress_callback:
+        progress_callback({"stage": "building_future_labels", "percent_complete": 100.0})
     dataset = _future_labels(feature_rows, price_index, collection("dataset"))
+    if progress_callback:
+        progress_callback({"stage": "building_daily_summaries"})
     daily = _daily_summaries(cycle_rows, order_rows)
     session_dates = sorted({row["session_date"] for row in feature_rows})
     if isinstance(feature_rows, SpilledRows):
@@ -653,13 +670,24 @@ def run_replay(
     benchmark_daily = _benchmark_daily(rows, benchmark_symbol)
     benchmark_summary = _benchmark_summary(rows, benchmark_symbol)
     walk_forward_results = _walk_forward_results(daily, benchmark_daily, folds)
+    if progress_callback:
+        progress_callback({"stage": "building_strategy_summaries"})
+    summary_state = {
+        name: {"final": None, "max_drawdown_pct": 0.0} for name in portfolios
+    }
+    for row in cycle_rows:
+        aggregate = summary_state[row["strategy_name"]]
+        aggregate["final"] = row
+        aggregate["max_drawdown_pct"] = min(
+            aggregate["max_drawdown_pct"], float(row["drawdown_pct"])
+        )
     summaries = []
     for name, portfolio in portfolios.items():
-        relevant = [row for row in cycle_rows if row["strategy_name"] == name]
-        final = relevant[-1] if relevant else {}
+        final = summary_state[name]["final"] or {}
         summaries.append({
             "strategy_name": name, "final_equity": final.get("equity", config.initial_cash),
-            "pnl": final.get("pnl", 0.0), "max_drawdown_pct": min((row["drawdown_pct"] for row in relevant), default=0.0),
+            "pnl": final.get("pnl", 0.0),
+            "max_drawdown_pct": summary_state[name]["max_drawdown_pct"],
             "turnover": round(portfolio.turnover, 2), "trade_count": portfolio.trade_count,
             "direction_reversal_count": portfolio.reversals,
             "pnl_with_additional_1bp_cost": round(final.get("pnl", 0.0) - portfolio.turnover * 0.0001, 2),
@@ -667,6 +695,8 @@ def run_replay(
             "pnl_with_additional_10bp_cost": round(final.get("pnl", 0.0) - portfolio.turnover * 0.0010, 2),
             "pnl_with_additional_20bp_cost": round(final.get("pnl", 0.0) - portfolio.turnover * 0.0020, 2),
         })
+    if progress_callback:
+        progress_callback({"stage": "writing_result_artifacts"})
     return {
         "config": asdict(config), "symbols": symbols, "session_dates": session_dates,
         "evaluation_session_dates": evaluation_session_dates,

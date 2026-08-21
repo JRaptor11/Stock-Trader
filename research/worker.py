@@ -107,11 +107,14 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
     }
     _write_json_atomic(status_path, base_status)
     try:
+        latest_status = dict(base_status)
+
         def update_progress(progress: dict) -> None:
-            _write_json_atomic(status_path, {
-                **base_status, **progress,
+            latest_status.update(progress)
+            latest_status.update({
                 "heartbeat_at": datetime.now(UTC).isoformat(), **_resource_snapshot(),
             })
+            _write_json_atomic(status_path, latest_status)
 
         result = run_replay(
             load_bar_csv(bars_path), _config_from_job(job),
