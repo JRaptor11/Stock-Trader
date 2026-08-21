@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from research.historical_replay import (
-    ReplayConfig, _walk_forward_results, load_bar_csv, run_replay, write_replay,
+    ReplayConfig, SpilledRows, _walk_forward_results, load_bar_csv, run_replay, write_replay,
 )
 from research.replay_parity import compare_replay_to_live
 from research.walk_forward import build_walk_forward_folds
@@ -108,6 +108,22 @@ class HistoricalReplayTests(unittest.TestCase):
             self.assertTrue((output / "replay_manifest.json").exists())
             self.assertTrue((output / "ml_dataset.csv").exists())
             self.assertTrue((output / "dataset_quality.json").exists())
+
+    def test_spilled_replay_matches_in_memory_summary_and_outputs(self):
+        rows = self._bars()
+        config = ReplayConfig(warmup_bars=61, require_benchmark=False)
+        expected = run_replay(rows, config)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            actual = run_replay(rows, config, spill_directory=root / "spill")
+            self.assertEqual(actual["summary"], expected["summary"])
+            self.assertEqual(actual["daily"], expected["daily"])
+            self.assertIsInstance(actual["cycles"], SpilledRows)
+            output = write_replay(actual, root / "output")
+            self.assertGreater((output / "replay_cycles.csv").stat().st_size, 0)
+            for value in actual.values():
+                if isinstance(value, SpilledRows):
+                    value.close()
 
     def test_replay_requires_benchmark_by_default(self):
         with self.assertRaisesRegex(ValueError, "required benchmark"):

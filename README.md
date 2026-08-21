@@ -312,6 +312,7 @@ Copy `.env.example` to `.env` and replace placeholders. The most important group
 | `RESEARCH_MAX_RETRIES` | Automatic retries allowed after transient job failures |
 | `RESEARCH_RETRY_*_SECONDS` | Exponential retry delay and maximum backoff |
 | `RESEARCH_R2_STORAGE_BUDGET_BYTES` | Refuses large uploads above the configured object-storage safety budget |
+| `RESEARCH_CLEANUP_LOCAL_ARTIFACTS` | Defaults to `true`; removes R2-backed datasets and results from Render's ephemeral disk after each job and restores result ZIPs on demand |
 
 The template documents additional data-quality, restart-recovery, hysteresis, and rolling-limit switches. Defaults in the repository are deliberately conservative, but configuration should still be reviewed before every deployment.
 

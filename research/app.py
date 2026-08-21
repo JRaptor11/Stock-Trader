@@ -47,6 +47,7 @@ class ResearchRuntime:
         self.maximum_retries = 3
         self.retry_base_seconds = 30.0
         self.retry_max_seconds = 300.0
+        self.cleanup_local_artifacts = True
         self._storage_usage_cache: tuple[float, int] | None = None
 
     def initialize(self) -> None:
@@ -66,6 +67,9 @@ class ResearchRuntime:
         self.retry_max_seconds = max(
             self.retry_base_seconds, float(os.getenv("RESEARCH_RETRY_MAX_SECONDS", "300"))
         )
+        self.cleanup_local_artifacts = str(
+            os.getenv("RESEARCH_CLEANUP_LOCAL_ARTIFACTS", "true")
+        ).strip().lower() in {"1", "true", "yes", "on"}
         self._storage_usage_cache = None
         if len(self.api_token) < 24:
             raise RuntimeError("RESEARCH_API_TOKEN must contain at least 24 characters")
@@ -218,6 +222,11 @@ def _run_job(job_id: str, job_path: Path) -> None:
                 except subprocess.TimeoutExpired:
                     continue
             if process.returncode:
+                if process.returncode < 0:
+                    raise RuntimeError(
+                        f"research worker terminated by signal {-process.returncode}; "
+                        "the service may have exceeded its memory or CPU allowance"
+                    )
                 raise RuntimeError(f"research worker exited with code {process.returncode}")
         if not output.is_dir():
             raise RuntimeError("research worker completed without a result directory")
@@ -265,7 +274,7 @@ def _run_job(job_id: str, job_path: Path) -> None:
                 "failed_at": datetime.now(timezone.utc).isoformat(),
                 "error": str(exc), "failure_class": failure_class,
                 "retryable": retryable, "retries_exhausted": retryable,
-                "blocks_queue": True,
+                "retries_remaining": 0, "next_retry_at": None, "blocks_queue": True,
             })
     finally:
         status_path = runtime.results_root / f"{job_id}.status.json"
@@ -274,6 +283,8 @@ def _run_job(job_id: str, job_path: Path) -> None:
                 runtime.store.upload_file(status_path, f"status/{status_path.name}")
             except Exception:
                 logging.exception("Could not upload durable job status: %s", job_id)
+        if runtime.store.durable and runtime.cleanup_local_artifacts:
+            _cleanup_local_job_artifacts(job_id, job_path)
         with runtime.queue_lock:
             runtime.active_job_id = None
         if succeeded:
@@ -308,6 +319,30 @@ def _restore_dataset(filename: str) -> bool:
         return False
     matches = [key for key in runtime.store.list_keys("datasets/") if key.endswith("-" + filename)]
     return bool(matches and runtime.store.download_file(matches[-1], destination))
+
+
+def _cleanup_local_job_artifacts(job_id: str, job_path: Path) -> None:
+    """Keep Render's ephemeral filesystem as a cache; R2 remains authoritative."""
+    try:
+        job = json.loads(job_path.read_text(encoding="utf-8")) if job_path.is_file() else {}
+        bars_csv = str(job.get("bars_csv") or "")
+        if bars_csv:
+            dataset = runtime.data_root / Path(bars_csv).name
+            if dataset.is_file():
+                dataset.unlink()
+        output = runtime.results_root / job_id
+        if output.is_dir():
+            shutil.rmtree(output)
+        archive = runtime.results_root / f"{job_id}-results.zip"
+        if archive.is_file():
+            archive.unlink()
+        for path in runtime.results_root.glob(f".{job_id}.*"):
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            elif path.is_file():
+                path.unlink(missing_ok=True)
+    except Exception:
+        logging.exception("Could not clean local research artifacts for %s", job_id)
 
 
 def _queued_statuses() -> list[dict]:
@@ -420,6 +455,7 @@ def _recover_interrupted_job() -> None:
             "failure_class": "interrupted_service_restart",
             "error": "automatic restart retry allowance exhausted",
             "retryable": True, "retries_exhausted": True,
+            "retries_remaining": 0, "next_retry_at": None,
         })
         runtime.store.upload_file(status_path, f"status/{status_path.name}")
         return
@@ -502,6 +538,8 @@ def job_status(job_id: str) -> dict:
 def download_results(job_id: str):
     job_id = _safe_name(job_id)
     archive = runtime.results_root / f"{job_id}-results.zip"
+    if not archive.is_file() and runtime.store.durable:
+        runtime.store.download_file(f"results/{archive.name}", archive)
     if not archive.is_file():
         raise HTTPException(status_code=404, detail="result archive is not available")
     return FileResponse(archive, filename=archive.name, media_type="application/zip")

@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 import time
 import traceback
 import uuid
@@ -19,10 +20,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from config.service_mode import ServiceMode, validate_service_startup
-from research.historical_replay import ReplayConfig, load_bar_csv, run_replay, write_replay
+from research.historical_replay import ReplayConfig, SpilledRows, load_bar_csv, run_replay, write_replay
 
 
 UTC = timezone.utc
+
+
+def _resource_snapshot() -> dict:
+    try:
+        import resource
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        maximum_rss = float(usage.ru_maxrss)
+        # Linux reports KiB; macOS reports bytes.
+        maximum_rss_bytes = int(maximum_rss if sys.platform == "darwin" else maximum_rss * 1024)
+    except ImportError:
+        maximum_rss_bytes = 0
+    return {"worker_max_rss_bytes": maximum_rss_bytes, "worker_pid": os.getpid()}
 
 
 def _resolved_child(root: Path, value: str | Path) -> Path:
@@ -77,6 +90,9 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
     started_at = datetime.now(UTC).isoformat()
     status_path = results_root / f"{job_id}.status.json"
     staging = results_root / f".{job_id}.{uuid.uuid4().hex}.tmp"
+    spill = results_root / f".{job_id}.spill"
+    if spill.exists():
+        shutil.rmtree(spill)
     previous_status = {}
     if status_path.is_file():
         try:
@@ -87,24 +103,29 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
         **previous_status,
         "job_id": job_id, "status": "running", "started_at": started_at,
         "job_path": str(job_path), "bars_path": str(bars_path),
-        "worker_pid": os.getpid(), "heartbeat_at": started_at,
+        "heartbeat_at": started_at, **_resource_snapshot(),
     }
     _write_json_atomic(status_path, base_status)
     try:
         def update_progress(progress: dict) -> None:
             _write_json_atomic(status_path, {
                 **base_status, **progress,
-                "heartbeat_at": datetime.now(UTC).isoformat(),
+                "heartbeat_at": datetime.now(UTC).isoformat(), **_resource_snapshot(),
             })
 
         result = run_replay(
             load_bar_csv(bars_path), _config_from_job(job),
-            progress_callback=update_progress,
+            progress_callback=update_progress, spill_directory=spill,
         )
         write_replay(
             result, staging, source_path=bars_path,
             experiment={"job_id": job_id, "job": job, "job_path": str(job_path)},
         )
+        for value in result.values():
+            if isinstance(value, SpilledRows):
+                value.close()
+        if spill.exists():
+            shutil.rmtree(spill)
         staging.replace(output)
         _write_json_atomic(status_path, {
             **base_status, "job_id": job_id, "status": "complete", "started_at": started_at,
@@ -112,6 +133,8 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
         })
         return output
     except Exception as exc:
+        if spill.exists():
+            shutil.rmtree(spill)
         if staging.exists():
             shutil.rmtree(staging)
         _write_json_atomic(status_path, {

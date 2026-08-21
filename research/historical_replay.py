@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gzip
 import hashlib
+import itertools
 import json
 import math
 import os
 import platform
 import statistics
 import time
+import uuid
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -25,6 +28,48 @@ from research.walk_forward import build_walk_forward_folds
 UTC = timezone.utc
 MARKET_TZ = ZoneInfo("America/New_York")
 REQUIRED_COLUMNS = {"timestamp", "symbol", "open", "high", "low", "close", "volume"}
+
+
+class SpilledRows:
+    """Append-only JSONL collection used to keep large diagnostics off the heap."""
+
+    def __init__(self, root: str | Path, name: str) -> None:
+        root = Path(root)
+        root.mkdir(parents=True, exist_ok=True)
+        self.path = root / f"{name}-{uuid.uuid4().hex}.jsonl.gz"
+        self._count = 0
+        self._handle = gzip.open(
+            self.path, "at", encoding="utf-8", compresslevel=1
+        )
+
+    def append(self, row: dict) -> None:
+        self._handle.write(json.dumps(row, separators=(",", ":"), default=str) + "\n")
+        self._count += 1
+
+    def extend(self, rows) -> None:
+        for row in rows:
+            self._handle.write(json.dumps(row, separators=(",", ":"), default=str) + "\n")
+            self._count += 1
+
+    def __iter__(self):
+        if not self._handle.closed:
+            self._handle.close()
+        if not self.path.exists():
+            return
+        with gzip.open(self.path, "rt", encoding="utf-8") as handle:
+            for line in handle:
+                if line.strip():
+                    yield json.loads(line)
+
+    def __len__(self) -> int:
+        return self._count
+
+    def close(self) -> None:
+        if not self._handle.closed:
+            self._handle.close()
+
+    def __del__(self):
+        self.close()
 
 
 @dataclass(frozen=True)
@@ -219,8 +264,8 @@ def _execute_pending(
     return rows
 
 
-def _future_labels(features: list[dict], price_index: dict) -> list[dict]:
-    output = []
+def _future_labels(features, price_index: dict, output=None):
+    output = output if output is not None else []
     horizons = {"10m": 10, "30m": 30, "60m": 60}
     by_symbol = defaultdict(list)
     for (ts, symbol), bar in price_index.items():
@@ -406,11 +451,19 @@ def _walk_forward_results(daily: list[dict], benchmark_daily: list[dict], folds)
     return output
 
 
-def run_replay(rows: list[dict], config: ReplayConfig | None = None, progress_callback=None) -> dict:
+def run_replay(
+    rows: list[dict], config: ReplayConfig | None = None, progress_callback=None,
+    spill_directory: str | Path | None = None,
+) -> dict:
     config = config or ReplayConfig()
-    grouped, price_index = defaultdict(dict), {}
+    if any(
+        (rows[index]["timestamp"], rows[index]["symbol"])
+        > (rows[index + 1]["timestamp"], rows[index + 1]["symbol"])
+        for index in range(len(rows) - 1)
+    ):
+        rows = sorted(rows, key=lambda row: (row["timestamp"], row["symbol"]))
+    price_index = {}
     for row in rows:
-        grouped[row["timestamp"]][row["symbol"]] = row
         price_index[(row["timestamp"], row["symbol"])] = row
     all_symbols = sorted({row["symbol"] for row in rows})
     configured = {str(symbol).upper() for symbol in config.candidate_symbols}
@@ -441,23 +494,36 @@ def run_replay(rows: list[dict], config: ReplayConfig | None = None, progress_ca
     }
     production_builder = Layer2PortfolioBuilder()
     ranker = Layer1StockRanker(None)
-    cycle_rows, decision_rows, order_rows, feature_rows = [], [], [], []
+    def collection(name: str):
+        return SpilledRows(spill_directory, name) if spill_directory else []
+
+    cycle_rows = collection("cycles")
+    decision_rows = collection("decisions")
+    order_rows = collection("orders")
+    feature_rows = collection("features")
     last_decision = None
     cycle_id = 0
 
-    timestamps = [ts for ts in sorted(grouped) if _is_regular_session(ts)]
+    regular_timestamp_count = len({
+        row["timestamp"] for row in rows if _is_regular_session(row["timestamp"])
+    })
     started = time.monotonic()
     completed_sessions: set[str] = set()
-    for timestamp_index, ts in enumerate(timestamps, 1):
-        bars = grouped[ts]
+    timestamp_index = 0
+    grouped_rows = itertools.groupby(rows, key=lambda row: row["timestamp"])
+    for ts, timestamp_rows in grouped_rows:
         if not _is_regular_session(ts):
             continue
+        timestamp_index += 1
+        bars = {row["symbol"]: row for row in timestamp_rows}
         order_rows.extend(sum((
             _execute_pending(name, portfolio, ts, bars, config)
         for name, portfolio in portfolios.items()
         ), []))
         for symbol, bar in bars.items():
             history[symbol].append({key: value for key, value in bar.items() if key not in {"timestamp", "symbol"}})
+            if len(history[symbol]) > max(61, config.warmup_bars):
+                del history[symbol][:-max(61, config.warmup_bars)]
         if last_decision and (ts - last_decision) < timedelta(minutes=config.decision_interval_minutes):
             continue
         ready = {symbol: values for symbol, values in history.items() if len(values) >= config.warmup_bars}
@@ -544,20 +610,26 @@ def run_replay(rows: list[dict], config: ReplayConfig | None = None, progress_ca
 
         session_date = ts.astimezone(MARKET_TZ).date().isoformat()
         completed_sessions.add(session_date)
-        if progress_callback and (timestamp_index % 25 == 0 or timestamp_index == len(timestamps)):
+        if progress_callback and (
+            timestamp_index % 25 == 0 or timestamp_index == regular_timestamp_count
+        ):
             progress_callback({
                 "completed_timestamps": timestamp_index,
-                "total_timestamps": len(timestamps),
+                "total_timestamps": regular_timestamp_count,
                 "completed_cycles": cycle_id,
                 "completed_sessions": len(completed_sessions),
                 "completed_session": session_date,
-                "percent_complete": round(timestamp_index / len(timestamps) * 100.0, 2) if timestamps else 100.0,
+                "percent_complete": round(
+                    timestamp_index / regular_timestamp_count * 100.0, 2
+                ) if regular_timestamp_count else 100.0,
                 "elapsed_seconds": round(time.monotonic() - started, 1),
             })
 
-    dataset = _future_labels(feature_rows, price_index)
+    dataset = _future_labels(feature_rows, price_index, collection("dataset"))
     daily = _daily_summaries(cycle_rows, order_rows)
     session_dates = sorted({row["session_date"] for row in feature_rows})
+    if isinstance(feature_rows, SpilledRows):
+        feature_rows.close()
     first_cycle_by_session = {}
     for row in cycle_rows:
         first_cycle_by_session.setdefault(row["session_date"], _timestamp(row["timestamp"]))
@@ -599,7 +671,7 @@ def run_replay(rows: list[dict], config: ReplayConfig | None = None, progress_ca
     }
 
 
-def _write_csv(path: Path, rows: list[dict]) -> None:
+def _write_csv(path: Path, rows) -> None:
     if not rows:
         path.write_text("", encoding="utf-8")
         return
