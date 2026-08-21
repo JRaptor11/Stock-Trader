@@ -2839,9 +2839,10 @@ def run_opening_live_fallback_shadow(
             timeframe_seconds=(
                 timeframe_seconds
             ),
-            required_symbols=(
-                required_live_symbols
-            ),
+        required_symbols=(
+            required_live_symbols
+        ),
+        expected_symbols=symbols,
         )
     )
 
@@ -4763,6 +4764,7 @@ def run_live_strategy_shadow_comparison(
         live_bars_by_symbol,
         timeframe_seconds=timeframe_seconds,
         required_symbols=minimum_cohort_symbols,
+        expected_symbols=symbols,
     )
     if live_cohort.get("status") == "ready":
         live_bars_by_symbol, live_bar_counts, live_prices = _trim_live_inputs_to_cohort(
@@ -4909,6 +4911,11 @@ def run_live_strategy_shadow_comparison(
         "live_cohort_is_partial": cohort_is_partial,
         "live_cohort_missing_symbols": missing_cohort_symbols,
         "live_cohort_required_symbol_count": minimum_cohort_symbols,
+        "live_cohort_expected_symbol_count": live_cohort.get("expected_symbol_count"),
+        "live_cohort_coverage_pct": live_cohort.get("coverage_pct"),
+        "live_cohort_full_universe_parity": bool(
+            live_cohort.get("full_universe_parity")
+        ),
     }
 
     # True comparison rule:
@@ -5566,6 +5573,7 @@ def run_live_strategy_shadow_comparison(
         "strategy_parity_verified": bool(
             parity_evidence.get("ranker_code_match")
             and parity_evidence.get("layer2_config_match")
+            and live_cohort.get("full_universe_parity")
         ),
         "error": None,
     }
@@ -5584,7 +5592,11 @@ def run_live_strategy_shadow_comparison(
             layer3_plan=live_plan,
             layer3_summary=research_summary,
             source_bar_timestamp=live_source_bar_timestamp,
-            source="LIVE",
+            source=(
+                "LIVE"
+                if live_cohort.get("full_universe_parity")
+                else "LIVE_PARTIAL"
+            ),
         )
     except Exception:
         logging.warning(

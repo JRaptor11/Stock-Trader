@@ -3036,6 +3036,22 @@ def run_layer3_dry_run(
             "execution_blocked"
         )
     )
+    disappearance_quarantine = (
+        app_state.get("portfolio_reconcile", {})
+        .get("position_disappearance_quarantine", {}) or {}
+    )
+    disappearance_execution_blocked = bool(
+        disappearance_quarantine.get("execution_blocked")
+    )
+    strategy_execution_blocked_reason = (
+        "restart_recovery"
+        if recovery_execution_blocked
+        else (
+            "unexplained_broker_position_disappearance"
+            if disappearance_execution_blocked
+            else None
+        )
+    )
 
     (
         seen_counts,
@@ -3167,6 +3183,7 @@ def run_layer3_dry_run(
         rolling_limits_active=bool(
             market_is_open
             and not recovery_execution_blocked
+            and not disappearance_execution_blocked
         ),
         target_hysteresis_by_symbol=(
             hysteresis_result[
@@ -3275,10 +3292,15 @@ def run_layer3_dry_run(
                 "seeded"
             )
         ),
-        "strategy_execution_blocked_reason": (
-            "restart_recovery"
-            if recovery_execution_blocked
-            else None
+        "strategy_execution_blocked_reason": strategy_execution_blocked_reason,
+        "position_disappearance_quarantine_active": bool(
+            disappearance_quarantine.get("active")
+        ),
+        "position_disappearance_quarantine_symbols": list(
+            disappearance_quarantine.get("symbols", []) or []
+        ),
+        "position_disappearance_quarantine_confirmed_symbols": list(
+            disappearance_quarantine.get("confirmed_symbols", []) or []
         ),
 
         "market_is_open": market_is_open,

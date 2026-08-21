@@ -11,6 +11,19 @@ class NewShadowDiagnosticTests(unittest.TestCase):
         cohort = latest_completed_live_cohort(bars, timeframe_seconds=300, required_symbols=3)
         self.assertEqual(cohort["status"], "ready")
         self.assertEqual(cohort["symbols"], ["AAPL", "AMD", "AMZN"])
+        self.assertFalse(cohort["full_universe_parity"])
+        self.assertEqual(cohort["missing_symbols"], ["COST"])
+        self.assertEqual(cohort["coverage_pct"], 75.0)
+
+    def test_full_live_cohort_is_marked_parity_eligible(self):
+        symbols = ["AAPL", "AMD", "COST"]
+        bars = {symbol: [{"bucket_start": 1000.0}] for symbol in symbols}
+        cohort = latest_completed_live_cohort(
+            bars, timeframe_seconds=300, required_symbols=3,
+            expected_symbols=symbols,
+        )
+        self.assertTrue(cohort["full_universe_parity"])
+        self.assertEqual(cohort["coverage_pct"], 100.0)
 
     def test_live_cohort_waits_below_configured_minimum(self):
         bars = {"AAPL": [{"bucket_start": 1000.0}], "AMD": [{"bucket_start": 1000.0}]}

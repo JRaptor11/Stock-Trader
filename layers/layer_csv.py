@@ -192,6 +192,9 @@ LAYER_CYCLE_FIELDS = [
     "restart_recovery_baseline_symbols",
     "restart_recovery_baseline_seeded_this_cycle",
     "strategy_execution_blocked_reason",
+    "position_disappearance_quarantine_active",
+    "position_disappearance_quarantine_symbols",
+    "position_disappearance_quarantine_confirmed_symbols",
 
     "bootstrap_confirmation_applied",
     "bootstrap_confirmation_blocked_reason",
@@ -783,6 +786,9 @@ LAYER_LIVE_STRATEGY_SHADOW_CYCLE_FIELDS = [
     "live_cohort_is_partial",
     "live_cohort_missing_symbols",
     "live_cohort_required_symbol_count",
+    "live_cohort_expected_symbol_count",
+    "live_cohort_coverage_pct",
+    "live_cohort_full_universe_parity",
     "symbol_count",
     "rest_ranked_count",
     "live_ranked_count",
@@ -2578,6 +2584,15 @@ def append_layer_cycle_row(
         ),
         "strategy_execution_blocked_reason": layer3_summary.get(
             "strategy_execution_blocked_reason"
+        ),
+        "position_disappearance_quarantine_active": layer3_summary.get(
+            "position_disappearance_quarantine_active"
+        ),
+        "position_disappearance_quarantine_symbols": layer3_summary.get(
+            "position_disappearance_quarantine_symbols"
+        ),
+        "position_disappearance_quarantine_confirmed_symbols": layer3_summary.get(
+            "position_disappearance_quarantine_confirmed_symbols"
         ),
 
         "bootstrap_confirmation_applied": layer3_summary.get(

@@ -10,6 +10,7 @@ from core.state import app_state
 
 
 RECONCILE_PENDING_ORDER_GRACE_SECONDS = 5 * 60
+POSITION_DISAPPEARANCE_CONFIRMATIONS = 2
 
 
 BROKER_SNAPSHOT_TIMEOUT_SECONDS = 15.0
@@ -248,10 +249,90 @@ def _open_orders_by_symbol(open_orders_by_id: dict) -> dict:
     return by_symbol
 
 
+def _update_position_disappearance_quarantine(
+    *,
+    previous_positions: dict,
+    broker_positions: dict,
+    broker_open_orders_by_symbol: dict,
+) -> dict:
+    """Track positions that vanish without corresponding local sell intent.
+
+    Broker position endpoints can occasionally omit an otherwise valid holding.
+    A missing symbol is therefore quarantined instead of immediately being
+    interpreted as a completed sale. Ordinary strategy execution is blocked
+    while the discrepancy remains unresolved; fail-safe execution is gated
+    separately and remains available.
+    """
+    state = app_state.setdefault("portfolio_reconcile", {})
+    quarantine = state.setdefault("position_disappearance_quarantine", {})
+    entries = quarantine.setdefault("entries", {})
+    open_trades = app_state.setdefault("open_trades", {})
+    now = _iso_now()
+
+    active_local_symbols = {
+        _norm_symbol(symbol)
+        for symbol, row in open_trades.items()
+        if isinstance(row, dict)
+        and str(row.get("status", "")).lower().strip()
+        in {"filled", "synced", "pending_sell"}
+    }
+    disappeared = (
+        set(previous_positions or {}) | active_local_symbols
+    ) - set(broker_positions or {})
+    for symbol in sorted(disappeared):
+        local = open_trades.get(symbol)
+        local_status = str((local or {}).get("status", "")).lower().strip()
+        open_sells = [
+            row for row in broker_open_orders_by_symbol.get(symbol, [])
+            if str(row.get("side") or "").lower() == "sell"
+        ]
+        # A completed bot sell normally clears open_trades. A pending/open sell
+        # also explains why the position may disappear between snapshots.
+        explained = not isinstance(local, dict) or local_status == "pending_sell" or bool(open_sells)
+        if explained:
+            entries.pop(symbol, None)
+            continue
+
+        entry = entries.setdefault(symbol, {
+            "symbol": symbol,
+            "detected_at": now,
+            "consecutive_missing_snapshots": 0,
+            "prior_position": previous_positions.get(symbol, {}),
+            "local_status": local_status,
+        })
+        entry["last_missing_at"] = now
+        entry["consecutive_missing_snapshots"] = int(
+            entry.get("consecutive_missing_snapshots", 0) or 0
+        ) + 1
+        entry["confirmed"] = (
+            entry["consecutive_missing_snapshots"]
+            >= POSITION_DISAPPEARANCE_CONFIRMATIONS
+        )
+
+    # A reappearing broker position resolves the quarantine automatically.
+    for symbol in list(entries):
+        if symbol in broker_positions:
+            entries.pop(symbol, None)
+
+    quarantine.update({
+        "active": bool(entries),
+        "execution_blocked": bool(entries),
+        "symbols": sorted(entries),
+        "confirmed_symbols": sorted(
+            symbol for symbol, entry in entries.items()
+            if entry.get("confirmed")
+        ),
+        "updated_at": now,
+        "reason": "unexplained_broker_position_disappearance" if entries else None,
+    })
+    return quarantine
+
+
 def _sync_broker_positions_to_open_trades(
     *,
     broker_positions: dict,
     broker_open_orders_by_symbol: dict,
+    quarantined_symbols: set[str] | None = None,
     repair: bool,
 ) -> tuple[list[dict], list[dict]]:
     """
@@ -266,6 +347,7 @@ def _sync_broker_positions_to_open_trades(
     repairs = []
 
     open_trades = app_state.setdefault("open_trades", {})
+    quarantined_symbols = set(quarantined_symbols or set())
     broker_symbols = set(broker_positions.keys())
     local_symbols = set(open_trades.keys())
 
@@ -369,6 +451,15 @@ def _sync_broker_positions_to_open_trades(
 
         status = str(local.get("status", "")).lower().strip()
         broker_orders_for_symbol = broker_open_orders_by_symbol.get(symbol, [])
+
+        if symbol in quarantined_symbols:
+            mismatches.append({
+                "type": "broker_position_disappearance_quarantined",
+                "symbol": symbol,
+                "local_status": status,
+                "broker_open_orders": len(broker_orders_for_symbol),
+            })
+            continue
 
         if status in {"filled", "synced", "pending_sell"}:
             mismatches.append({
@@ -497,6 +588,8 @@ async def reconcile_portfolio_once(repair: bool = True) -> dict:
         account_snapshot, broker_positions, broker_open_orders = await _fetch_broker_snapshot()
         broker_open_orders_by_symbol = _open_orders_by_symbol(broker_open_orders)
 
+        previous_snapshot = state.get("broker_snapshot", {}) or {}
+        previous_positions = previous_snapshot.get("positions", {}) or {}
         state["broker_snapshot"] = {
             "timestamp": _iso_now(),
             "account": account_snapshot,
@@ -504,9 +597,16 @@ async def reconcile_portfolio_once(repair: bool = True) -> dict:
             "open_orders": broker_open_orders,
         }
 
+        disappearance_quarantine = _update_position_disappearance_quarantine(
+            previous_positions=previous_positions,
+            broker_positions=broker_positions,
+            broker_open_orders_by_symbol=broker_open_orders_by_symbol,
+        )
+
         position_mismatches, repairs = _sync_broker_positions_to_open_trades(
             broker_positions=broker_positions,
             broker_open_orders_by_symbol=broker_open_orders_by_symbol,
+            quarantined_symbols=set(disappearance_quarantine.get("symbols", [])),
             repair=repair,
         )
 
@@ -527,6 +627,12 @@ async def reconcile_portfolio_once(repair: bool = True) -> dict:
             "local_open_order_count": len(app_state.setdefault("open_orders", {})),
             "mismatch_count": len(mismatches),
             "repair_count": len(repairs),
+            "position_disappearance_quarantine_active": bool(
+                disappearance_quarantine.get("active")
+            ),
+            "position_disappearance_symbols": list(
+                disappearance_quarantine.get("symbols", [])
+            ),
             "duration_seconds": round(time.time() - started, 3),
         }
 
