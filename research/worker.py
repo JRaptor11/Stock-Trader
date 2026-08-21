@@ -130,10 +130,17 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
         if spill.exists():
             shutil.rmtree(spill)
         staging.replace(output)
-        _write_json_atomic(status_path, {
-            **base_status, "job_id": job_id, "status": "complete", "started_at": started_at,
+        completed_status = {
+            **latest_status, "job_id": job_id, "status": "complete", "started_at": started_at,
             "completed_at": datetime.now(UTC).isoformat(), "output": str(output),
-        })
+            "percent_complete": 100.0,
+        }
+        for stale_key in (
+            "error", "error_type", "traceback", "failed_at", "failure_class",
+            "retryable", "retries_exhausted", "retries_remaining", "next_retry_at",
+        ):
+            completed_status.pop(stale_key, None)
+        _write_json_atomic(status_path, completed_status)
         return output
     except Exception as exc:
         if spill.exists():

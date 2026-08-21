@@ -53,6 +53,8 @@ class ResearchWorkerTests(unittest.TestCase):
             manifest = json.loads((output / "replay_manifest.json").read_text(encoding="utf-8"))
             status = json.loads((results / "smoke-test.status.json").read_text(encoding="utf-8"))
             self.assertEqual(status["status"], "complete")
+            self.assertEqual(status["percent_complete"], 100.0)
+            self.assertNotIn("failure_class", status)
             self.assertEqual(manifest["service_mode"], "historical_research")
             self.assertEqual(manifest["git_commit"], "test-commit")
             self.assertEqual(manifest["experiment"]["job_id"], "smoke-test")
