@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -144,6 +145,35 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _upload_status_snapshot(
+    status_path: Path,
+    *,
+    durable_key: str,
+    previous_digest: str | None = None,
+) -> str | None:
+    """Upload an immutable status snapshot without disrupting job execution."""
+    snapshot = status_path.with_name(
+        f".{status_path.name}.{uuid.uuid4().hex}.uploading"
+    )
+    try:
+        payload = status_path.read_bytes()
+        digest = hashlib.sha256(payload).hexdigest()
+        if digest == previous_digest:
+            return previous_digest
+        snapshot.write_bytes(payload)
+        runtime.store.upload_file(snapshot, durable_key)
+        return digest
+    except Exception:
+        logging.warning(
+            "Could not upload research status snapshot: %s",
+            status_path.name,
+            exc_info=True,
+        )
+        return previous_digest
+    finally:
+        snapshot.unlink(missing_ok=True)
+
+
 @app.api_route("/healthz", methods=["GET", "HEAD"])
 @app.api_route("/api/public/uptime-health", methods=["GET", "HEAD"])
 def health() -> dict:
@@ -212,10 +242,11 @@ def _run_job(job_id: str, job_path: Path) -> None:
             last_uploaded_digest = None
             while True:
                 if status_path.is_file() and runtime.store.durable:
-                    digest = _sha256_file(status_path)
-                    if digest != last_uploaded_digest:
-                        runtime.store.upload_file(status_path, f"status/{status_path.name}")
-                        last_uploaded_digest = digest
+                    last_uploaded_digest = _upload_status_snapshot(
+                        status_path,
+                        durable_key=f"status/{status_path.name}",
+                        previous_digest=last_uploaded_digest,
+                    )
                 try:
                     process.wait(timeout=runtime.status_upload_seconds)
                     break
@@ -279,10 +310,10 @@ def _run_job(job_id: str, job_path: Path) -> None:
     finally:
         status_path = runtime.results_root / f"{job_id}.status.json"
         if status_path.is_file():
-            try:
-                runtime.store.upload_file(status_path, f"status/{status_path.name}")
-            except Exception:
-                logging.exception("Could not upload durable job status: %s", job_id)
+            _upload_status_snapshot(
+                status_path,
+                durable_key=f"status/{status_path.name}",
+            )
         if runtime.store.durable and runtime.cleanup_local_artifacts:
             _cleanup_local_job_artifacts(job_id, job_path)
         with runtime.queue_lock:

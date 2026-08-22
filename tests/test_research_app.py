@@ -1,5 +1,6 @@
 import csv
 import io
+import hashlib
 import os
 import tempfile
 import time
@@ -10,11 +11,57 @@ from unittest.mock import patch
 
 try:
     from fastapi.testclient import TestClient
-    from research.app import app, runtime
+    from research.app import app, runtime, _upload_status_snapshot
 except ImportError:
     TestClient = None
     app = None
     runtime = None
+    _upload_status_snapshot = None
+
+
+class _SnapshotStore:
+    durable = True
+
+    def __init__(self, source: Path, *, fail=False):
+        self.source = source
+        self.fail = fail
+        self.uploaded = None
+
+    def upload_file(self, path, _key):
+        # Simulate the live worker replacing the original status while the
+        # coordinator uploads. The immutable snapshot must remain unchanged.
+        self.source.write_text('{"status":"newer"}', encoding="utf-8")
+        if self.fail:
+            raise RuntimeError("transient upload failure")
+        self.uploaded = Path(path).read_bytes()
+
+
+@unittest.skipIf(_upload_status_snapshot is None, "FastAPI dependencies are not installed")
+class StatusSnapshotTests(unittest.TestCase):
+    def test_status_upload_uses_immutable_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            status_path = Path(directory) / "job.status.json"
+            original = b'{"status":"running"}'
+            status_path.write_bytes(original)
+            store = _SnapshotStore(status_path)
+            with patch.object(runtime, "store", store):
+                digest = _upload_status_snapshot(
+                    status_path, durable_key="status/job.status.json"
+                )
+            self.assertEqual(original, store.uploaded)
+            self.assertEqual(hashlib.sha256(original).hexdigest(), digest)
+
+    def test_status_upload_failure_is_nonfatal_and_retriable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            status_path = Path(directory) / "job.status.json"
+            status_path.write_text('{"status":"running"}', encoding="utf-8")
+            store = _SnapshotStore(status_path, fail=True)
+            with patch.object(runtime, "store", store):
+                digest = _upload_status_snapshot(
+                    status_path, durable_key="status/job.status.json",
+                    previous_digest="previous",
+                )
+            self.assertEqual("previous", digest)
 
 
 @unittest.skipIf(TestClient is None, "FastAPI test dependencies are not installed")
