@@ -114,6 +114,18 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
         "job_path": str(job_path), "bars_path": str(bars_path),
         "heartbeat_at": started_at, **_resource_snapshot(),
     }
+    # A retry may reuse the durable status document from an earlier attempt.
+    # Do not expose stale failure, completion, or progress metadata as if it
+    # described the newly started worker.
+    for stale_key in (
+        "error", "error_type", "traceback", "failed_at", "failure_class",
+        "retryable", "retries_exhausted", "retries_remaining",
+        "next_retry_at", "completed_at", "archive", "durable_uri", "output",
+        "completed_cycles", "completed_session", "completed_sessions",
+        "completed_timestamps", "elapsed_seconds", "percent_complete",
+        "stage", "stage_message",
+    ):
+        base_status.pop(stale_key, None)
     _write_json_atomic(status_path, base_status)
     latest_status = dict(base_status)
     try:

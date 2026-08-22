@@ -67,6 +67,41 @@ class ResearchWorkerTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 execute_job("missing.json", ".", ".")
 
+    def test_retry_start_clears_stale_failure_and_progress_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data, results = root / "data", root / "results"
+            data.mkdir()
+            results.mkdir()
+            bars = data / "bars.csv"
+            self._write_bars(bars)
+            job = root / "retry.json"
+            job.write_text(json.dumps({
+                "job_id": "retry-test", "bars_csv": "bars.csv",
+                "replay_config": {
+                    "warmup_bars": 61, "min_train_sessions": 1,
+                    "test_sessions": 1, "require_benchmark": False,
+                },
+            }), encoding="utf-8")
+            (results / "retry-test.status.json").write_text(json.dumps({
+                "job_id": "retry-test", "attempt_count": 2,
+                "status": "failed", "error": "old failure",
+                "failed_at": "2026-08-22T00:00:00+00:00",
+                "percent_complete": 99.0, "completed_sessions": 600,
+            }), encoding="utf-8")
+            with patch.dict(os.environ, {
+                "SERVICE_MODE": "historical_research",
+                "BROKER_EXECUTION_ENABLED": "false",
+            }, clear=False):
+                execute_job(job, data, results)
+            status = json.loads(
+                (results / "retry-test.status.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual("complete", status["status"])
+            self.assertNotIn("error", status)
+            self.assertNotIn("failed_at", status)
+            self.assertNotEqual(600, status.get("completed_sessions"))
+
     def test_paths_cannot_escape_configured_root(self):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(ValueError):
