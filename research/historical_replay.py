@@ -770,6 +770,7 @@ def write_replay(
     output_dir: str | Path,
     *,
     source_path: str | Path | None = None,
+    source_sha256: str | None = None,
     experiment: dict | None = None,
 ) -> Path:
     output = Path(output_dir)
@@ -787,7 +788,10 @@ def write_replay(
     (output / "benchmark_summary.json").write_text(json.dumps(result["benchmark_summary"], indent=2), encoding="utf-8")
     manifest = {
         "created_at": datetime.now(UTC).isoformat(), "source_path": str(source_path) if source_path else None,
-        "source_sha256": hashlib.sha256(Path(source_path).read_bytes()).hexdigest() if source_path else None,
+        "source_sha256": source_sha256 or (
+            hashlib.sha256(Path(source_path).read_bytes()).hexdigest()
+            if source_path else None
+        ),
         "service_mode": os.getenv("SERVICE_MODE"),
         "git_commit": os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT"),
         "git_branch": os.getenv("RENDER_GIT_BRANCH") or os.getenv("GIT_BRANCH"),

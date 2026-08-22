@@ -7,6 +7,7 @@ imports the trading application, startup lifecycle, or Alpaca trading client.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -47,6 +48,14 @@ def _resolved_child(root: Path, value: str | Path) -> Path:
     if candidate != root and root not in candidate.parents:
         raise ValueError(f"path escapes configured root {root}: {candidate}")
     return candidate
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _write_json_atomic(path: Path, payload: dict) -> None:
@@ -106,8 +115,9 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
         "heartbeat_at": started_at, **_resource_snapshot(),
     }
     _write_json_atomic(status_path, base_status)
+    latest_status = dict(base_status)
     try:
-        latest_status = dict(base_status)
+        source_sha256 = _sha256_file(bars_path)
 
         def update_progress(progress: dict) -> None:
             latest_status.update(progress)
@@ -122,6 +132,7 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
         )
         write_replay(
             result, staging, source_path=bars_path,
+            source_sha256=source_sha256,
             experiment={"job_id": job_id, "job": job, "job_path": str(job_path)},
         )
         for value in result.values():
@@ -148,7 +159,7 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
         if staging.exists():
             shutil.rmtree(staging)
         _write_json_atomic(status_path, {
-            **base_status, "job_id": job_id, "status": "failed", "started_at": started_at,
+            **latest_status, "job_id": job_id, "status": "failed", "started_at": started_at,
             "failed_at": datetime.now(UTC).isoformat(), "error": str(exc),
             "error_type": type(exc).__name__,
             "traceback": traceback.format_exc(),

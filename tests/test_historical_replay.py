@@ -1,4 +1,6 @@
 import csv
+import hashlib
+import json
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -108,6 +110,25 @@ class HistoricalReplayTests(unittest.TestCase):
             self.assertTrue((output / "replay_manifest.json").exists())
             self.assertTrue((output / "ml_dataset.csv").exists())
             self.assertTrue((output / "dataset_quality.json").exists())
+
+    def test_writer_accepts_precomputed_hash_after_cache_cleanup(self):
+        result = run_replay(
+            self._bars(), ReplayConfig(warmup_bars=61, require_benchmark=False)
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "bars.csv"
+            source.write_bytes(b"cached historical bars")
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            source.unlink()
+            output = write_replay(
+                result, root / "output", source_path=source,
+                source_sha256=digest,
+            )
+            manifest = json.loads(
+                (output / "replay_manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(digest, manifest["source_sha256"])
 
     def test_spilled_replay_matches_in_memory_summary_and_outputs(self):
         rows = self._bars()
