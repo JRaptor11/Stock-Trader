@@ -25,6 +25,12 @@ STRATEGIES = {
     "REDESIGN_RESPONSIVE": {
         "target_mode": "legacy", "alpha": 0.40, "max_step": 0.075,
     },
+    # Shadow-only test of fresher LIVE bars with stronger multi-horizon
+    # confirmation and conservative target movement.
+    "LIVE_CONSERVATIVE_CONFIRMATION": {
+        "target_mode": "blend", "alpha": 0.20, "max_step": 0.035,
+        "allowed_sources": ("LIVE",),
+    },
     # These variants intentionally share smoothing/execution settings. Their
     # results therefore isolate target-signal timing instead of conflating a
     # shorter lookback with a faster rebalance policy.
@@ -432,6 +438,9 @@ def run_research_strategy_shadow(
     control_equity = None
     equity_by_strategy = {}
     for name, config in STRATEGIES.items():
+        allowed_sources = tuple(config.get("allowed_sources") or ())
+        if allowed_sources and source not in allowed_sources:
+            continue
         portfolio = state["portfolios"][name]
         if config.get("mode") == "control":
             raw_target, base_decisions = {"_meta": {}}, []
@@ -501,13 +510,18 @@ def run_research_strategy_shadow(
             and str(row.get("side") or "").lower() == "sell"
             and row.get("symbol") in reversal_symbols
         )
+        production_equity = safe_float(layer3_summary.get("equity"), 0.0)
+        production_equity = production_equity if production_equity > 0 else None
         cycle_rows.append({
             "timestamp": timestamp, "cycle_id": cycle_id, "strategy_name": name,
             "source": source,
             "status": "ok", "config_hash": config_hash,
             "source_bar_timestamp": source_bar_timestamp,
-            "production_equity": layer3_summary.get("equity"), "shadow_equity": round(equity, 2),
-            "shadow_minus_production_equity": round(equity - safe_float(layer3_summary.get("equity"), 0.0), 2),
+            "production_equity": production_equity, "shadow_equity": round(equity, 2),
+            "shadow_minus_production_equity": (
+                round(equity - production_equity, 2)
+                if production_equity is not None else None
+            ),
             "shadow_minus_control_equity": (
                 round(equity - control_equity, 2) if control_equity is not None else 0.0
             ),

@@ -150,6 +150,13 @@ class ShadowDiagnosticParityTests(unittest.TestCase):
             self.assertEqual(paired["sizing_mode"], "moderate")
             self.assertEqual(paired["target_mode"], STRATEGIES[name]["target_mode"])
 
+    def test_live_conservative_confirmation_is_live_only(self):
+        config = STRATEGIES["LIVE_CONSERVATIVE_CONFIRMATION"]
+        self.assertEqual(("LIVE",), config["allowed_sources"])
+        self.assertEqual("blend", config["target_mode"])
+        self.assertEqual(0.20, config["alpha"])
+        self.assertEqual(0.035, config["max_step"])
+
 
 if __name__ == "__main__":
     unittest.main()
