@@ -133,6 +133,13 @@ class ExecutionAnalyticsTests(unittest.TestCase):
         self.assertEqual(
             0, result["attribution_coverage"]["unknown_order_count"]
         )
+        reversal = result["direction_reversal_diagnostics"]
+        self.assertEqual(1, reversal["event_count"])
+        self.assertEqual(0, reversal["rapid_reversal_within_30m_count"])
+        self.assertEqual("AMD", reversal["events"][0]["symbol"])
+        self.assertAlmostEqual(-3.6363636364, reversal["events"][0][
+            "price_change_since_previous_fill_pct"
+        ])
 
     def test_intraday_thresholds_include_exited_positions(self):
         snapshots = {

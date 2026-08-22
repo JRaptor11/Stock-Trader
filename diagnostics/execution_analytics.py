@@ -208,6 +208,8 @@ def build_execution_analytics(
     })
 
     enriched_orders = []
+    reversal_events = []
+    previous_order_by_symbol: dict[str, dict] = {}
     for order_index, order in enumerate(orders):
         symbol = str(order.get("symbol") or "").upper()
         side = str(order.get("side") or "").lower()
@@ -235,7 +237,11 @@ def build_execution_analytics(
                 else "first_order_mark_to_close_pnl"
             )
             metric[key] += mark_to_close
-        enriched_orders.append({
+        previous_order = previous_order_by_symbol.get(symbol)
+        is_direction_reversal = bool(
+            previous_order and previous_order.get("side") != side
+        )
+        enriched_order = {
             "order_index": order_index,
             "order_id": order.get("id"),
             "symbol": symbol,
@@ -257,7 +263,40 @@ def build_execution_analytics(
             "trade_attribution_evidence": execution.get(
                 "trade_attribution_evidence"
             ),
-        })
+            "is_direction_reversal": is_direction_reversal,
+        }
+        enriched_orders.append(enriched_order)
+        if is_direction_reversal:
+            current_at = _parse_timestamp(enriched_order["filled_at"])
+            previous_at = _parse_timestamp(previous_order.get("filled_at"))
+            seconds_since_previous = (
+                (current_at - previous_at).total_seconds()
+                if current_at is not None and previous_at is not None else None
+            )
+            previous_price = _safe_float(previous_order.get("filled_avg_price"))
+            reversal_events.append({
+                "symbol": symbol,
+                "previous_side": previous_order.get("side"),
+                "reversal_side": side,
+                "previous_filled_at": previous_order.get("filled_at"),
+                "reversal_filled_at": enriched_order["filled_at"],
+                "seconds_since_previous_order": seconds_since_previous,
+                "previous_fill_price": previous_price,
+                "reversal_fill_price": price,
+                "price_change_since_previous_fill_pct": (
+                    (price - previous_price) / previous_price * 100
+                    if previous_price > 0 else None
+                ),
+                "reversal_notional": notional,
+                "reversal_mark_to_close_pnl": mark_to_close,
+                "trade_attribution": attribution,
+                "trade_attribution_detail": enriched_order["trade_attribution_detail"],
+                "rapid_reversal_within_30m": bool(
+                    seconds_since_previous is not None
+                    and 0 <= seconds_since_previous <= 1800
+                ),
+            })
+        previous_order_by_symbol[symbol] = enriched_order
         position = state.setdefault(
             symbol,
             {"qty": 0.0, "avg_entry_price": 0.0},
@@ -809,6 +848,36 @@ def build_execution_analytics(
         "small_follow_up_counterfactuals": follow_up_counterfactuals,
         "trade_attribution": dict(attribution_metrics),
         "trade_attribution_detail": dict(attribution_detail_metrics),
+        "direction_reversal_diagnostics": {
+            "event_count": len(reversal_events),
+            "rapid_reversal_within_30m_count": sum(
+                row["rapid_reversal_within_30m"] for row in reversal_events
+            ),
+            "reversal_notional": sum(row["reversal_notional"] for row in reversal_events),
+            "reversal_mark_to_close_pnl": sum(
+                row["reversal_mark_to_close_pnl"] or 0 for row in reversal_events
+            ),
+            "by_symbol": [
+                {
+                    "symbol": symbol,
+                    "reversal_count": len(symbol_events),
+                    "rapid_reversal_within_30m_count": sum(
+                        row["rapid_reversal_within_30m"] for row in symbol_events
+                    ),
+                    "reversal_notional": sum(row["reversal_notional"] for row in symbol_events),
+                    "reversal_mark_to_close_pnl": sum(
+                        row["reversal_mark_to_close_pnl"] or 0 for row in symbol_events
+                    ),
+                }
+                for symbol in sorted({row["symbol"] for row in reversal_events})
+                for symbol_events in [[row for row in reversal_events if row["symbol"] == symbol]]
+            ],
+            "events": reversal_events,
+            "method": (
+                "A reversal is a filled order whose side differs from the previous "
+                "fill for that symbol; P&L marks the reversal fill to the close."
+            ),
+        },
         "fill_attribution": enriched_orders,
         "after_hours_attribution": {
             "available": bool(after_hours),
