@@ -11,9 +11,11 @@ import math
 import os
 import platform
 import statistics
+import sys
 import time
 import uuid
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -29,6 +31,37 @@ from research.walk_forward import build_walk_forward_folds
 UTC = timezone.utc
 MARKET_TZ = ZoneInfo("America/New_York")
 REQUIRED_COLUMNS = {"timestamp", "symbol", "open", "high", "low", "close", "volume"}
+
+
+@dataclass(frozen=True, slots=True)
+class BarRow(Mapping):
+    """Compact immutable OHLCV row used for large hosted replays."""
+
+    timestamp: datetime
+    symbol: str
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+    trade_count: float
+    vwap: float
+
+    _fields = (
+        "timestamp", "symbol", "open", "high", "low", "close", "volume",
+        "trade_count", "vwap",
+    )
+
+    def __getitem__(self, key):
+        if key not in self._fields:
+            raise KeyError(key)
+        return getattr(self, key)
+
+    def __iter__(self):
+        return iter(self._fields)
+
+    def __len__(self):
+        return len(self._fields)
 
 
 class SpilledRows:
@@ -126,23 +159,27 @@ def load_bar_csv(path: str | Path) -> list[dict]:
         missing = REQUIRED_COLUMNS - set(reader.fieldnames or [])
         if missing:
             raise ValueError(f"bar CSV missing required columns: {sorted(missing)}")
-        rows, seen = [], set()
+        rows = []
+        timestamp_cache = {}
         for line, raw in enumerate(reader, start=2):
             source_timestamp = datetime.fromisoformat(
                 str(raw["timestamp"]).replace("Z", "+00:00")
             )
             if source_timestamp.tzinfo is None:
                 raise ValueError(f"timestamp missing UTC offset at line {line}")
-            ts = _timestamp(raw["timestamp"])
-            symbol = str(raw["symbol"] or "").upper().strip()
-            key = (ts, symbol)
-            if not symbol or key in seen:
-                raise ValueError(f"invalid or duplicate bar at line {line}: {key}")
-            seen.add(key)
-            row = {"timestamp": ts, "symbol": symbol}
+            timestamp_text = str(raw["timestamp"])
+            ts = timestamp_cache.get(timestamp_text)
+            if ts is None:
+                ts = source_timestamp.astimezone(UTC)
+                timestamp_cache[timestamp_text] = ts
+            symbol = sys.intern(str(raw["symbol"] or "").upper().strip())
+            if not symbol:
+                raise ValueError(f"invalid bar at line {line}: missing symbol")
+            values = {}
             for name in ("open", "high", "low", "close", "volume", "trade_count", "vwap"):
                 value = raw.get(name)
-                row[name] = float(value) if value not in (None, "") else 0.0
+                values[name] = float(value) if value not in (None, "") else 0.0
+            row = BarRow(timestamp=ts, symbol=symbol, **values)
             if min(row["open"], row["high"], row["low"], row["close"]) <= 0:
                 raise ValueError(f"non-positive OHLC value at line {line}")
             if row["high"] < max(row["open"], row["close"], row["low"]):
@@ -150,7 +187,13 @@ def load_bar_csv(path: str | Path) -> list[dict]:
             if row["low"] > min(row["open"], row["close"], row["high"]):
                 raise ValueError(f"invalid low at line {line}")
             rows.append(row)
-    return sorted(rows, key=lambda row: (row["timestamp"], row["symbol"]))
+    rows.sort(key=lambda row: (row["timestamp"], row["symbol"]))
+    for previous, current in zip(rows, rows[1:]):
+        previous_key = (previous["timestamp"], previous["symbol"])
+        current_key = (current["timestamp"], current["symbol"])
+        if previous_key == current_key:
+            raise ValueError(f"invalid or duplicate bar: {current_key}")
+    return rows
 
 
 def _is_regular_session(ts: datetime) -> bool:
@@ -265,14 +308,11 @@ def _execute_pending(
     return rows
 
 
-def _future_labels(features, price_index: dict, output=None):
+def _future_labels(features, bars_by_symbol: dict, output=None):
     output = output if output is not None else []
     horizons = {"10m": 10, "30m": 30, "60m": 60}
-    by_symbol = defaultdict(list)
-    for (ts, symbol), bar in price_index.items():
-        by_symbol[symbol].append((ts, bar))
     series = {}
-    for symbol, values in by_symbol.items():
+    for symbol, values in bars_by_symbol.items():
         values.sort(key=lambda item: item[0])
         series[symbol] = (
             values,
@@ -483,9 +523,9 @@ def run_replay(
         for index in range(len(rows) - 1)
     ):
         rows = sorted(rows, key=lambda row: (row["timestamp"], row["symbol"]))
-    price_index = {}
+    all_bars_by_symbol = defaultdict(list)
     for row in rows:
-        price_index[(row["timestamp"], row["symbol"])] = row
+        all_bars_by_symbol[row["symbol"]].append((row["timestamp"], row))
     all_symbols = sorted({row["symbol"] for row in rows})
     configured = {str(symbol).upper() for symbol in config.candidate_symbols}
     symbols = sorted(configured) if configured else [
@@ -648,7 +688,7 @@ def run_replay(
 
     if progress_callback:
         progress_callback({"stage": "building_future_labels", "percent_complete": 100.0})
-    dataset = _future_labels(feature_rows, price_index, collection("dataset"))
+    dataset = _future_labels(feature_rows, all_bars_by_symbol, collection("dataset"))
     if progress_callback:
         progress_callback({"stage": "building_daily_summaries"})
     daily = _daily_summaries(cycle_rows, order_rows)
