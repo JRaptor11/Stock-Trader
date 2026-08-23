@@ -552,6 +552,34 @@ def resume_queue() -> dict:
     return {"status": "resumed", "cleared_failures": cleared, "active_job_id": runtime.active_job_id}
 
 
+@app.post("/api/jobs/{job_id}/supersede", dependencies=[Depends(require_token)])
+def supersede_job(job_id: str) -> dict:
+    """Retire obsolete queued/retry work without deleting its audit history."""
+    job_id = _safe_name(job_id)
+    status_path = runtime.results_root / f"{job_id}.status.json"
+    with runtime.queue_lock:
+        if runtime.active_job_id == job_id:
+            raise HTTPException(
+                status_code=409,
+                detail="a running job cannot be superseded; wait for it to stop or restart the service",
+            )
+        if not status_path.is_file():
+            raise HTTPException(status_code=404, detail="job status is not available")
+        payload = json.loads(status_path.read_text(encoding="utf-8"))
+        if payload.get("status") == "complete":
+            raise HTTPException(status_code=409, detail="a completed job cannot be superseded")
+        payload.update({
+            "status": "superseded",
+            "blocks_queue": False,
+            "next_retry_at": None,
+            "superseded_at": datetime.now(timezone.utc).isoformat(),
+        })
+        _write_json_atomic(status_path, payload)
+        runtime.store.upload_file(status_path, f"status/{status_path.name}")
+        _start_next_job()
+    return {"job_id": job_id, "status": "superseded", "active_job_id": runtime.active_job_id}
+
+
 @app.get("/api/jobs", dependencies=[Depends(require_token)])
 def list_jobs() -> list[dict]:
     return [

@@ -139,6 +139,33 @@ class ResearchAppTests(unittest.TestCase):
                 runtime.initialize()
         runtime.active_job_id = None
 
+    def test_supersede_retires_nonrunning_job_and_preserves_audit_status(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = {
+                "SERVICE_MODE": "historical_research",
+                "BROKER_EXECUTION_ENABLED": "false",
+                "RESEARCH_API_TOKEN": self.token,
+                "RESEARCH_DATA_DIR": str(root / "data"),
+                "RESEARCH_JOB_DIR": str(root / "jobs"),
+                "RESEARCH_RESULTS_DIR": str(root / "results"),
+            }
+            with patch.dict(os.environ, env, clear=False), TestClient(app) as client:
+                headers = {"Authorization": f"Bearer {self.token}"}
+                status_path = runtime.results_root / "obsolete.status.json"
+                status_path.write_text(json.dumps({
+                    "job_id": "obsolete", "status": "retry_wait",
+                    "blocks_queue": False,
+                    "next_retry_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+                }), encoding="utf-8")
+                response = client.post("/api/jobs/obsolete/supersede", headers=headers)
+                self.assertEqual(response.status_code, 200, response.text)
+                payload = json.loads(status_path.read_text(encoding="utf-8"))
+                self.assertEqual(payload["status"], "superseded")
+                self.assertIsNone(payload["next_retry_at"])
+                self.assertIn("superseded_at", payload)
+            runtime.active_job_id = None
+
 
 if __name__ == "__main__":
     unittest.main()
