@@ -7,7 +7,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from research.historical_replay import (
-    ReplayConfig, SpilledRows, _walk_forward_results, load_bar_csv, run_replay, write_replay,
+    ReplayConfig, SpilledRows, _future_labels, _walk_forward_results,
+    load_bar_csv, run_replay, write_replay,
 )
 from research.replay_parity import compare_replay_to_live
 from research.walk_forward import build_walk_forward_folds
@@ -43,6 +44,26 @@ class HistoricalReplayTests(unittest.TestCase):
         self.assertGreater(first_order["timestamp"], first_order["source_bar_timestamp"])
         self.assertGreaterEqual(first_order["timestamp"], first_order["decision_available_at"])
         self.assertTrue(result["daily"])
+
+    def test_future_label_stage_reports_progress_without_changing_rows(self):
+        bars = self._bars(14)
+        by_symbol = {}
+        for row in bars:
+            by_symbol.setdefault(row["symbol"], []).append(
+                (row["timestamp"], row)
+            )
+        features = [{
+            "timestamp": row["timestamp"].isoformat(),
+            "symbol": row["symbol"], "close": row["close"],
+        } for row in bars[:6]]
+        progress = []
+        labeled = _future_labels(
+            features, by_symbol, progress_callback=progress.append,
+            yield_every=2,
+        )
+        self.assertEqual(len(features), len(labeled))
+        self.assertEqual(100.0, progress[-1]["stage_percent_complete"])
+        self.assertEqual("building_future_labels", progress[-1]["stage"])
 
     def test_loader_rejects_duplicate_symbol_timestamp(self):
         with tempfile.TemporaryDirectory() as directory:

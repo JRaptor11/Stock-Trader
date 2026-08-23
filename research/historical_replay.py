@@ -308,7 +308,10 @@ def _execute_pending(
     return rows
 
 
-def _future_labels(features, bars_by_symbol: dict, output=None):
+def _future_labels(
+    features, bars_by_symbol: dict, output=None, progress_callback=None,
+    yield_every: int = 50,
+):
     output = output if output is not None else []
     horizons = {"10m": 10, "30m": 30, "60m": 60}
     series = {}
@@ -319,7 +322,8 @@ def _future_labels(features, bars_by_symbol: dict, output=None):
             {ts: bar for ts, bar in values},
             [ts for ts, _ in values],
         )
-    for feature in features:
+    total_features = len(features)
+    for feature_index, feature in enumerate(features, start=1):
         ts, symbol = _timestamp(feature["timestamp"]), feature["symbol"]
         values, value_map, timestamps = series[symbol]
         next_index = bisect.bisect_right(timestamps, ts)
@@ -350,6 +354,20 @@ def _future_labels(features, bars_by_symbol: dict, output=None):
         )
         row["label_available_60m"] = row["forward_return_60m"] is not None
         output.append(row)
+        if yield_every > 0 and feature_index % yield_every == 0:
+            time.sleep(0.01)
+        if progress_callback and (
+            feature_index == total_features or feature_index % 1000 == 0
+        ):
+            progress_callback({
+                "stage": "building_future_labels",
+                "stage_completed_rows": feature_index,
+                "stage_total_rows": total_features,
+                "stage_percent_complete": round(
+                    feature_index / total_features * 100, 2
+                ) if total_features else 100.0,
+                "percent_complete": 100.0,
+            })
     return output
 
 
@@ -688,7 +706,10 @@ def run_replay(
 
     if progress_callback:
         progress_callback({"stage": "building_future_labels", "percent_complete": 100.0})
-    dataset = _future_labels(feature_rows, all_bars_by_symbol, collection("dataset"))
+    dataset = _future_labels(
+        feature_rows, all_bars_by_symbol, collection("dataset"),
+        progress_callback=progress_callback,
+    )
     if progress_callback:
         progress_callback({"stage": "building_daily_summaries"})
     daily = _daily_summaries(cycle_rows, order_rows)

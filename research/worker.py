@@ -218,7 +218,7 @@ def main(argv=None) -> int:
     validate_service_startup(ServiceMode.HISTORICAL_RESEARCH)
     if hasattr(os, "nice"):
         try:
-            os.nice(max(0, int(os.getenv("RESEARCH_WORKER_NICE", "10"))))
+            os.nice(max(0, int(os.getenv("RESEARCH_WORKER_NICE", "15"))))
         except OSError:
             logging.warning("Could not lower research worker priority", exc_info=True)
     if args.poll_seconds < 1:
