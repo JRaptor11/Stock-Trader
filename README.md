@@ -377,12 +377,19 @@ each chronological training window, then records its return and SPY-relative
 excess return on the untouched test window. Outcome columns are calculated only
 from later timestamps and are kept separate from decision-time features. The
 selection score penalizes drawdown and turnover rather than simply choosing the
-highest raw recent return. The
+highest raw recent return. Cash is an explicit candidate, and a stability
+penalty applies when a strategy fails within a training subwindow. Checkpoints
+carry the full daily and benchmark history so training does not reset at a
+calendar-year batch boundary. The
 manifest records the source-file hash, replay configuration, service mode,
 Python version, deployed Git metadata when available, and a hash of the strategy
 registry.
 Daily output separates overnight-gap, intraday, and total-session P&L so an
 overnight holding effect cannot be mistaken for intraday timing skill.
+The research-only registry includes controlled comparisons for slow momentum,
+market-breadth regimes, overnight entry/exit timing, volatility breakouts,
+short-horizon mean reversion, and SPY-relative momentum. These candidates never
+enable broker execution in the historical-research service.
 
 ### Independent research service
 

@@ -61,12 +61,43 @@ STRATEGIES = {
         "alpha": 0.20, "max_step": 0.035,
         "minimum_positive_300m_breadth": 0.60,
     },
+    "REGIME_LOW_TURNOVER_300M": {
+        "target_mode": "single_horizon", "horizon_minutes": 300,
+        "alpha": 0.12, "max_step": 0.02,
+        "minimum_positive_300m_breadth": 0.60,
+    },
     "OVERNIGHT_REGIME_300M": {
         "target_mode": "single_horizon", "horizon_minutes": 300,
         "alpha": 0.50, "max_step": 0.15,
         "minimum_positive_300m_breadth": 0.60,
         "holding_window": "overnight",
         "entry_minutes_from_open": 360,
+        "exit_minutes_from_open": 0,
+    },
+    "OVERNIGHT_REGIME_300M_EARLY_ENTRY": {
+        "target_mode": "single_horizon", "horizon_minutes": 300,
+        "alpha": 0.50, "max_step": 0.15,
+        "minimum_positive_300m_breadth": 0.60,
+        "holding_window": "overnight",
+        "entry_minutes_from_open": 345,
+        "exit_minutes_from_open": 0,
+    },
+    "OVERNIGHT_REGIME_300M_30M_EXIT": {
+        "target_mode": "single_horizon", "horizon_minutes": 300,
+        "alpha": 0.50, "max_step": 0.15,
+        "minimum_positive_300m_breadth": 0.60,
+        "holding_window": "overnight",
+        "entry_minutes_from_open": 360,
+        "exit_minutes_from_open": 30,
+    },
+    "VOLATILITY_BREAKOUT_60M": {
+        "target_mode": "breakout", "alpha": 0.20, "max_step": 0.035,
+    },
+    "MEAN_REVERSION_30M": {
+        "target_mode": "mean_reversion", "alpha": 0.20, "max_step": 0.035,
+    },
+    "BENCHMARK_RELATIVE_300M": {
+        "target_mode": "benchmark_relative", "alpha": 0.20, "max_step": 0.035,
     },
 }
 
@@ -139,6 +170,11 @@ def _strategy_signal(
             signal = 0.25 * ret_60m + 0.35 * ret_150m + 0.40 * ret_300m
             label = "adaptive_stable"
         return signal, label, agreement, reversal
+    if mode == "mean_reversion":
+        return -ret_30m, "30m_mean_reversion", agreement, reversal
+    if mode == "benchmark_relative":
+        signal = ret_300m - safe_float(config.get("_benchmark_ret_300m"), 0.0)
+        return signal, "300m_relative_to_spy", agreement, reversal
     return base_score, "production_composite", agreement, reversal
 
 
@@ -183,16 +219,28 @@ def _raw_research_target(
         )
 
         mode = config.get("target_mode", "legacy")
+        if mode == "breakout":
+            prior_highs = [safe_float(bar.get("high"), 0.0) for bar in bars[-13:-1]]
+            breakout_level = max(prior_highs, default=closes[-1])
+            signal_score = closes[-1] / breakout_level - 1.0 if breakout_level else 0.0
+            signal_horizon = "60m_high_breakout"
         if mode == "legacy":
             positive_absolute_signal = base_score >= 0.001 and ret_60 > 0.0
         elif mode in {"blend", "adaptive"}:
             positive_absolute_signal = signal_score >= 0.001 and horizon_agreement >= 2
+        elif mode == "mean_reversion":
+            positive_absolute_signal = signal_score >= 0.002 and ret_60 > 0.0
+        elif mode == "breakout":
+            positive_absolute_signal = signal_score >= 0.0005 and ret_60 > 0.0
         else:
             positive_absolute_signal = signal_score >= 0.001
         severe_deterioration = ret_6 <= -0.003 and ret_12 <= -0.005
         moderate_deterioration = ret_6 < 0 and ret_12 < 0 and acceleration < 0
 
-        if not regime_allowed:
+        if mode == "mean_reversion" and positive_absolute_signal:
+            multiplier = 1.0
+            reason = "qualified_short_horizon_mean_reversion"
+        elif not regime_allowed:
             multiplier = 0.0
             reason = "rejected_market_regime"
         elif severe_deterioration:

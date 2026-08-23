@@ -54,6 +54,7 @@ class HistoricalReplayTests(unittest.TestCase):
         checkpoint = first["checkpoint"]
         self.assertTrue(checkpoint["portfolios"])
         self.assertEqual(61, len(checkpoint["history"]["AAA"]))
+        self.assertTrue(checkpoint["walk_forward_daily_history"])
         second_rows = []
         start = datetime(2026, 1, 6, 14, 30, tzinfo=timezone.utc)
         for index in range(2):
@@ -75,6 +76,10 @@ class HistoricalReplayTests(unittest.TestCase):
         )
         self.assertTrue(continued["cycles"])
         self.assertGreater(continued["checkpoint"]["cycle_id"], checkpoint["cycle_id"])
+        self.assertGreater(
+            len(continued["checkpoint"]["walk_forward_daily_history"]),
+            len(checkpoint["walk_forward_daily_history"]),
+        )
 
     def test_future_label_stage_reports_progress_without_changing_rows(self):
         bars = self._bars(14)
@@ -184,6 +189,29 @@ class HistoricalReplayTests(unittest.TestCase):
         results = _walk_forward_results(daily, benchmark, folds)
         self.assertEqual(results[0]["selected_strategy"], "TRAIN_WINNER")
         self.assertLess(results[0]["selected_test_return"], 0)
+
+    def test_walk_forward_can_select_cash_when_trading_scores_are_negative(self):
+        days = tuple(f"2026-01-{day:02d}" for day in range(1, 7))
+        folds = build_walk_forward_folds(
+            days, min_train_sessions=4, test_sessions=2, step_sessions=2,
+        )
+        daily = []
+        equity = 100.0
+        for day in days:
+            start = equity
+            equity *= 0.99
+            daily.append({
+                "session_date": day, "strategy_name": "LOSER",
+                "first_equity": start, "last_equity": equity,
+                "gross_turnover": 100.0,
+            })
+        benchmark = [
+            {"session_date": day, "session_return": 0.001}
+            for day in days
+        ]
+        results = _walk_forward_results(daily, benchmark, folds)
+        self.assertEqual("CASH", results[0]["selected_strategy"])
+        self.assertEqual(0.0, results[0]["selected_test_return"])
 
     def test_writer_produces_reproducibility_manifest(self):
         result = run_replay(self._bars(), ReplayConfig(warmup_bars=61, require_benchmark=False))

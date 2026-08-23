@@ -500,13 +500,14 @@ def _portfolio_from_checkpoint(payload: dict) -> ReplayPortfolio:
     return ReplayPortfolio(**values)
 
 
-def _benchmark_daily(rows: list[dict], benchmark_symbol: str) -> list[dict]:
+def _benchmark_daily(
+    rows: list[dict], benchmark_symbol: str, previous_close: float | None = None,
+) -> list[dict]:
     grouped = defaultdict(list)
     for row in rows:
         if row["symbol"] == benchmark_symbol and _is_regular_session(row["timestamp"]):
             grouped[row["timestamp"].astimezone(MARKET_TZ).date().isoformat()].append(row)
     output = []
-    previous_close = None
     for session_date, values in sorted(grouped.items()):
         values.sort(key=lambda row: row["timestamp"])
         first_open, last_close = float(values[0]["open"]), float(values[-1]["close"])
@@ -520,7 +521,9 @@ def _benchmark_daily(rows: list[dict], benchmark_symbol: str) -> list[dict]:
     return output
 
 
-def _benchmark_summary(rows: list[dict], benchmark_symbol: str) -> dict:
+def _benchmark_summary(
+    rows: list[dict], benchmark_symbol: str, start_price: float | None = None,
+) -> dict:
     values = [
         row for row in rows
         if row["symbol"] == benchmark_symbol and _is_regular_session(row["timestamp"])
@@ -528,7 +531,7 @@ def _benchmark_summary(rows: list[dict], benchmark_symbol: str) -> dict:
     values.sort(key=lambda row: row["timestamp"])
     if not values:
         return {"symbol": benchmark_symbol, "return": None, "start_price": None, "end_price": None}
-    start, end = float(values[0]["open"]), float(values[-1]["close"])
+    start, end = start_price or float(values[0]["open"]), float(values[-1]["close"])
     return {
         "symbol": benchmark_symbol, "start_price": start, "end_price": end,
         "return": round(end / start - 1.0, 10) if start else None,
@@ -554,6 +557,15 @@ def _walk_forward_results(daily: list[dict], benchmark_daily: list[dict], folds)
         daily_rows[strategy][row["session_date"]] = row
         previous_equity[strategy] = row["last_equity"]
     benchmark = {row["session_date"]: row["session_return"] for row in benchmark_daily}
+    all_dates = sorted(benchmark)
+    by_strategy["CASH"] = {day: 0.0 for day in all_dates}
+    daily_rows["CASH"] = {
+        day: {
+            "session_date": day, "first_equity": 1.0,
+            "last_equity": 1.0, "gross_turnover": 0.0,
+        }
+        for day in all_dates
+    }
     output = []
     for fold in folds:
         candidates = []
@@ -575,13 +587,24 @@ def _walk_forward_results(daily: list[dict], benchmark_daily: list[dict], folds)
                 if start_equity else 0.0
             )
             train_return = _compound(train_returns)
-            selection_score = train_return - 0.50 * abs(max_drawdown) - 0.0001 * turnover_ratio
+            chunk_size = max(1, len(train_returns) // 3)
+            subwindow_returns = [
+                _compound(train_returns[index:index + chunk_size])
+                for index in range(0, len(train_returns), chunk_size)
+            ]
+            worst_subwindow_return = min(subwindow_returns, default=0.0)
+            selection_score = (
+                train_return - 0.50 * abs(max_drawdown)
+                - 0.0001 * turnover_ratio
+                + 0.50 * min(0.0, worst_subwindow_return)
+            )
             candidates.append({
                 "strategy_name": strategy,
                 "train_return": train_return,
                 "train_daily_volatility": statistics.pstdev(train_returns) if len(train_returns) > 1 else 0.0,
                 "train_max_drawdown": max_drawdown,
                 "train_turnover_ratio": turnover_ratio,
+                "worst_train_subwindow_return": worst_subwindow_return,
                 "selection_score": selection_score,
             })
         if not candidates:
@@ -593,7 +616,7 @@ def _walk_forward_results(daily: list[dict], benchmark_daily: list[dict], folds)
         benchmark_return = _compound(benchmark_returns) if len(benchmark_returns) == len(fold.test_dates) else None
         output.append({
             **fold.as_dict(), "selected_strategy": selected["strategy_name"],
-            "selection_metric": "train_return_minus_half_drawdown_minus_1bp_turnover",
+            "selection_metric": "return_minus_drawdown_turnover_and_instability_with_cash_fallback",
             "selected_train_score": round(selected["selection_score"], 10),
             "selected_train_return": round(selected["train_return"], 10),
             "selected_test_return": round(test_return, 10),
@@ -771,13 +794,34 @@ def run_replay(
             if strategy_config.get("mode") == "control":
                 target, decisions = production_target, []
             else:
-                raw_target, decisions = _raw_research_target(ranked, candidate_bars, strategy_config)
-                flat_intraday = (
-                    strategy_config.get("holding_window") == "overnight"
-                    and int(session.get("seconds_since_open", 0) // 60)
-                    < int(strategy_config.get("entry_minutes_from_open", 360))
+                evaluation_config = {
+                    **strategy_config,
+                    "_benchmark_ret_300m": benchmark_returns.get("ret_300m", 0.0),
+                }
+                raw_target, decisions = _raw_research_target(
+                    ranked, candidate_bars, evaluation_config
                 )
-                if flat_intraday:
+                minute_from_open = int(session.get("seconds_since_open", 0) // 60)
+                overnight = strategy_config.get("holding_window") == "overnight"
+                exit_minute = int(strategy_config.get("exit_minutes_from_open", 0))
+                entry_minute = int(strategy_config.get("entry_minutes_from_open", 360))
+                hold_morning = overnight and minute_from_open < exit_minute
+                flat_intraday = overnight and exit_minute <= minute_from_open < entry_minute
+                if hold_morning:
+                    hold_equity = _equity(portfolio, prices)
+                    raw_target = {
+                        symbol: round(qty * prices.get(symbol, 0.0) / hold_equity, 6)
+                        for symbol, qty in portfolio.positions.items()
+                        if hold_equity and qty * prices.get(symbol, 0.0) / hold_equity >= 0.001
+                    }
+                    raw_target["CASH"] = round(
+                        max(0.0, 1.0 - sum(raw_target.values())), 6
+                    )
+                    raw_target["_meta"] = {
+                        **dict(raw_target.get("_meta") or {}),
+                        "holding_window": "overnight", "schedule_state": "hold_morning",
+                    }
+                elif flat_intraday:
                     raw_target = {
                         "CASH": 1.0,
                         "_meta": {
@@ -787,7 +831,7 @@ def run_replay(
                         },
                     }
                 target = (
-                    raw_target if flat_intraday else
+                    raw_target if (hold_morning or flat_intraday) else
                     _smooth_target(raw_target, portfolio.previous_target, strategy_config)
                 )
             portfolio.previous_target = dict(target)
@@ -863,13 +907,36 @@ def run_replay(
         if first_cycle_by_session[day].astimezone(MARKET_TZ).hour == 9
         and first_cycle_by_session[day].astimezone(MARKET_TZ).minute == 30
     ]
+    prior_daily_history = list(checkpoint.get("walk_forward_daily_history") or [])
+    prior_benchmark_history = list(checkpoint.get("benchmark_daily_history") or [])
+    prior_evaluation_dates = list(checkpoint.get("evaluation_session_dates") or [])
+    combined_daily_history = prior_daily_history + list(daily)
+    combined_evaluation_dates = sorted(set(prior_evaluation_dates + evaluation_session_dates))
     folds = build_walk_forward_folds(
-        evaluation_session_dates, min_train_sessions=config.min_train_sessions,
+        combined_evaluation_dates, min_train_sessions=config.min_train_sessions,
         test_sessions=config.test_sessions, step_sessions=config.step_sessions,
     )
-    benchmark_daily = _benchmark_daily(rows, benchmark_symbol)
-    benchmark_summary = _benchmark_summary(rows, benchmark_symbol)
-    walk_forward_results = _walk_forward_results(daily, benchmark_daily, folds)
+    previous_benchmark_close = (
+        float(prior_benchmark_history[-1]["end_price"])
+        if prior_benchmark_history else None
+    )
+    benchmark_daily = _benchmark_daily(rows, benchmark_symbol, previous_benchmark_close)
+    combined_benchmark_history = prior_benchmark_history + benchmark_daily
+    benchmark_start_price = (
+        float(combined_benchmark_history[0]["start_price"])
+        if combined_benchmark_history else None
+    )
+    benchmark_summary = _benchmark_summary(rows, benchmark_symbol, benchmark_start_price)
+    all_walk_forward_results = _walk_forward_results(
+        combined_daily_history, combined_benchmark_history, folds
+    )
+    current_evaluation_dates = set(evaluation_session_dates)
+    walk_forward_results = [
+        row for row in all_walk_forward_results
+        if row["test_end"] in current_evaluation_dates
+    ]
+    current_fold_numbers = {row["fold"] for row in walk_forward_results}
+    output_folds = [fold for fold in folds if fold.fold in current_fold_numbers]
     if progress_callback:
         progress_callback({"stage": "building_strategy_summaries"})
     summary_state = {
@@ -905,7 +972,7 @@ def run_replay(
         "evaluation_session_dates": evaluation_session_dates,
         "cycles": cycle_rows, "daily": daily, "decisions": decision_rows, "orders": order_rows,
         "eligibility": eligibility_rows,
-        "dataset": dataset, "walk_forward_folds": [fold.as_dict() for fold in folds],
+        "dataset": dataset, "walk_forward_folds": [fold.as_dict() for fold in output_folds],
         "walk_forward_results": walk_forward_results,
         "benchmark_daily": benchmark_daily, "benchmark_summary": benchmark_summary,
         "dataset_quality": quality,
@@ -921,6 +988,9 @@ def run_replay(
             "last_decision": last_decision.isoformat() if last_decision else None,
             "cycle_id": cycle_id,
             "prior_close_equity": final_close_equity,
+            "walk_forward_daily_history": combined_daily_history,
+            "benchmark_daily_history": combined_benchmark_history,
+            "evaluation_session_dates": combined_evaluation_dates,
         },
     }
 
