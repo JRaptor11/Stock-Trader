@@ -351,8 +351,9 @@ are `timestamp`, `symbol`, `open`, `high`, `low`, `close`, and `volume`.
 `trade_count` and `vwap` are optional. Timestamps must include a UTC offset, and
 each symbol/timestamp pair must be unique. SPY is required by default and is
 treated as benchmark context rather than as a candidate security. Per-symbol
-and session coverage is reported in full, while a configurable aggregate gate
-rejects broadly incomplete datasets before they can produce misleading results.
+and session coverage is reported in full. An aggregate gate rejects broadly
+incomplete datasets, and a second gate removes an individual symbol from a
+session when its coverage is too low while retaining the usable market cohort.
 
 Example:
 
@@ -376,6 +377,8 @@ from later timestamps and are kept separate from decision-time features. The
 manifest records the source-file hash, replay configuration, service mode,
 Python version, deployed Git metadata when available, and a hash of the strategy
 registry.
+Daily output separates overnight-gap, intraday, and total-session P&L so an
+overnight holding effect cannot be mistaken for intraday timing skill.
 
 ### Independent research service
 
@@ -423,6 +426,13 @@ submissions enter a durable FIFO queue. A successful result is archived before
 the next job starts. A failure stops the queue; after the cause is reviewed, an
 authenticated `POST /api/queue/resume` clears the failure block and continues
 with the oldest queued job.
+
+Large continuous experiments can remain memory-safe by splitting dates into
+ordered jobs. Every result includes `replay_checkpoint.json`; set the next
+job's top-level `continuation_of` field to the prior job ID. The coordinator
+restores that archive, and the worker carries cash, positions, planner state,
+pending plans, rolling bars, peak equity, and counters across the boundary.
+A strategy-registry mismatch is rejected instead of silently mixing runs.
 
 Transient worker or object-storage failures are retried automatically up to
 three times with exponential backoff. Deterministic failures such as malformed

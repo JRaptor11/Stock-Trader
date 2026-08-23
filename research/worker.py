@@ -16,6 +16,7 @@ import sys
 import time
 import traceback
 import uuid
+import zipfile
 from dataclasses import fields
 from datetime import datetime, timezone
 from pathlib import Path
@@ -140,6 +141,19 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
             _write_json_atomic(status_path, latest_status)
 
         replay_config = _config_from_job(job)
+        initial_checkpoint = None
+        continuation_of = str(job.get("continuation_of") or "").strip()
+        if continuation_of:
+            if any(character not in allowed for character in continuation_of):
+                raise ValueError("continuation_of contains invalid characters")
+            archive = results_root / f"{continuation_of}-results.zip"
+            if not archive.is_file():
+                raise FileNotFoundError(f"continuation archive is not available: {archive}")
+            with zipfile.ZipFile(archive) as bundle:
+                initial_checkpoint = json.loads(bundle.read("replay_checkpoint.json"))
+            # The archive is a restored cache; R2 remains authoritative and
+            # the checkpoint is now resident in memory.
+            archive.unlink(missing_ok=True)
         result = run_replay(
             load_bar_csv(
                 bars_path,
@@ -147,6 +161,7 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
                 end_date=replay_config.data_end_date,
             ), replay_config,
             progress_callback=update_progress, spill_directory=spill,
+            initial_checkpoint=initial_checkpoint,
         )
         write_replay(
             result, staging, source_path=bars_path,

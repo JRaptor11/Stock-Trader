@@ -396,6 +396,13 @@ def _launch_job(job_id: str, job_path: Path) -> bool:
     job = json.loads(job_path.read_text(encoding="utf-8"))
     if not _restore_dataset(str(job.get("bars_csv") or "")):
         return False
+    continuation_of = str(job.get("continuation_of") or "").strip()
+    if continuation_of:
+        archive = runtime.results_root / f"{continuation_of}-results.zip"
+        if not archive.is_file() and runtime.store.durable:
+            runtime.store.download_file(f"results/{archive.name}", archive)
+        if not archive.is_file():
+            return False
     status_path = runtime.results_root / f"{job_id}.status.json"
     previous = json.loads(status_path.read_text(encoding="utf-8")) if status_path.is_file() else {}
     _write_json_atomic(status_path, {

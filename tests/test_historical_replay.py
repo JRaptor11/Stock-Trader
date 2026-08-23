@@ -44,6 +44,37 @@ class HistoricalReplayTests(unittest.TestCase):
         self.assertGreater(first_order["timestamp"], first_order["source_bar_timestamp"])
         self.assertGreaterEqual(first_order["timestamp"], first_order["decision_available_at"])
         self.assertTrue(result["daily"])
+        self.assertIn("overnight_pnl", result["daily"][0])
+
+    def test_checkpoint_carries_portfolio_and_rolling_history(self):
+        first = run_replay(
+            self._bars(),
+            ReplayConfig(warmup_bars=61, require_benchmark=False),
+        )
+        checkpoint = first["checkpoint"]
+        self.assertTrue(checkpoint["portfolios"])
+        self.assertEqual(61, len(checkpoint["history"]["AAA"]))
+        second_rows = []
+        start = datetime(2026, 1, 6, 14, 30, tzinfo=timezone.utc)
+        for index in range(2):
+            for symbol, offset in (("AAA", 0.0), ("BBB", 10.0)):
+                price = 104 + offset + index * 0.05
+                second_rows.append({
+                    "timestamp": start + timedelta(minutes=5 * index),
+                    "symbol": symbol, "open": price, "high": price + .1,
+                    "low": price - .1, "close": price + .02,
+                    "volume": 1000, "trade_count": 100, "vwap": price,
+                })
+        continued = run_replay(
+            second_rows,
+            ReplayConfig(
+                warmup_bars=61, require_benchmark=False,
+                minimum_eligible_symbols=2,
+            ),
+            initial_checkpoint=checkpoint,
+        )
+        self.assertTrue(continued["cycles"])
+        self.assertGreater(continued["checkpoint"]["cycle_id"], checkpoint["cycle_id"])
 
     def test_future_label_stage_reports_progress_without_changing_rows(self):
         bars = self._bars(14)

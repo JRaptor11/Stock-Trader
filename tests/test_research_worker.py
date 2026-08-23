@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import unittest
+import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -66,6 +67,34 @@ class ResearchWorkerTests(unittest.TestCase):
         }, clear=False):
             with self.assertRaises(RuntimeError):
                 execute_job("missing.json", ".", ".")
+
+    def test_worker_loads_checkpoint_from_continuation_archive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data, results = root / "data", root / "results"
+            data.mkdir(); results.mkdir()
+            bars = data / "bars.csv"
+            self._write_bars(bars)
+            checkpoint = {
+                "version": 1, "portfolios": {}, "history": {},
+                "last_decision": None, "cycle_id": 41,
+                "prior_close_equity": {},
+            }
+            with zipfile.ZipFile(results / "prior-results.zip", "w") as bundle:
+                bundle.writestr("replay_checkpoint.json", json.dumps(checkpoint))
+            job = root / "continued.json"
+            job.write_text(json.dumps({
+                "job_id": "continued", "bars_csv": "bars.csv",
+                "continuation_of": "prior",
+                "replay_config": {"warmup_bars": 61, "require_benchmark": False},
+            }), encoding="utf-8")
+            with patch.dict(os.environ, {
+                "SERVICE_MODE": "historical_research",
+                "BROKER_EXECUTION_ENABLED": "false",
+            }, clear=False):
+                output = execute_job(job, data, results)
+            written = json.loads((output / "replay_checkpoint.json").read_text(encoding="utf-8"))
+            self.assertGreater(written["cycle_id"], 41)
 
     def test_retry_start_clears_stale_failure_and_progress_fields(self):
         with tempfile.TemporaryDirectory() as directory:

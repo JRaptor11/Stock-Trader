@@ -52,6 +52,15 @@ STRATEGIES = {
     "ADAPTIVE_REVERSAL": {
         "target_mode": "adaptive", "alpha": 0.40, "max_step": 0.075,
     },
+    "LOW_TURNOVER_300M": {
+        "target_mode": "single_horizon", "horizon_minutes": 300,
+        "alpha": 0.12, "max_step": 0.02,
+    },
+    "REGIME_FILTERED_300M": {
+        "target_mode": "single_horizon", "horizon_minutes": 300,
+        "alpha": 0.20, "max_step": 0.035,
+        "minimum_positive_300m_breadth": 0.60,
+    },
 }
 
 # Pair every timing signal with the same moderately invested sizing policy so
@@ -133,6 +142,18 @@ def _raw_research_target(
     rank_map = _rank_map(ranked)
     decisions = []
     qualified = []
+    positive_300m_breadth = 0.0
+    if rank_map:
+        positive_300m_breadth = sum(
+            _return([
+                safe_float(bar.get("close"), 0.0)
+                for bar in list(bars_by_symbol.get(symbol, []) or [])
+            ], 60) > 0
+            for symbol in rank_map
+        ) / len(rank_map)
+    regime_allowed = positive_300m_breadth >= safe_float(
+        config.get("minimum_positive_300m_breadth"), 0.0
+    )
 
     for symbol, info in rank_map.items():
         bars = list(bars_by_symbol.get(symbol, []) or [])
@@ -164,7 +185,10 @@ def _raw_research_target(
         severe_deterioration = ret_6 <= -0.003 and ret_12 <= -0.005
         moderate_deterioration = ret_6 < 0 and ret_12 < 0 and acceleration < 0
 
-        if severe_deterioration:
+        if not regime_allowed:
+            multiplier = 0.0
+            reason = "rejected_market_regime"
+        elif severe_deterioration:
             multiplier = 0.0
             reason = "rejected_severe_recent_deterioration"
         elif not positive_absolute_signal:
@@ -268,6 +292,8 @@ def _raw_research_target(
         "sizing_baseline_pct": round(sizing_baseline, 6),
         "sizing_strength_component_pct": round(sizing_strength_component, 6),
         "requested_investable_pct": round(requested_investable, 6),
+        "positive_300m_breadth": round(positive_300m_breadth, 6),
+        "regime_allowed": regime_allowed,
         "deployed_investable_pct": round(
             1.0 - safe_float(target.get("CASH"), 1.0), 6
         ),

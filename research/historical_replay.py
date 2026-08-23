@@ -122,6 +122,8 @@ class ReplayConfig:
     candidate_symbols: tuple[str, ...] = ()
     require_benchmark: bool = True
     minimum_average_coverage_pct: float = 95.0
+    minimum_session_symbol_coverage_pct: float = 90.0
+    minimum_eligible_symbols: int = 8
     bar_timestamp_semantics: str = "bar_start"
     data_start_date: str | None = None
     data_end_date: str | None = None
@@ -137,6 +139,10 @@ class ReplayConfig:
         )
         if start and end and start > end:
             raise ValueError("data_start_date must be on or before data_end_date")
+        if not 0.0 <= self.minimum_session_symbol_coverage_pct <= 100.0:
+            raise ValueError("minimum_session_symbol_coverage_pct must be between 0 and 100")
+        if self.minimum_eligible_symbols < 1:
+            raise ValueError("minimum_eligible_symbols must be positive")
 
     @property
     def adverse_fill_bps(self) -> float:
@@ -397,7 +403,7 @@ def _future_labels(
     return output
 
 
-def _daily_summaries(cycles, orders) -> list[dict]:
+def _daily_summaries(cycles, orders, prior_close_equity: dict | None = None) -> list[dict]:
     grouped = {}
     order_grouped = defaultdict(lambda: {"trade_count": 0, "gross_turnover": 0.0})
     for row in cycles:
@@ -420,14 +426,22 @@ def _daily_summaries(cycles, orders) -> list[dict]:
         aggregate["trade_count"] += 1
         aggregate["gross_turnover"] += float(row["notional"])
     output = []
+    previous = dict(prior_close_equity or {})
     for (session_date, strategy), aggregate in sorted(grouped.items()):
         trades = order_grouped[(session_date, strategy)]
         start, end = aggregate["first"], aggregate["last"]
+        prior_equity = previous.get(strategy, start["equity"])
+        overnight_pnl = start["equity"] - prior_equity
+        intraday_pnl = end["equity"] - start["equity"]
         output.append({
             "session_date": session_date, "strategy_name": strategy,
             "first_equity": start["equity"], "last_equity": end["equity"],
-            "intraday_pnl": round(end["equity"] - start["equity"], 2),
+            "overnight_pnl": round(overnight_pnl, 2),
+            "overnight_return": round(start["equity"] / prior_equity - 1.0, 10) if prior_equity else None,
+            "intraday_pnl": round(intraday_pnl, 2),
             "intraday_return": round(end["equity"] / start["equity"] - 1.0, 10) if start["equity"] else None,
+            "session_pnl": round(end["equity"] - prior_equity, 2),
+            "session_return": round(end["equity"] / prior_equity - 1.0, 10) if prior_equity else None,
             "maximum_drawdown_pct": aggregate["maximum_drawdown_pct"],
             "peak_giveback": aggregate["peak_giveback"],
             "trade_count": trades["trade_count"],
@@ -435,6 +449,7 @@ def _daily_summaries(cycles, orders) -> list[dict]:
             "ending_cash_pct": end["cash_pct"],
             "ending_reversal_exposure_pct": end["reversal_exposure_pct"],
         })
+        previous[strategy] = end["equity"]
     return output
 
 
@@ -471,6 +486,18 @@ def _dataset_quality(rows: list[dict], symbols: list[str], benchmark_symbol: str
         "minimum_coverage_pct": min((row["coverage_pct"] for row in details), default=0.0),
         "coverage": details,
     }
+
+
+def _portfolio_checkpoint(portfolio: ReplayPortfolio) -> dict:
+    payload = asdict(portfolio)
+    payload["pending_at"] = portfolio.pending_at.isoformat() if portfolio.pending_at else None
+    return payload
+
+
+def _portfolio_from_checkpoint(payload: dict) -> ReplayPortfolio:
+    values = dict(payload)
+    values["pending_at"] = _timestamp(values["pending_at"]) if values.get("pending_at") else None
+    return ReplayPortfolio(**values)
 
 
 def _benchmark_daily(rows: list[dict], benchmark_symbol: str) -> list[dict]:
@@ -558,7 +585,7 @@ def _walk_forward_results(daily: list[dict], benchmark_daily: list[dict], folds)
 
 def run_replay(
     rows: list[dict], config: ReplayConfig | None = None, progress_callback=None,
-    spill_directory: str | Path | None = None,
+    spill_directory: str | Path | None = None, initial_checkpoint: dict | None = None,
 ) -> dict:
     config = config or ReplayConfig()
     if any(
@@ -591,10 +618,31 @@ def run_replay(
             "average historical bar coverage is below the configured minimum: "
             f'{quality["average_coverage_pct"]:.4f}% < {config.minimum_average_coverage_pct:.4f}%'
         )
-    history = {symbol: [] for symbol in all_symbols}
+    excluded_symbol_sessions = {
+        (item["session_date"], item["symbol"])
+        for item in quality["coverage"]
+        if item["symbol"] != benchmark_symbol
+        and item["coverage_pct"] < config.minimum_session_symbol_coverage_pct
+    }
+    quality["minimum_session_symbol_coverage_threshold_pct"] = config.minimum_session_symbol_coverage_pct
+    quality["excluded_symbol_sessions"] = [
+        {"session_date": day, "symbol": symbol}
+        for day, symbol in sorted(excluded_symbol_sessions)
+    ]
+    checkpoint = dict(initial_checkpoint or {})
+    history = {
+        symbol: list(dict(checkpoint.get("history") or {}).get(symbol, []))
+        for symbol in all_symbols
+    }
     strategy_configs = dict(STRATEGIES)
+    checkpoint_strategies = set(checkpoint.get("strategy_names") or [])
+    if checkpoint and checkpoint_strategies and checkpoint_strategies != set(strategy_configs):
+        raise ValueError("checkpoint strategy registry does not match this replay")
+    saved_portfolios = dict(checkpoint.get("portfolios") or {})
     portfolios = {
-        name: ReplayPortfolio(cash=config.initial_cash, peak_equity=config.initial_cash)
+        name: _portfolio_from_checkpoint(saved_portfolios[name])
+        if name in saved_portfolios else
+        ReplayPortfolio(cash=config.initial_cash, peak_equity=config.initial_cash)
         for name in strategy_configs
     }
     production_builder = Layer2PortfolioBuilder()
@@ -606,8 +654,9 @@ def run_replay(
     decision_rows = collection("decisions")
     order_rows = collection("orders")
     feature_rows = collection("features")
-    last_decision = None
-    cycle_id = 0
+    last_decision = _timestamp(checkpoint["last_decision"]) if checkpoint.get("last_decision") else None
+    cycle_id = int(checkpoint.get("cycle_id") or 0)
+    prior_close_equity = dict(checkpoint.get("prior_close_equity") or {})
 
     regular_timestamp_count = len({
         row["timestamp"] for row in rows if _is_regular_session(row["timestamp"])
@@ -620,9 +669,15 @@ def run_replay(
         if not _is_regular_session(ts):
             continue
         timestamp_index += 1
-        bars = {row["symbol"]: row for row in timestamp_rows}
+        timestamp_rows = list(timestamp_rows)
+        session_date = ts.astimezone(MARKET_TZ).date().isoformat()
+        raw_bars = {row["symbol"]: row for row in timestamp_rows}
+        bars = {
+            row["symbol"]: row for row in timestamp_rows
+            if (session_date, row["symbol"]) not in excluded_symbol_sessions
+        }
         order_rows.extend(sum((
-            _execute_pending(name, portfolio, ts, bars, config)
+            _execute_pending(name, portfolio, ts, raw_bars, config)
         for name, portfolio in portfolios.items()
         ), []))
         for symbol, bar in bars.items():
@@ -632,12 +687,19 @@ def run_replay(
         if last_decision and (ts - last_decision) < timedelta(minutes=config.decision_interval_minutes):
             continue
         ready = {symbol: values for symbol, values in history.items() if len(values) >= config.warmup_bars}
-        candidate_bars = {symbol: ready[symbol] for symbol in symbols if symbol in ready}
-        if len(candidate_bars) != len(symbols):
+        eligible_symbols = [
+            symbol for symbol in symbols
+            if (session_date, symbol) not in excluded_symbol_sessions
+        ]
+        candidate_bars = {symbol: ready[symbol] for symbol in eligible_symbols if symbol in ready}
+        if len(candidate_bars) < min(config.minimum_eligible_symbols, len(symbols)):
             continue
         last_decision, cycle_id = ts, cycle_id + 1
         ranked = ranker.rank_from_bars(candidate_bars)
-        prices = {symbol: float(bars.get(symbol, {"close": candidate_bars[symbol][-1]["close"]})["close"]) for symbol in symbols}
+        prices = {
+            symbol: float(raw_bars.get(symbol, {"close": history[symbol][-1]["close"]})["close"])
+            for symbol in symbols if history.get(symbol)
+        }
         session = source_bar_market_session_info(ts)
         production_target = production_builder.build_target_portfolio(ranked, context=session)
         rank_map = {item.symbol: (index, item.score) for index, item in enumerate(ranked, 1)}
@@ -645,7 +707,7 @@ def run_replay(
         benchmark_bars = ready.get(config.benchmark_symbol.upper())
         benchmark_returns = _returns([float(item["close"]) for item in benchmark_bars]) if benchmark_bars else {}
 
-        for symbol in symbols:
+        for symbol in candidate_bars:
             symbol_bars = candidate_bars[symbol]
             closes = [float(item["close"]) for item in symbol_bars]
             values = _returns(closes)
@@ -683,7 +745,7 @@ def run_replay(
                 planner_source=f"REPLAY_{name}", target=target, account=account,
                 positions=_position_snapshot(portfolio, prices), ranked_prices=prices,
                 planner_state=portfolio.planner_state, market_is_open=True,
-                cycle_id=cycle_id, bar_counts={symbol: len(candidate_bars[symbol]) for symbol in symbols},
+                cycle_id=cycle_id, bar_counts={symbol: len(candidate_bars[symbol]) for symbol in candidate_bars},
                 bootstrap_eligible_symbols=set(target) - {"CASH", "_meta"},
                 open_order_symbols=set(), open_order_details={}, fail_safe_active=False,
                 last_trade_prices=prices, source_bar_timestamp=ts.isoformat(),
@@ -713,7 +775,6 @@ def run_replay(
             for item in decisions:
                 decision_rows.append({"timestamp": ts.isoformat(), "cycle_id": cycle_id, "strategy_name": name, **item})
 
-        session_date = ts.astimezone(MARKET_TZ).date().isoformat()
         completed_sessions.add(session_date)
         if progress_callback and (
             timestamp_index % 25 == 0 or timestamp_index == regular_timestamp_count
@@ -738,7 +799,7 @@ def run_replay(
     )
     if progress_callback:
         progress_callback({"stage": "building_daily_summaries"})
-    daily = _daily_summaries(cycle_rows, order_rows)
+    daily = _daily_summaries(cycle_rows, order_rows, prior_close_equity)
     session_dates = sorted({row["session_date"] for row in feature_rows})
     if isinstance(feature_rows, SpilledRows):
         feature_rows.close()
@@ -784,6 +845,9 @@ def run_replay(
         })
     if progress_callback:
         progress_callback({"stage": "writing_result_artifacts"})
+    final_close_equity = dict(prior_close_equity)
+    for row in daily:
+        final_close_equity[row["strategy_name"]] = row["last_equity"]
     return {
         "config": asdict(config), "symbols": symbols, "session_dates": session_dates,
         "evaluation_session_dates": evaluation_session_dates,
@@ -793,6 +857,15 @@ def run_replay(
         "benchmark_daily": benchmark_daily, "benchmark_summary": benchmark_summary,
         "dataset_quality": quality,
         "summary": summaries,
+        "checkpoint": {
+            "version": 1,
+            "strategy_names": sorted(strategy_configs),
+            "portfolios": {name: _portfolio_checkpoint(value) for name, value in portfolios.items()},
+            "history": history,
+            "last_decision": last_decision.isoformat() if last_decision else None,
+            "cycle_id": cycle_id,
+            "prior_close_equity": final_close_equity,
+        },
     }
 
 
@@ -833,6 +906,7 @@ def write_replay(
     (output / "dataset_quality.json").write_text(json.dumps(result["dataset_quality"], indent=2), encoding="utf-8")
     (output / "replay_summary.json").write_text(json.dumps(result["summary"], indent=2), encoding="utf-8")
     (output / "benchmark_summary.json").write_text(json.dumps(result["benchmark_summary"], indent=2), encoding="utf-8")
+    (output / "replay_checkpoint.json").write_text(json.dumps(result["checkpoint"], indent=2), encoding="utf-8")
     manifest = {
         "created_at": datetime.now(UTC).isoformat(), "source_path": str(source_path) if source_path else None,
         "source_sha256": source_sha256 or (
