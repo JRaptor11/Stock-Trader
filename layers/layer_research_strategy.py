@@ -61,6 +61,13 @@ STRATEGIES = {
         "alpha": 0.20, "max_step": 0.035,
         "minimum_positive_300m_breadth": 0.60,
     },
+    "OVERNIGHT_REGIME_300M": {
+        "target_mode": "single_horizon", "horizon_minutes": 300,
+        "alpha": 0.50, "max_step": 0.15,
+        "minimum_positive_300m_breadth": 0.60,
+        "holding_window": "overnight",
+        "entry_minutes_from_open": 360,
+    },
 }
 
 # Pair every timing signal with the same moderately invested sizing policy so

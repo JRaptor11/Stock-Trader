@@ -14,7 +14,7 @@
     "benchmark_symbol": "SPY",
     "require_benchmark": true,
     "minimum_average_coverage_pct": 95.0,
-    "minimum_session_symbol_coverage_pct": 90.0,
+    "maximum_candidate_bar_age_minutes": 10.0,
     "minimum_eligible_symbols": 8,
     "candidate_symbols": [
       "AAPL", "AMD", "AMZN", "AVGO", "COST",

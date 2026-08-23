@@ -122,7 +122,7 @@ class ReplayConfig:
     candidate_symbols: tuple[str, ...] = ()
     require_benchmark: bool = True
     minimum_average_coverage_pct: float = 95.0
-    minimum_session_symbol_coverage_pct: float = 90.0
+    maximum_candidate_bar_age_minutes: float | None = 10.0
     minimum_eligible_symbols: int = 8
     bar_timestamp_semantics: str = "bar_start"
     data_start_date: str | None = None
@@ -139,8 +139,8 @@ class ReplayConfig:
         )
         if start and end and start > end:
             raise ValueError("data_start_date must be on or before data_end_date")
-        if not 0.0 <= self.minimum_session_symbol_coverage_pct <= 100.0:
-            raise ValueError("minimum_session_symbol_coverage_pct must be between 0 and 100")
+        if self.maximum_candidate_bar_age_minutes is not None and self.maximum_candidate_bar_age_minutes < 0:
+            raise ValueError("maximum_candidate_bar_age_minutes cannot be negative")
         if self.minimum_eligible_symbols < 1:
             raise ValueError("minimum_eligible_symbols must be positive")
 
@@ -545,11 +545,13 @@ def _compound(returns: list[float]) -> float:
 def _walk_forward_results(daily: list[dict], benchmark_daily: list[dict], folds) -> list[dict]:
     """Select on each training window, then report only held-out test performance."""
     by_strategy = defaultdict(dict)
+    daily_rows = defaultdict(dict)
     previous_equity = {}
     for row in sorted(daily, key=lambda item: (item["strategy_name"], item["session_date"])):
         strategy = row["strategy_name"]
         prior = previous_equity.get(strategy, row["first_equity"])
         by_strategy[strategy][row["session_date"]] = row["last_equity"] / prior - 1.0 if prior else 0.0
+        daily_rows[strategy][row["session_date"]] = row
         previous_equity[strategy] = row["last_equity"]
     benchmark = {row["session_date"]: row["session_return"] for row in benchmark_daily}
     output = []
@@ -559,21 +561,40 @@ def _walk_forward_results(daily: list[dict], benchmark_daily: list[dict], folds)
             train_returns = [values[day] for day in fold.train_dates if day in values]
             if len(train_returns) != len(fold.train_dates):
                 continue
+            equity = 1.0
+            peak = 1.0
+            max_drawdown = 0.0
+            for value in train_returns:
+                equity *= 1.0 + value
+                peak = max(peak, equity)
+                max_drawdown = min(max_drawdown, equity / peak - 1.0)
+            train_rows = [daily_rows[strategy][day] for day in fold.train_dates]
+            start_equity = float(train_rows[0]["first_equity"] or 0.0)
+            turnover_ratio = (
+                sum(float(row.get("gross_turnover") or 0.0) for row in train_rows) / start_equity
+                if start_equity else 0.0
+            )
+            train_return = _compound(train_returns)
+            selection_score = train_return - 0.50 * abs(max_drawdown) - 0.0001 * turnover_ratio
             candidates.append({
                 "strategy_name": strategy,
-                "train_return": _compound(train_returns),
+                "train_return": train_return,
                 "train_daily_volatility": statistics.pstdev(train_returns) if len(train_returns) > 1 else 0.0,
+                "train_max_drawdown": max_drawdown,
+                "train_turnover_ratio": turnover_ratio,
+                "selection_score": selection_score,
             })
         if not candidates:
             continue
-        selected = max(candidates, key=lambda row: (row["train_return"], -row["train_daily_volatility"]))
+        selected = max(candidates, key=lambda row: (row["selection_score"], row["train_return"]))
         test_returns = [by_strategy[selected["strategy_name"]][day] for day in fold.test_dates]
         benchmark_returns = [benchmark[day] for day in fold.test_dates if day in benchmark]
         test_return = _compound(test_returns)
         benchmark_return = _compound(benchmark_returns) if len(benchmark_returns) == len(fold.test_dates) else None
         output.append({
             **fold.as_dict(), "selected_strategy": selected["strategy_name"],
-            "selection_metric": "highest_compounded_train_return_after_configured_costs",
+            "selection_metric": "train_return_minus_half_drawdown_minus_1bp_turnover",
+            "selected_train_score": round(selected["selection_score"], 10),
             "selected_train_return": round(selected["train_return"], 10),
             "selected_test_return": round(test_return, 10),
             "benchmark_test_return": round(benchmark_return, 10) if benchmark_return is not None else None,
@@ -618,21 +639,16 @@ def run_replay(
             "average historical bar coverage is below the configured minimum: "
             f'{quality["average_coverage_pct"]:.4f}% < {config.minimum_average_coverage_pct:.4f}%'
         )
-    excluded_symbol_sessions = {
-        (item["session_date"], item["symbol"])
-        for item in quality["coverage"]
-        if item["symbol"] != benchmark_symbol
-        and item["coverage_pct"] < config.minimum_session_symbol_coverage_pct
-    }
-    quality["minimum_session_symbol_coverage_threshold_pct"] = config.minimum_session_symbol_coverage_pct
-    quality["excluded_symbol_sessions"] = [
-        {"session_date": day, "symbol": symbol}
-        for day, symbol in sorted(excluded_symbol_sessions)
-    ]
+    quality["candidate_bar_age_limit_minutes"] = config.maximum_candidate_bar_age_minutes
     checkpoint = dict(initial_checkpoint or {})
     history = {
         symbol: list(dict(checkpoint.get("history") or {}).get(symbol, []))
         for symbol in all_symbols
+    }
+    last_observed_at = {
+        symbol: _timestamp(value)
+        for symbol, value in dict(checkpoint.get("last_observed_at") or {}).items()
+        if symbol in all_symbols
     }
     strategy_configs = dict(STRATEGIES)
     checkpoint_strategies = set(checkpoint.get("strategy_names") or [])
@@ -654,6 +670,7 @@ def run_replay(
     decision_rows = collection("decisions")
     order_rows = collection("orders")
     feature_rows = collection("features")
+    eligibility_rows = collection("eligibility")
     last_decision = _timestamp(checkpoint["last_decision"]) if checkpoint.get("last_decision") else None
     cycle_id = int(checkpoint.get("cycle_id") or 0)
     prior_close_equity = dict(checkpoint.get("prior_close_equity") or {})
@@ -672,25 +689,40 @@ def run_replay(
         timestamp_rows = list(timestamp_rows)
         session_date = ts.astimezone(MARKET_TZ).date().isoformat()
         raw_bars = {row["symbol"]: row for row in timestamp_rows}
-        bars = {
-            row["symbol"]: row for row in timestamp_rows
-            if (session_date, row["symbol"]) not in excluded_symbol_sessions
-        }
+        bars = dict(raw_bars)
         order_rows.extend(sum((
             _execute_pending(name, portfolio, ts, raw_bars, config)
         for name, portfolio in portfolios.items()
         ), []))
         for symbol, bar in bars.items():
+            last_observed_at[symbol] = ts
             history[symbol].append({key: value for key, value in bar.items() if key not in {"timestamp", "symbol"}})
             if len(history[symbol]) > max(61, config.warmup_bars):
                 del history[symbol][:-max(61, config.warmup_bars)]
         if last_decision and (ts - last_decision) < timedelta(minutes=config.decision_interval_minutes):
             continue
         ready = {symbol: values for symbol, values in history.items() if len(values) >= config.warmup_bars}
-        eligible_symbols = [
-            symbol for symbol in symbols
-            if (session_date, symbol) not in excluded_symbol_sessions
-        ]
+        eligible_symbols = []
+        for symbol in symbols:
+            observed = last_observed_at.get(symbol)
+            age_minutes = (ts - observed).total_seconds() / 60.0 if observed else None
+            eligible = (
+                observed is not None
+                and (
+                    config.maximum_candidate_bar_age_minutes is None
+                    or age_minutes <= config.maximum_candidate_bar_age_minutes
+                )
+            )
+            eligibility_rows.append({
+                "timestamp": ts.isoformat(), "session_date": session_date,
+                "symbol": symbol,
+                "last_observed_at": observed.isoformat() if observed else None,
+                "bar_age_minutes": round(age_minutes, 4) if age_minutes is not None else None,
+                "eligible": eligible,
+                "reason": "fresh" if eligible else "stale_or_missing",
+            })
+            if eligible:
+                eligible_symbols.append(symbol)
         candidate_bars = {symbol: ready[symbol] for symbol in eligible_symbols if symbol in ready}
         if len(candidate_bars) < min(config.minimum_eligible_symbols, len(symbols)):
             continue
@@ -720,6 +752,9 @@ def run_replay(
                 "feature_available_at": (ts + timedelta(minutes=5)).isoformat(),
                 "session_date": ts.astimezone(MARKET_TZ).date().isoformat(),
                 "symbol": symbol, "rank": rank, "base_score": score,
+                "source_bar_age_minutes": round(
+                    (ts - last_observed_at[symbol]).total_seconds() / 60.0, 4
+                ),
                 "close": closes[-1], **values,
                 "momentum_acceleration": values["ret_30m"] - (values["ret_60m"] - values["ret_30m"]),
                 "realized_volatility_300m": statistics.stdev(one_bar_returns) if len(one_bar_returns) > 1 else 0.0,
@@ -737,7 +772,24 @@ def run_replay(
                 target, decisions = production_target, []
             else:
                 raw_target, decisions = _raw_research_target(ranked, candidate_bars, strategy_config)
-                target = _smooth_target(raw_target, portfolio.previous_target, strategy_config)
+                flat_intraday = (
+                    strategy_config.get("holding_window") == "overnight"
+                    and int(session.get("seconds_since_open", 0) // 60)
+                    < int(strategy_config.get("entry_minutes_from_open", 360))
+                )
+                if flat_intraday:
+                    raw_target = {
+                        "CASH": 1.0,
+                        "_meta": {
+                            **dict(raw_target.get("_meta") or {}),
+                            "holding_window": "overnight",
+                            "schedule_state": "flat_intraday",
+                        },
+                    }
+                target = (
+                    raw_target if flat_intraday else
+                    _smooth_target(raw_target, portfolio.previous_target, strategy_config)
+                )
             portfolio.previous_target = dict(target)
             equity = _equity(portfolio, prices)
             account = {"equity": equity, "cash": portfolio.cash, "buying_power": portfolio.cash}
@@ -852,6 +904,7 @@ def run_replay(
         "config": asdict(config), "symbols": symbols, "session_dates": session_dates,
         "evaluation_session_dates": evaluation_session_dates,
         "cycles": cycle_rows, "daily": daily, "decisions": decision_rows, "orders": order_rows,
+        "eligibility": eligibility_rows,
         "dataset": dataset, "walk_forward_folds": [fold.as_dict() for fold in folds],
         "walk_forward_results": walk_forward_results,
         "benchmark_daily": benchmark_daily, "benchmark_summary": benchmark_summary,
@@ -862,6 +915,9 @@ def run_replay(
             "strategy_names": sorted(strategy_configs),
             "portfolios": {name: _portfolio_checkpoint(value) for name, value in portfolios.items()},
             "history": history,
+            "last_observed_at": {
+                symbol: value.isoformat() for symbol, value in last_observed_at.items()
+            },
             "last_decision": last_decision.isoformat() if last_decision else None,
             "cycle_id": cycle_id,
             "prior_close_equity": final_close_equity,
@@ -898,6 +954,7 @@ def write_replay(
     for key, filename in {
         "cycles": "replay_cycles.csv", "daily": "replay_daily.csv", "decisions": "replay_decisions.csv",
         "orders": "replay_orders.csv", "dataset": "ml_dataset.csv",
+        "eligibility": "replay_eligibility.csv",
         "benchmark_daily": "benchmark_daily.csv",
         "walk_forward_results": "walk_forward_results.csv",
     }.items():
@@ -925,7 +982,7 @@ def write_replay(
         "session_dates": result["session_dates"],
         "evaluation_session_dates": result["evaluation_session_dates"], "row_counts": {
             key: len(result[key]) for key in (
-                "cycles", "daily", "decisions", "orders", "dataset",
+                "cycles", "daily", "decisions", "orders", "dataset", "eligibility",
                 "benchmark_daily", "walk_forward_results",
             )
         },

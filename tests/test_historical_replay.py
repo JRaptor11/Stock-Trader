@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from research.historical_replay import (
-    ReplayConfig, SpilledRows, _future_labels, _walk_forward_results,
+    ReplayConfig, SpilledRows, _future_labels, _timestamp, _walk_forward_results,
     load_bar_csv, run_replay, write_replay,
 )
 from research.replay_parity import compare_replay_to_live
@@ -258,6 +258,42 @@ class HistoricalReplayTests(unittest.TestCase):
         ]
         self.assertEqual(len(sparse), 1)
         self.assertIn("forward_return_30m", sparse[0])
+
+    def test_timestamp_freshness_excludes_only_stale_symbol_cycles(self):
+        rows = self._bars(80)
+        missing = datetime(2026, 1, 5, 20, 55, tzinfo=timezone.utc)
+        rows = [
+            row for row in rows
+            if not (row["symbol"] == "BBB" and row["timestamp"] == missing)
+        ]
+        result = run_replay(
+            rows,
+            ReplayConfig(
+                warmup_bars=61, require_benchmark=False,
+                maximum_candidate_bar_age_minutes=0,
+                minimum_eligible_symbols=1,
+            ),
+        )
+        stale = [
+            row for row in result["eligibility"]
+            if row["symbol"] == "BBB" and row["timestamp"] == missing.isoformat()
+        ]
+        self.assertEqual(1, len(stale))
+        self.assertFalse(stale[0]["eligible"])
+        self.assertEqual(5.0, stale[0]["bar_age_minutes"])
+
+    def test_overnight_strategy_is_flat_until_late_session(self):
+        result = run_replay(
+            self._bars(),
+            ReplayConfig(warmup_bars=61, require_benchmark=False),
+        )
+        rows = [
+            row for row in result["cycles"]
+            if row["strategy_name"] == "OVERNIGHT_REGIME_300M"
+        ]
+        self.assertTrue(rows)
+        early = [row for row in rows if _timestamp(row["timestamp"]).hour < 20]
+        self.assertTrue(all(row["target_cash_pct"] == 1.0 for row in early))
 
     def test_replay_parity_matches_on_source_bar_and_strategy(self):
         replay = [{

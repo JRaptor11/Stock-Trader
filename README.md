@@ -352,8 +352,10 @@ are `timestamp`, `symbol`, `open`, `high`, `low`, `close`, and `volume`.
 each symbol/timestamp pair must be unique. SPY is required by default and is
 treated as benchmark context rather than as a candidate security. Per-symbol
 and session coverage is reported in full. An aggregate gate rejects broadly
-incomplete datasets, and a second gate removes an individual symbol from a
-session when its coverage is too low while retaining the usable market cohort.
+incomplete datasets. Candidate eligibility is then decided at each timestamp
+from the age of its latest observed bar, avoiding the false assumption that a
+sparse IEX session is unusable for the entire day. The eligibility artifact
+records every accepted and rejected symbol with its exact bar age.
 
 Example:
 
@@ -374,6 +376,8 @@ feature/outcome dataset. Walk-forward evaluation selects a strategy using only
 each chronological training window, then records its return and SPY-relative
 excess return on the untouched test window. Outcome columns are calculated only
 from later timestamps and are kept separate from decision-time features. The
+selection score penalizes drawdown and turnover rather than simply choosing the
+highest raw recent return. The
 manifest records the source-file hash, replay configuration, service mode,
 Python version, deployed Git metadata when available, and a hash of the strategy
 registry.
