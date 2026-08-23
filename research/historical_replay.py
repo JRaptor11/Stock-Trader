@@ -123,6 +123,20 @@ class ReplayConfig:
     require_benchmark: bool = True
     minimum_average_coverage_pct: float = 95.0
     bar_timestamp_semantics: str = "bar_start"
+    data_start_date: str | None = None
+    data_end_date: str | None = None
+
+    def __post_init__(self) -> None:
+        start = (
+            datetime.fromisoformat(self.data_start_date).date()
+            if self.data_start_date else None
+        )
+        end = (
+            datetime.fromisoformat(self.data_end_date).date()
+            if self.data_end_date else None
+        )
+        if start and end and start > end:
+            raise ValueError("data_start_date must be on or before data_end_date")
 
     @property
     def adverse_fill_bps(self) -> float:
@@ -151,7 +165,12 @@ def _timestamp(value: str) -> datetime:
     return parsed.astimezone(UTC)
 
 
-def load_bar_csv(path: str | Path) -> list[dict]:
+def load_bar_csv(
+    path: str | Path,
+    *,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> list[dict]:
     """Load long-form OHLCV bars and reject ambiguous historical input."""
     path = Path(path)
     with path.open("r", newline="", encoding="utf-8-sig") as handle:
@@ -167,6 +186,13 @@ def load_bar_csv(path: str | Path) -> list[dict]:
             )
             if source_timestamp.tzinfo is None:
                 raise ValueError(f"timestamp missing UTC offset at line {line}")
+            session_date = source_timestamp.astimezone(
+                MARKET_TZ
+            ).date().isoformat()
+            if start_date and session_date < start_date:
+                continue
+            if end_date and session_date > end_date:
+                continue
             timestamp_text = str(raw["timestamp"])
             ts = timestamp_cache.get(timestamp_text)
             if ts is None:
@@ -849,6 +875,8 @@ def main(argv=None) -> int:
     parser.add_argument("--test-sessions", type=int, default=20)
     parser.add_argument("--benchmark-symbol", default="SPY")
     parser.add_argument("--symbols", help="Comma-separated candidate symbols; defaults to every non-benchmark symbol")
+    parser.add_argument("--start-date", help="Inclusive market-session date (YYYY-MM-DD)")
+    parser.add_argument("--end-date", help="Inclusive market-session date (YYYY-MM-DD)")
     args = parser.parse_args(argv)
     config = ReplayConfig(
         initial_cash=args.initial_cash, spread_bps=args.spread_bps,
@@ -857,8 +885,13 @@ def main(argv=None) -> int:
         step_sessions=args.test_sessions,
         benchmark_symbol=args.benchmark_symbol.upper(),
         candidate_symbols=tuple(symbol.strip().upper() for symbol in (args.symbols or "").split(",") if symbol.strip()),
+        data_start_date=args.start_date, data_end_date=args.end_date,
     )
-    rows = load_bar_csv(args.bars_csv)
+    rows = load_bar_csv(
+        args.bars_csv,
+        start_date=config.data_start_date,
+        end_date=config.data_end_date,
+    )
     result = run_replay(rows, config)
     write_replay(result, args.output, source_path=args.bars_csv)
     print(json.dumps(result["summary"], indent=2))

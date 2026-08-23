@@ -86,6 +86,36 @@ class HistoricalReplayTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 load_bar_csv(path)
 
+    def test_loader_filters_inclusive_market_session_dates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bars.csv"
+            with path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=[
+                        "timestamp", "symbol", "open", "high", "low",
+                        "close", "volume",
+                    ],
+                )
+                writer.writeheader()
+                for day in ("2024-12-31", "2025-01-02", "2026-01-02"):
+                    writer.writerow({
+                        "timestamp": f"{day}T14:30:00+00:00",
+                        "symbol": "AAA", "open": 1, "high": 1,
+                        "low": 1, "close": 1, "volume": 1,
+                    })
+            rows = load_bar_csv(
+                path, start_date="2025-01-01", end_date="2025-12-31"
+            )
+            self.assertEqual(1, len(rows))
+            self.assertEqual("2025-01-02", rows[0]["timestamp"].date().isoformat())
+
+    def test_replay_config_rejects_inverted_date_range(self):
+        with self.assertRaisesRegex(ValueError, "data_start_date"):
+            ReplayConfig(
+                data_start_date="2026-01-01", data_end_date="2025-01-01"
+            )
+
     def test_benchmark_is_context_not_candidate_by_default(self):
         rows = self._bars()
         for index in range(76):

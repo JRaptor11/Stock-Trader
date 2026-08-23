@@ -123,7 +123,8 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
         "next_retry_at", "completed_at", "archive", "durable_uri", "output",
         "completed_cycles", "completed_session", "completed_sessions",
         "completed_timestamps", "elapsed_seconds", "percent_complete",
-        "stage", "stage_message",
+        "stage", "stage_message", "stage_completed_rows",
+        "stage_total_rows", "stage_percent_complete",
     ):
         base_status.pop(stale_key, None)
     _write_json_atomic(status_path, base_status)
@@ -138,8 +139,13 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
             })
             _write_json_atomic(status_path, latest_status)
 
+        replay_config = _config_from_job(job)
         result = run_replay(
-            load_bar_csv(bars_path), _config_from_job(job),
+            load_bar_csv(
+                bars_path,
+                start_date=replay_config.data_start_date,
+                end_date=replay_config.data_end_date,
+            ), replay_config,
             progress_callback=update_progress, spill_directory=spill,
         )
         write_replay(
