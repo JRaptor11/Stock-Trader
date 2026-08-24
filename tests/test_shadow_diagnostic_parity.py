@@ -125,30 +125,14 @@ class ShadowDiagnosticParityTests(unittest.TestCase):
         }
         self.assertEqual(settings, {(0.40, 0.075)})
 
-    def test_moderate_sizing_changes_exposure_not_timing_signal(self):
-        bars = {"AMD": [{"close": 100 + index * 0.1} for index in range(61)]}
-        ranked = [_Ranked("AMD", 0.02)]
-        defensive, defensive_decisions = _raw_research_target(
-            ranked, bars, STRATEGIES["LOOKBACK_60M"],
-        )
-        moderate, moderate_decisions = _raw_research_target(
-            ranked, bars, STRATEGIES["LOOKBACK_60M_MODERATE"],
-        )
-        self.assertEqual(
-            defensive_decisions[0]["signal_score"],
-            moderate_decisions[0]["signal_score"],
-        )
-        self.assertLess(moderate["CASH"], defensive["CASH"])
-        self.assertEqual(moderate["_meta"]["sizing_mode"], "moderate")
-
-    def test_every_timing_variant_has_moderate_sizing_pair(self):
-        for name in (
-            "LOOKBACK_60M", "LOOKBACK_150M", "LOOKBACK_300M",
-            "MULTI_HORIZON_BLEND", "ADAPTIVE_REVERSAL",
-        ):
-            paired = STRATEGIES[f"{name}_MODERATE"]
-            self.assertEqual(paired["sizing_mode"], "moderate")
-            self.assertEqual(paired["target_mode"], STRATEGIES[name]["target_mode"])
+    def test_retired_discovery_variants_are_not_in_active_shadow_set(self):
+        retired = {
+            "OVERNIGHT_REGIME_300M_EARLY_ENTRY", "MEAN_REVERSION_30M",
+            "LOOKBACK_60M_MODERATE", "LOOKBACK_150M_MODERATE",
+            "LOOKBACK_300M_MODERATE", "MULTI_HORIZON_BLEND_MODERATE",
+            "ADAPTIVE_REVERSAL_MODERATE",
+        }
+        self.assertTrue(retired.isdisjoint(STRATEGIES))
 
     def test_live_conservative_confirmation_is_live_only(self):
         config = STRATEGIES["LIVE_CONSERVATIVE_CONFIRMATION"]

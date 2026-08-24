@@ -26,6 +26,8 @@ from layers.layer2_portfolio import Layer2PortfolioBuilder
 from layers.layer3_rebalancer import build_layer3_shadow_plan, source_bar_market_session_info
 from layers.layer_research_strategy import STRATEGIES, _raw_research_target, _smooth_target
 from research.walk_forward import build_walk_forward_folds
+from research.universes import SECTORS, resolve_universe, universe_metadata
+from utils.numeric import safe_float
 
 
 UTC = timezone.utc
@@ -120,13 +122,21 @@ class ReplayConfig:
     step_sessions: int = 20
     benchmark_symbol: str = "SPY"
     candidate_symbols: tuple[str, ...] = ()
+    universe_name: str = ""
     require_benchmark: bool = True
     minimum_average_coverage_pct: float = 95.0
     maximum_candidate_bar_age_minutes: float | None = 10.0
     minimum_eligible_symbols: int = 8
+    minimum_eligible_coverage_pct: float = 80.0
     bar_timestamp_semantics: str = "bar_start"
     data_start_date: str | None = None
     data_end_date: str | None = None
+    taxable_short_term_rate: float = 0.22
+    taxable_long_term_rate: float = 0.15
+    taxable_state_rate: float = 0.093
+    taxpayer_filing_status: str = "single"
+    taxpayer_state: str = "CA"
+    taxpayer_gross_income: float = 105000.0
 
     def __post_init__(self) -> None:
         start = (
@@ -143,6 +153,18 @@ class ReplayConfig:
             raise ValueError("maximum_candidate_bar_age_minutes cannot be negative")
         if self.minimum_eligible_symbols < 1:
             raise ValueError("minimum_eligible_symbols must be positive")
+        if not 0.0 < self.minimum_eligible_coverage_pct <= 100.0:
+            raise ValueError("minimum_eligible_coverage_pct must be above zero and at most 100")
+        if self.universe_name:
+            resolve_universe(self.universe_name)
+        if self.universe_name and self.candidate_symbols:
+            raise ValueError("set universe_name or candidate_symbols, not both")
+        for name in ("taxable_short_term_rate", "taxable_long_term_rate", "taxable_state_rate"):
+            value = float(getattr(self, name))
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be between zero and one")
+        if self.taxpayer_gross_income < 0:
+            raise ValueError("taxpayer_gross_income cannot be negative")
 
     @property
     def adverse_fill_bps(self) -> float:
@@ -162,6 +184,71 @@ class ReplayPortfolio:
     trade_count: int = 0
     reversals: int = 0
     last_side: dict[str, str] = field(default_factory=dict)
+    tax_lots: dict[str, list[dict]] = field(default_factory=dict)
+    pending_wash_losses: dict[str, list[dict]] = field(default_factory=dict)
+    realized_short_term_gain: float = 0.0
+    realized_long_term_gain: float = 0.0
+    realized_loss: float = 0.0
+    wash_sale_loss_exposure: float = 0.0
+    buy_events: list[dict] = field(default_factory=list)
+    loss_sale_events: list[dict] = field(default_factory=list)
+
+
+def _record_tax_fill(
+    portfolio: ReplayPortfolio, symbol: str, side: str, qty: float,
+    fill_price: float, ts: datetime,
+) -> None:
+    """Maintain an estimated FIFO tax ledger for account-profile research."""
+    lots = portfolio.tax_lots.setdefault(symbol, [])
+    pending = portfolio.pending_wash_losses.setdefault(symbol, [])
+    cutoff = ts - timedelta(days=30)
+    pending[:] = [item for item in pending if _timestamp(item["sold_at"]) >= cutoff]
+    if side == "BUY":
+        portfolio.buy_events.append({
+            "symbol": symbol, "bought_at": ts.isoformat(), "qty": qty,
+        })
+        remaining = qty
+        basis_adjustment = 0.0
+        for loss in pending:
+            matched = min(remaining, float(loss["remaining_qty"]))
+            if matched <= 0:
+                continue
+            basis_adjustment += matched * float(loss["loss_per_share"])
+            loss["remaining_qty"] -= matched
+            remaining -= matched
+            portfolio.wash_sale_loss_exposure += matched * float(loss["loss_per_share"])
+        pending[:] = [item for item in pending if float(item["remaining_qty"]) > 0]
+        lots.append({
+            "qty": qty, "cost_per_share": fill_price + basis_adjustment / qty,
+            "acquired_at": ts.isoformat(),
+        })
+        return
+    remaining = qty
+    while remaining > 0 and lots:
+        lot = lots[0]
+        sold = min(remaining, float(lot["qty"]))
+        gain = sold * (fill_price - float(lot["cost_per_share"]))
+        held_days = (ts - _timestamp(lot["acquired_at"])).days
+        if gain >= 0:
+            if held_days > 365:
+                portfolio.realized_long_term_gain += gain
+            else:
+                portfolio.realized_short_term_gain += gain
+        else:
+            loss = -gain
+            portfolio.realized_loss += loss
+            pending.append({
+                "sold_at": ts.isoformat(), "remaining_qty": sold,
+                "loss_per_share": loss / sold,
+            })
+            portfolio.loss_sale_events.append({
+                "symbol": symbol, "sold_at": ts.isoformat(), "qty": sold,
+                "loss_per_share": loss / sold,
+            })
+        lot["qty"] -= sold
+        remaining -= sold
+        if lot["qty"] <= 0:
+            lots.pop(0)
 
 
 def _timestamp(value: str) -> datetime:
@@ -176,6 +263,7 @@ def load_bar_csv(
     *,
     start_date: str | None = None,
     end_date: str | None = None,
+    include_symbols: set[str] | None = None,
 ) -> list[dict]:
     """Load long-form OHLCV bars and reject ambiguous historical input."""
     path = Path(path)
@@ -207,6 +295,8 @@ def load_bar_csv(
             symbol = sys.intern(str(raw["symbol"] or "").upper().strip())
             if not symbol:
                 raise ValueError(f"invalid bar at line {line}: missing symbol")
+            if include_symbols and symbol not in include_symbols:
+                continue
             values = {}
             for name in ("open", "high", "low", "close", "volume", "trade_count", "vwap"):
                 value = raw.get(name)
@@ -320,6 +410,7 @@ def _execute_pending(
             portfolio.positions[symbol] = portfolio.positions.get(symbol, 0.0) - qty
             if portfolio.positions[symbol] <= 0:
                 portfolio.positions.pop(symbol, None)
+        _record_tax_fill(portfolio, symbol, side, qty, fill_price, ts)
         previous = portfolio.last_side.get(symbol)
         if previous and previous != side:
             portfolio.reversals += 1
@@ -348,16 +439,19 @@ def _future_labels(
     horizons = {"10m": 10, "30m": 30, "60m": 60}
     series = {}
     for symbol, values in bars_by_symbol.items():
-        values.sort(key=lambda item: item[0])
+        values = list(values)
+        values.sort(key=lambda item: item[0] if isinstance(item, tuple) else item["timestamp"])
+        timestamps = [
+            item[0] if isinstance(item, tuple) else item["timestamp"]
+            for item in values
+        ]
         series[symbol] = (
-            values,
-            {ts: bar for ts, bar in values},
-            [ts for ts, _ in values],
+            values, timestamps,
         )
     total_features = len(features)
     for feature_index, feature in enumerate(features, start=1):
         ts, symbol = _timestamp(feature["timestamp"]), feature["symbol"]
-        values, value_map, timestamps = series[symbol]
+        values, timestamps = series[symbol]
         next_index = bisect.bisect_right(timestamps, ts)
         row = dict(feature)
         # A sparse feed can legitimately have no bar for this symbol at the
@@ -366,14 +460,20 @@ def _future_labels(
         start = float(feature["close"])
         for label, minutes in horizons.items():
             target_ts = ts + timedelta(minutes=minutes)
-            target_bar = value_map.get(target_ts)
+            target_index = bisect.bisect_left(timestamps, target_ts)
+            target_item = values[target_index] if target_index < len(values) else None
+            target_bar = (
+                target_item[1] if isinstance(target_item, tuple) else target_item
+            ) if target_item is not None and timestamps[target_index] == target_ts else None
             valid = target_bar is not None and target_ts.astimezone(MARKET_TZ).date() == ts.astimezone(MARKET_TZ).date()
             row[f"forward_return_{label}"] = (
                 round(float(target_bar["close"]) / start - 1.0, 10) if valid else None
             )
         window_end = ts + timedelta(minutes=60)
         window = []
-        for future_ts, future_bar in itertools.islice(values, next_index, None):
+        for future_item in itertools.islice(values, next_index, None):
+            future_ts = future_item[0] if isinstance(future_item, tuple) else future_item["timestamp"]
+            future_bar = future_item[1] if isinstance(future_item, tuple) else future_item
             if future_ts > window_end:
                 break
             if future_ts.astimezone(MARKET_TZ).date() == ts.astimezone(MARKET_TZ).date():
@@ -451,6 +551,166 @@ def _daily_summaries(cycles, orders, prior_close_equity: dict | None = None) -> 
         })
         previous[strategy] = end["equity"]
     return output
+
+
+def _account_profile_summaries(
+    portfolios: dict[str, ReplayPortfolio], summaries: list[dict],
+    ending_prices: dict[str, float], ending_at: datetime, config: ReplayConfig,
+) -> list[dict]:
+    """Estimate comparable pretax, taxable, and Roth terminal outcomes.
+
+    Taxable values use FIFO lots and a hypothetical terminal liquidation. They
+    are research estimates, not tax-return calculations or tax advice.
+    """
+    summary_by_name = {row["strategy_name"]: row for row in summaries}
+    output = []
+    for name, portfolio in portfolios.items():
+        summary = summary_by_name[name]
+        final_equity = float(summary["final_equity"])
+        unrealized_short = 0.0
+        unrealized_long = 0.0
+        for symbol, lots in portfolio.tax_lots.items():
+            price = float(ending_prices.get(symbol, 0.0))
+            for lot in lots:
+                gain = float(lot["qty"]) * (price - float(lot["cost_per_share"]))
+                acquired = _timestamp(lot["acquired_at"])
+                if (ending_at - acquired).days > 365:
+                    unrealized_long += gain
+                else:
+                    unrealized_short += gain
+        total_short = portfolio.realized_short_term_gain + unrealized_short
+        total_long = portfolio.realized_long_term_gain + unrealized_long
+        deductible_losses = portfolio.realized_loss
+        net_short = total_short - min(max(total_short, 0.0), deductible_losses)
+        deductible_losses -= min(max(total_short, 0.0), deductible_losses)
+        net_long = total_long - min(max(total_long, 0.0), deductible_losses)
+        federal_tax = (
+            max(0.0, net_short) * config.taxable_short_term_rate
+            + max(0.0, net_long) * config.taxable_long_term_rate
+        )
+        state_tax = max(0.0, net_short + net_long) * config.taxable_state_rate
+        taxable_liability = federal_tax + state_tax
+        common = {
+            "strategy_name": name,
+            "pretax_final_equity": round(final_equity, 2),
+            "pretax_return": round(final_equity / config.initial_cash - 1.0, 10),
+            "turnover": summary["turnover"], "trade_count": summary["trade_count"],
+            "max_drawdown_pct": summary["max_drawdown_pct"],
+        }
+        output.extend((
+            {
+                **common, "account_profile": "PRETAX",
+                "estimated_tax_liability": 0.0,
+                "estimated_after_tax_equity": round(final_equity, 2),
+                "estimated_after_tax_return": common["pretax_return"],
+            },
+            {
+                **common, "account_profile": "CA_SINGLE_105K",
+                "estimated_tax_liability": round(taxable_liability, 2),
+                "estimated_after_tax_equity": round(final_equity - taxable_liability, 2),
+                "estimated_after_tax_return": round(
+                    (final_equity - taxable_liability) / config.initial_cash - 1.0, 10
+                ),
+                "realized_short_term_gain": round(portfolio.realized_short_term_gain, 2),
+                "realized_long_term_gain": round(portfolio.realized_long_term_gain, 2),
+                "realized_loss": round(portfolio.realized_loss, 2),
+                "unrealized_short_term_gain": round(unrealized_short, 2),
+                "unrealized_long_term_gain": round(unrealized_long, 2),
+                "wash_sale_loss_exposure": round(portfolio.wash_sale_loss_exposure, 2),
+                "tax_model": "estimated_fifo_terminal_liquidation",
+            },
+            {
+                **common, "account_profile": "ROTH_IRA",
+                "estimated_tax_liability": 0.0,
+                "estimated_after_tax_equity": round(final_equity, 2),
+                "estimated_after_tax_return": common["pretax_return"],
+                "tax_advantaged_capacity_lost_at_end": round(
+                    max(0.0, config.initial_cash - final_equity), 2
+                ),
+                "tax_model": "qualified_distribution_assumption",
+            },
+        ))
+    return output
+
+
+def _cross_account_wash_sale_matrix(
+    portfolios: dict[str, ReplayPortfolio],
+) -> list[dict]:
+    """Compare every taxable strategy's losses with every Roth strategy's buys."""
+    output = []
+    for taxable_name, taxable in sorted(portfolios.items()):
+        for roth_name, roth in sorted(portfolios.items()):
+            matched_loss = 0.0
+            matched_shares = 0.0
+            matched_events = 0
+            daily_buys = defaultdict(float)
+            for buy in roth.buy_events:
+                day = _timestamp(buy["bought_at"]).date().toordinal()
+                daily_buys[(buy["symbol"], day)] += float(buy["qty"])
+            buys_by_symbol = defaultdict(list)
+            for (symbol, day), quantity in daily_buys.items():
+                buys_by_symbol[symbol].append([day, quantity])
+            for values in buys_by_symbol.values():
+                values.sort(key=lambda item: item[0])
+            buy_days_by_symbol = {
+                symbol: [item[0] for item in values]
+                for symbol, values in buys_by_symbol.items()
+            }
+            for loss in taxable.loss_sale_events:
+                sold_day = _timestamp(loss["sold_at"]).date().toordinal()
+                remaining = float(loss["qty"])
+                event_matched = False
+                symbol_buys = buys_by_symbol.get(loss["symbol"], [])
+                days = buy_days_by_symbol.get(loss["symbol"], [])
+                start = bisect.bisect_left(days, sold_day - 30)
+                end = bisect.bisect_right(days, sold_day + 30)
+                for buy in symbol_buys[start:end]:
+                    quantity = min(remaining, float(buy[1]))
+                    if quantity <= 0:
+                        continue
+                    matched_shares += quantity
+                    matched_loss += quantity * float(loss["loss_per_share"])
+                    remaining -= quantity
+                    buy[1] -= quantity
+                    event_matched = True
+                    if remaining <= 0:
+                        break
+                matched_events += int(event_matched)
+            output.append({
+                "taxable_strategy": taxable_name,
+                "roth_strategy": roth_name,
+                "matched_loss_sale_events": matched_events,
+                "matched_shares": round(matched_shares, 6),
+                "potential_permanently_disallowed_loss": round(matched_loss, 2),
+                "window_days_before_and_after": 30,
+            })
+    return output
+
+
+def _universe_selection_diagnostics(decisions) -> list[dict]:
+    grouped = defaultdict(lambda: {
+        "evaluations": 0, "selected_evaluations": 0, "raw_target_weight_sum": 0.0,
+    })
+    for row in decisions:
+        symbol = str(row.get("symbol") or "").upper()
+        key = (
+            row.get("strategy_name"), symbol,
+            SECTORS.get(symbol, "unclassified"),
+        )
+        aggregate = grouped[key]
+        aggregate["evaluations"] += 1
+        aggregate["selected_evaluations"] += int(bool(row.get("selected")))
+        aggregate["raw_target_weight_sum"] += float(row.get("raw_target_weight") or 0.0)
+    return [{
+        "strategy_name": strategy, "symbol": symbol, "sector": sector,
+        **aggregate,
+        "selection_rate": round(
+            aggregate["selected_evaluations"] / aggregate["evaluations"], 10
+        ) if aggregate["evaluations"] else 0.0,
+        "average_raw_target_weight": round(
+            aggregate["raw_target_weight_sum"] / aggregate["evaluations"], 10
+        ) if aggregate["evaluations"] else 0.0,
+    } for (strategy, symbol, sector), aggregate in sorted(grouped.items())]
 
 
 def _dataset_quality(rows: list[dict], symbols: list[str], benchmark_symbol: str) -> dict:
@@ -546,7 +806,12 @@ def _compound(returns: list[float]) -> float:
 
 
 def _walk_forward_results(daily: list[dict], benchmark_daily: list[dict], folds) -> list[dict]:
-    """Select on each training window, then report only held-out test performance."""
+    """Select on training data and report strictly held-out performance.
+
+    SPY is an explicit investable default. A tactical strategy must beat its
+    risk-adjusted score by a small margin before replacing it; this prevents a
+    nearly-flat strategy from winning merely because it has negligible risk.
+    """
     by_strategy = defaultdict(dict)
     daily_rows = defaultdict(dict)
     previous_equity = {}
@@ -558,6 +823,14 @@ def _walk_forward_results(daily: list[dict], benchmark_daily: list[dict], folds)
         previous_equity[strategy] = row["last_equity"]
     benchmark = {row["session_date"]: row["session_return"] for row in benchmark_daily}
     all_dates = sorted(benchmark)
+    by_strategy["SPY_BUY_HOLD"] = dict(benchmark)
+    daily_rows["SPY_BUY_HOLD"] = {
+        day: {
+            "session_date": day, "first_equity": 1.0,
+            "last_equity": 1.0 + benchmark[day], "gross_turnover": 0.0,
+        }
+        for day in all_dates
+    }
     by_strategy["CASH"] = {day: 0.0 for day in all_dates}
     daily_rows["CASH"] = {
         day: {
@@ -593,7 +866,7 @@ def _walk_forward_results(daily: list[dict], benchmark_daily: list[dict], folds)
                 for index in range(0, len(train_returns), chunk_size)
             ]
             worst_subwindow_return = min(subwindow_returns, default=0.0)
-            selection_score = (
+            absolute_score = (
                 train_return - 0.50 * abs(max_drawdown)
                 - 0.0001 * turnover_ratio
                 + 0.50 * min(0.0, worst_subwindow_return)
@@ -605,18 +878,36 @@ def _walk_forward_results(daily: list[dict], benchmark_daily: list[dict], folds)
                 "train_max_drawdown": max_drawdown,
                 "train_turnover_ratio": turnover_ratio,
                 "worst_train_subwindow_return": worst_subwindow_return,
-                "selection_score": selection_score,
+                "selection_score": absolute_score,
             })
         if not candidates:
             continue
-        selected = max(candidates, key=lambda row: (row["selection_score"], row["train_return"]))
+        defensive = [
+            row for row in candidates if row["strategy_name"] in {"SPY_BUY_HOLD", "CASH"}
+        ]
+        tactical = [
+            row for row in candidates if row["strategy_name"] not in {"SPY_BUY_HOLD", "CASH"}
+        ]
+        selected = max(defensive, key=lambda row: (row["selection_score"], row["train_return"]))
+        tactical_best = max(
+            tactical, key=lambda row: (row["selection_score"], row["train_return"]),
+            default=None,
+        )
+        # The better of SPY and CASH is the defensive baseline. A tactical
+        # candidate replaces it only after clearing both risk-adjusted and
+        # absolute-return hurdles on the training window.
+        if tactical_best:
+            score_margin = tactical_best["selection_score"] - selected["selection_score"]
+            return_margin = tactical_best["train_return"] - selected["train_return"]
+            if score_margin >= 0.005 and return_margin >= 0.01:
+                selected = tactical_best
         test_returns = [by_strategy[selected["strategy_name"]][day] for day in fold.test_dates]
         benchmark_returns = [benchmark[day] for day in fold.test_dates if day in benchmark]
         test_return = _compound(test_returns)
         benchmark_return = _compound(benchmark_returns) if len(benchmark_returns) == len(fold.test_dates) else None
         output.append({
             **fold.as_dict(), "selected_strategy": selected["strategy_name"],
-            "selection_metric": "return_minus_drawdown_turnover_and_instability_with_cash_fallback",
+            "selection_metric": "spy_default_with_tactical_excess_hurdle_and_cash_fallback",
             "selected_train_score": round(selected["selection_score"], 10),
             "selected_train_return": round(selected["train_return"], 10),
             "selected_test_return": round(test_return, 10),
@@ -638,11 +929,12 @@ def run_replay(
         for index in range(len(rows) - 1)
     ):
         rows = sorted(rows, key=lambda row: (row["timestamp"], row["symbol"]))
-    all_bars_by_symbol = defaultdict(list)
-    for row in rows:
-        all_bars_by_symbol[row["symbol"]].append((row["timestamp"], row))
     all_symbols = sorted({row["symbol"] for row in rows})
-    configured = {str(symbol).upper() for symbol in config.candidate_symbols}
+    configured_universe = resolve_universe(config.universe_name)
+    configured = {
+        str(symbol).upper()
+        for symbol in (configured_universe or config.candidate_symbols)
+    }
     symbols = sorted(configured) if configured else [
         symbol for symbol in all_symbols if not (
             symbol == config.benchmark_symbol.upper() and len(all_symbols) > 1
@@ -657,12 +949,21 @@ def run_replay(
     quality = _dataset_quality(
         rows, symbols, benchmark_symbol if benchmark_symbol in all_symbols else ""
     )
+    universe = universe_metadata(config.universe_name, symbols)
     if quality["average_coverage_pct"] < config.minimum_average_coverage_pct:
         raise ValueError(
             "average historical bar coverage is below the configured minimum: "
             f'{quality["average_coverage_pct"]:.4f}% < {config.minimum_average_coverage_pct:.4f}%'
         )
     quality["candidate_bar_age_limit_minutes"] = config.maximum_candidate_bar_age_minutes
+    required_eligible_symbols = min(
+        len(symbols), max(
+            config.minimum_eligible_symbols,
+            math.ceil(len(symbols) * config.minimum_eligible_coverage_pct / 100.0),
+        ),
+    )
+    quality["required_eligible_symbols"] = required_eligible_symbols
+    quality["minimum_eligible_coverage_pct"] = config.minimum_eligible_coverage_pct
     checkpoint = dict(initial_checkpoint or {})
     history = {
         symbol: list(dict(checkpoint.get("history") or {}).get(symbol, []))
@@ -747,7 +1048,7 @@ def run_replay(
             if eligible:
                 eligible_symbols.append(symbol)
         candidate_bars = {symbol: ready[symbol] for symbol in eligible_symbols if symbol in ready}
-        if len(candidate_bars) < min(config.minimum_eligible_symbols, len(symbols)):
+        if len(candidate_bars) < required_eligible_symbols:
             continue
         last_decision, cycle_id = ts, cycle_id + 1
         ranked = ranker.rank_from_bars(candidate_bars)
@@ -755,6 +1056,12 @@ def run_replay(
             symbol: float(raw_bars.get(symbol, {"close": history[symbol][-1]["close"]})["close"])
             for symbol in symbols if history.get(symbol)
         }
+        if benchmark_symbol in history:
+            prices[benchmark_symbol] = float(
+                raw_bars.get(
+                    benchmark_symbol, {"close": history[benchmark_symbol][-1]["close"]}
+                )["close"]
+            )
         session = source_bar_market_session_info(ts)
         production_target = production_builder.build_target_portfolio(ranked, context=session)
         rank_map = {item.symbol: (index, item.score) for index, item in enumerate(ranked, 1)}
@@ -801,6 +1108,57 @@ def run_replay(
                 raw_target, decisions = _raw_research_target(
                     ranked, candidate_bars, evaluation_config
                 )
+                benchmark_core = safe_float(
+                    strategy_config.get("benchmark_core_weight"), 0.0
+                )
+                if benchmark_core > 0 and benchmark_symbol in prices:
+                    tactical_scale = max(0.0, 1.0 - benchmark_core)
+                    raw_target = {
+                        symbol: round(weight * tactical_scale, 6)
+                        for symbol, weight in raw_target.items()
+                        if symbol not in {"CASH", "_meta"}
+                    }
+                    raw_target[benchmark_symbol] = round(benchmark_core, 6)
+                    raw_target["CASH"] = round(
+                        max(0.0, 1.0 - sum(raw_target.values())), 6
+                    )
+                    raw_target["_meta"] = {
+                        "strategy": "spy_core_tactical_stock_overlay",
+                        "benchmark_core_weight": benchmark_core,
+                    }
+                volatility_target = safe_float(
+                    strategy_config.get("volatility_target_annualized"), 0.0
+                )
+                if volatility_target > 0:
+                    benchmark_closes = [
+                        float(item["close"]) for item in (benchmark_bars or [])[-61:]
+                    ]
+                    one_bar = [
+                        benchmark_closes[index] / benchmark_closes[index - 1] - 1.0
+                        for index in range(1, len(benchmark_closes))
+                        if benchmark_closes[index - 1]
+                    ]
+                    realized = (
+                        statistics.pstdev(one_bar) * math.sqrt(78 * 252)
+                        if len(one_bar) > 1 else 0.0
+                    )
+                    exposure_scale = min(
+                        1.0, volatility_target / realized
+                    ) if realized > 0 else 0.0
+                    raw_target = {
+                        symbol: round(weight * exposure_scale, 6)
+                        for symbol, weight in raw_target.items()
+                        if symbol not in {"CASH", "_meta"}
+                    }
+                    raw_target["CASH"] = round(
+                        max(0.0, 1.0 - sum(raw_target.values())), 6
+                    )
+                    raw_target["_meta"] = {
+                        "strategy": "annualized_volatility_target",
+                        "volatility_target_annualized": volatility_target,
+                        "realized_volatility_annualized": round(realized, 8),
+                        "exposure_scale": round(exposure_scale, 8),
+                    }
                 minute_from_open = int(session.get("seconds_since_open", 0) // 60)
                 overnight = strategy_config.get("holding_window") == "overnight"
                 exit_minute = int(strategy_config.get("exit_minutes_from_open", 0))
@@ -889,10 +1247,17 @@ def run_replay(
 
     if progress_callback:
         progress_callback({"stage": "building_future_labels", "percent_complete": 100.0})
+    # Build only lightweight per-symbol reference lists after the main replay.
+    # The previous implementation retained an additional (timestamp, row)
+    # tuple for every bar throughout execution, materially increasing peak RSS.
+    label_bars_by_symbol = defaultdict(list)
+    for row in rows:
+        label_bars_by_symbol[row["symbol"]].append(row)
     dataset = _future_labels(
-        feature_rows, all_bars_by_symbol, collection("dataset"),
+        feature_rows, label_bars_by_symbol, collection("dataset"),
         progress_callback=progress_callback,
     )
+    label_bars_by_symbol.clear()
     if progress_callback:
         progress_callback({"stage": "building_daily_summaries"})
     daily = _daily_summaries(cycle_rows, order_rows, prior_close_equity)
@@ -962,6 +1327,16 @@ def run_replay(
             "pnl_with_additional_10bp_cost": round(final.get("pnl", 0.0) - portfolio.turnover * 0.0010, 2),
             "pnl_with_additional_20bp_cost": round(final.get("pnl", 0.0) - portfolio.turnover * 0.0020, 2),
         })
+    ending_at = max(last_observed_at.values(), default=datetime.now(UTC))
+    ending_prices = {
+        symbol: float(values[-1]["close"])
+        for symbol, values in history.items() if values
+    }
+    account_profiles = _account_profile_summaries(
+        portfolios, summaries, ending_prices, ending_at, config
+    )
+    cross_account_wash_sales = _cross_account_wash_sale_matrix(portfolios)
+    universe_selection = _universe_selection_diagnostics(decision_rows)
     if progress_callback:
         progress_callback({"stage": "writing_result_artifacts"})
     final_close_equity = dict(prior_close_equity)
@@ -975,8 +1350,10 @@ def run_replay(
         "dataset": dataset, "walk_forward_folds": [fold.as_dict() for fold in output_folds],
         "walk_forward_results": walk_forward_results,
         "benchmark_daily": benchmark_daily, "benchmark_summary": benchmark_summary,
-        "dataset_quality": quality,
-        "summary": summaries,
+        "dataset_quality": quality, "universe": universe,
+        "summary": summaries, "account_profiles": account_profiles,
+        "cross_account_wash_sales": cross_account_wash_sales,
+        "universe_selection": universe_selection,
         "checkpoint": {
             "version": 1,
             "strategy_names": sorted(strategy_configs),
@@ -1027,12 +1404,30 @@ def write_replay(
         "eligibility": "replay_eligibility.csv",
         "benchmark_daily": "benchmark_daily.csv",
         "walk_forward_results": "walk_forward_results.csv",
+        "account_profiles": "account_profile_results.csv",
+        "cross_account_wash_sales": "cross_account_wash_sale_matrix.csv",
+        "universe_selection": "universe_selection_diagnostics.csv",
     }.items():
         _write_csv(output / filename, result[key])
     (output / "walk_forward_folds.json").write_text(json.dumps(result["walk_forward_folds"], indent=2), encoding="utf-8")
     (output / "dataset_quality.json").write_text(json.dumps(result["dataset_quality"], indent=2), encoding="utf-8")
+    (output / "universe_metadata.json").write_text(json.dumps(result["universe"], indent=2), encoding="utf-8")
     (output / "replay_summary.json").write_text(json.dumps(result["summary"], indent=2), encoding="utf-8")
     (output / "benchmark_summary.json").write_text(json.dumps(result["benchmark_summary"], indent=2), encoding="utf-8")
+    (output / "account_profile_assumptions.json").write_text(json.dumps({
+        "taxable_short_term_rate": result["config"]["taxable_short_term_rate"],
+        "taxable_long_term_rate": result["config"]["taxable_long_term_rate"],
+        "taxable_state_rate": result["config"]["taxable_state_rate"],
+        "taxpayer_filing_status": result["config"]["taxpayer_filing_status"],
+        "taxpayer_state": result["config"]["taxpayer_state"],
+        "taxpayer_gross_income": result["config"]["taxpayer_gross_income"],
+        "primary_taxable_profile": "CA_SINGLE_105K",
+        "tax_lot_method": "FIFO",
+        "taxable_terminal_value": "hypothetical liquidation at final replay price",
+        "wash_sale_model": "forward 30-day same-symbol replacement estimate",
+        "roth_model": "qualified-distribution tax-free assumption",
+        "disclaimer": "Research estimate; not tax advice or a tax-return calculation.",
+    }, indent=2), encoding="utf-8")
     (output / "replay_checkpoint.json").write_text(json.dumps(result["checkpoint"], indent=2), encoding="utf-8")
     manifest = {
         "created_at": datetime.now(UTC).isoformat(), "source_path": str(source_path) if source_path else None,
@@ -1049,11 +1444,15 @@ def write_replay(
         ).hexdigest(),
         "experiment": experiment,
         "config": result["config"], "symbols": result["symbols"],
+        "universe": result["universe"],
         "session_dates": result["session_dates"],
         "evaluation_session_dates": result["evaluation_session_dates"], "row_counts": {
             key: len(result[key]) for key in (
                 "cycles", "daily", "decisions", "orders", "dataset", "eligibility",
                 "benchmark_daily", "walk_forward_results",
+                "account_profiles",
+                "cross_account_wash_sales",
+                "universe_selection",
             )
         },
     }
@@ -1076,8 +1475,12 @@ def main(argv=None) -> int:
     parser.add_argument("--test-sessions", type=int, default=20)
     parser.add_argument("--benchmark-symbol", default="SPY")
     parser.add_argument("--symbols", help="Comma-separated candidate symbols; defaults to every non-benchmark symbol")
+    parser.add_argument("--universe", choices=("BASELINE_10", "DIVERSIFIED_20", "DIVERSIFIED_30"))
     parser.add_argument("--start-date", help="Inclusive market-session date (YYYY-MM-DD)")
     parser.add_argument("--end-date", help="Inclusive market-session date (YYYY-MM-DD)")
+    parser.add_argument("--short-term-tax-rate", type=float, default=0.22)
+    parser.add_argument("--long-term-tax-rate", type=float, default=0.15)
+    parser.add_argument("--state-tax-rate", type=float, default=0.093)
     args = parser.parse_args(argv)
     config = ReplayConfig(
         initial_cash=args.initial_cash, spread_bps=args.spread_bps,
@@ -1086,12 +1489,20 @@ def main(argv=None) -> int:
         step_sessions=args.test_sessions,
         benchmark_symbol=args.benchmark_symbol.upper(),
         candidate_symbols=tuple(symbol.strip().upper() for symbol in (args.symbols or "").split(",") if symbol.strip()),
+        universe_name=args.universe or "",
         data_start_date=args.start_date, data_end_date=args.end_date,
+        taxable_short_term_rate=args.short_term_tax_rate,
+        taxable_long_term_rate=args.long_term_tax_rate,
+        taxable_state_rate=args.state_tax_rate,
     )
     rows = load_bar_csv(
         args.bars_csv,
         start_date=config.data_start_date,
         end_date=config.data_end_date,
+        include_symbols=(
+            set(resolve_universe(config.universe_name) or config.candidate_symbols)
+            | {config.benchmark_symbol}
+        ) if (config.universe_name or config.candidate_symbols) else None,
     )
     result = run_replay(rows, config)
     write_replay(result, args.output, source_path=args.bars_csv)

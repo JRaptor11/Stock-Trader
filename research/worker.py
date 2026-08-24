@@ -23,6 +23,7 @@ from pathlib import Path
 
 from config.service_mode import ServiceMode, validate_service_startup
 from research.historical_replay import ReplayConfig, SpilledRows, load_bar_csv, run_replay, write_replay
+from research.universes import resolve_universe
 
 
 UTC = timezone.utc
@@ -159,6 +160,10 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
                 bars_path,
                 start_date=replay_config.data_start_date,
                 end_date=replay_config.data_end_date,
+                include_symbols=(
+                    set(resolve_universe(replay_config.universe_name) or replay_config.candidate_symbols)
+                    | {replay_config.benchmark_symbol}
+                ) if (replay_config.universe_name or replay_config.candidate_symbols) else None,
             ), replay_config,
             progress_callback=update_progress, spill_directory=spill,
             initial_checkpoint=initial_checkpoint,

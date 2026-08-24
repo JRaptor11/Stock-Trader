@@ -74,14 +74,6 @@ STRATEGIES = {
         "entry_minutes_from_open": 360,
         "exit_minutes_from_open": 0,
     },
-    "OVERNIGHT_REGIME_300M_EARLY_ENTRY": {
-        "target_mode": "single_horizon", "horizon_minutes": 300,
-        "alpha": 0.50, "max_step": 0.15,
-        "minimum_positive_300m_breadth": 0.60,
-        "holding_window": "overnight",
-        "entry_minutes_from_open": 345,
-        "exit_minutes_from_open": 0,
-    },
     "OVERNIGHT_REGIME_300M_30M_EXIT": {
         "target_mode": "single_horizon", "horizon_minutes": 300,
         "alpha": 0.50, "max_step": 0.15,
@@ -93,23 +85,31 @@ STRATEGIES = {
     "VOLATILITY_BREAKOUT_60M": {
         "target_mode": "breakout", "alpha": 0.20, "max_step": 0.035,
     },
-    "MEAN_REVERSION_30M": {
-        "target_mode": "mean_reversion", "alpha": 0.20, "max_step": 0.035,
-    },
     "BENCHMARK_RELATIVE_300M": {
         "target_mode": "benchmark_relative", "alpha": 0.20, "max_step": 0.035,
     },
+    "RELATIVE_STRENGTH_ROTATION_300M": {
+        "target_mode": "benchmark_relative", "alpha": 0.12, "max_step": 0.02,
+        "minimum_positive_300m_breadth": 0.40,
+    },
+    "VOLATILITY_TARGETED_300M": {
+        "target_mode": "single_horizon", "horizon_minutes": 300,
+        "alpha": 0.12, "max_step": 0.02,
+        "minimum_positive_300m_breadth": 0.40,
+        "volatility_target_annualized": 0.12,
+    },
+    "SPY_TACTICAL_OVERLAY_300M": {
+        "target_mode": "single_horizon", "horizon_minutes": 300,
+        "alpha": 0.12, "max_step": 0.02,
+        "minimum_positive_300m_breadth": 0.60,
+        "benchmark_core_weight": 0.70,
+    },
 }
 
-# Pair every timing signal with the same moderately invested sizing policy so
-# signal horizon and capital allocation can be evaluated independently.
-for _strategy_name in (
-    "LOOKBACK_60M", "LOOKBACK_150M", "LOOKBACK_300M",
-    "MULTI_HORIZON_BLEND", "ADAPTIVE_REVERSAL",
-):
-    STRATEGIES[f"{_strategy_name}_MODERATE"] = {
-        **STRATEGIES[_strategy_name], "sizing_mode": "moderate",
-    }
+# The broad moderate-sizing grid and the early-entry/mean-reversion variants
+# were useful discovery experiments, but are intentionally excluded from the
+# ongoing shadow set after failing the multi-year validation. Keeping the
+# active set focused reduces multiple-testing noise and result artifact size.
 
 def _return(closes: list[float], bars: int) -> float:
     if len(closes) <= bars or not closes[-bars - 1]:

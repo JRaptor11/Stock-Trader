@@ -7,7 +7,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from research.historical_replay import (
-    ReplayConfig, SpilledRows, _future_labels, _timestamp, _walk_forward_results,
+    ReplayConfig, ReplayPortfolio, SpilledRows, _account_profile_summaries,
+    _cross_account_wash_sale_matrix, _future_labels, _record_tax_fill,
+    _timestamp, _walk_forward_results,
     load_bar_csv, run_replay, write_replay,
 )
 from research.replay_parity import compare_replay_to_live
@@ -16,6 +18,56 @@ from layers.layer_research_strategy import STRATEGIES
 
 
 class HistoricalReplayTests(unittest.TestCase):
+    def test_tax_ledger_tracks_holding_period_and_forward_wash_exposure(self):
+        portfolio = ReplayPortfolio(cash=100000.0)
+        acquired = datetime(2024, 1, 2, tzinfo=timezone.utc)
+        sold = datetime(2026, 1, 5, tzinfo=timezone.utc)
+        _record_tax_fill(portfolio, "AAA", "BUY", 10, 100.0, acquired)
+        _record_tax_fill(portfolio, "AAA", "SELL", 5, 120.0, sold)
+        _record_tax_fill(portfolio, "AAA", "SELL", 5, 90.0, sold + timedelta(days=1))
+        _record_tax_fill(portfolio, "AAA", "BUY", 5, 91.0, sold + timedelta(days=10))
+        self.assertEqual(100.0, portfolio.realized_long_term_gain)
+        self.assertEqual(50.0, portfolio.realized_loss)
+        self.assertEqual(50.0, portfolio.wash_sale_loss_exposure)
+        self.assertEqual(101.0, portfolio.tax_lots["AAA"][0]["cost_per_share"])
+
+    def test_account_profiles_report_taxable_and_roth_outputs(self):
+        portfolio = ReplayPortfolio(
+            cash=110000.0, realized_short_term_gain=10000.0,
+        )
+        summaries = [{
+            "strategy_name": "TEST", "final_equity": 110000.0,
+            "turnover": 20000.0, "trade_count": 2, "max_drawdown_pct": -0.1,
+        }]
+        rows = _account_profile_summaries(
+            {"TEST": portfolio}, summaries, {},
+            datetime(2026, 1, 5, tzinfo=timezone.utc),
+            ReplayConfig(taxable_short_term_rate=0.30, taxable_state_rate=0.0),
+        )
+        by_profile = {row["account_profile"]: row for row in rows}
+        self.assertEqual(107000.0, by_profile["CA_SINGLE_105K"]["estimated_after_tax_equity"])
+        self.assertEqual(110000.0, by_profile["ROTH_IRA"]["estimated_after_tax_equity"])
+
+    def test_cross_account_matrix_checks_buys_before_and_after_loss_sale(self):
+        taxable = ReplayPortfolio(cash=100000.0)
+        roth = ReplayPortfolio(cash=100000.0)
+        sold_at = datetime(2026, 2, 1, tzinfo=timezone.utc)
+        taxable.loss_sale_events = [{
+            "symbol": "AAA", "sold_at": sold_at.isoformat(),
+            "qty": 10, "loss_per_share": 5.0,
+        }]
+        roth.buy_events = [
+            {"symbol": "AAA", "bought_at": (sold_at - timedelta(days=10)).isoformat(), "qty": 4},
+            {"symbol": "AAA", "bought_at": (sold_at + timedelta(days=10)).isoformat(), "qty": 6},
+        ]
+        rows = _cross_account_wash_sale_matrix({"TAXABLE": taxable, "ROTH": roth})
+        match = next(
+            row for row in rows
+            if row["taxable_strategy"] == "TAXABLE" and row["roth_strategy"] == "ROTH"
+        )
+        self.assertEqual(10.0, match["matched_shares"])
+        self.assertEqual(50.0, match["potential_permanently_disallowed_loss"])
+
     def _bars(self, count=76):
         start = datetime(2026, 1, 5, 14, 30, tzinfo=timezone.utc)
         rows = []
@@ -146,6 +198,22 @@ class HistoricalReplayTests(unittest.TestCase):
             self.assertEqual(1, len(rows))
             self.assertEqual("2025-01-02", rows[0]["timestamp"].date().isoformat())
 
+    def test_loader_filters_symbols_before_replay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bars.csv"
+            with path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=[
+                    "timestamp", "symbol", "open", "high", "low", "close", "volume",
+                ])
+                writer.writeheader()
+                for symbol in ("AAA", "BBB"):
+                    writer.writerow({
+                        "timestamp": "2026-01-05T14:30:00+00:00", "symbol": symbol,
+                        "open": 100, "high": 101, "low": 99, "close": 100, "volume": 1000,
+                    })
+            rows = load_bar_csv(path, include_symbols={"AAA"})
+            self.assertEqual(["AAA"], [row["symbol"] for row in rows])
+
     def test_replay_config_rejects_inverted_date_range(self):
         with self.assertRaisesRegex(ValueError, "data_start_date"):
             ReplayConfig(
@@ -190,6 +258,50 @@ class HistoricalReplayTests(unittest.TestCase):
         self.assertEqual(results[0]["selected_strategy"], "TRAIN_WINNER")
         self.assertLess(results[0]["selected_test_return"], 0)
 
+    def test_walk_forward_defaults_to_spy_when_tactical_edge_is_too_small(self):
+        days = tuple(f"2026-01-{day:02d}" for day in range(1, 7))
+        folds = build_walk_forward_folds(
+            days, min_train_sessions=4, test_sessions=2, step_sessions=2,
+        )
+        daily = []
+        equity = 100.0
+        for day in days:
+            start = equity
+            equity *= 1.0015
+            daily.append({
+                "session_date": day, "strategy_name": "TINY_EDGE",
+                "first_equity": start, "last_equity": equity,
+                "gross_turnover": 0.0,
+            })
+        benchmark = [
+            {"session_date": day, "session_return": 0.001}
+            for day in days
+        ]
+        results = _walk_forward_results(daily, benchmark, folds)
+        self.assertEqual("SPY_BUY_HOLD", results[0]["selected_strategy"])
+
+    def test_walk_forward_allows_material_tactical_edge_over_spy(self):
+        days = tuple(f"2026-01-{day:02d}" for day in range(1, 7))
+        folds = build_walk_forward_folds(
+            days, min_train_sessions=4, test_sessions=2, step_sessions=2,
+        )
+        daily = []
+        equity = 100.0
+        for day in days:
+            start = equity
+            equity *= 1.01
+            daily.append({
+                "session_date": day, "strategy_name": "CLEAR_EDGE",
+                "first_equity": start, "last_equity": equity,
+                "gross_turnover": 0.0,
+            })
+        benchmark = [
+            {"session_date": day, "session_return": 0.001}
+            for day in days
+        ]
+        results = _walk_forward_results(daily, benchmark, folds)
+        self.assertEqual("CLEAR_EDGE", results[0]["selected_strategy"])
+
     def test_walk_forward_can_select_cash_when_trading_scores_are_negative(self):
         days = tuple(f"2026-01-{day:02d}" for day in range(1, 7))
         folds = build_walk_forward_folds(
@@ -206,7 +318,7 @@ class HistoricalReplayTests(unittest.TestCase):
                 "gross_turnover": 100.0,
             })
         benchmark = [
-            {"session_date": day, "session_return": 0.001}
+            {"session_date": day, "session_return": -0.001}
             for day in days
         ]
         results = _walk_forward_results(daily, benchmark, folds)
@@ -220,6 +332,11 @@ class HistoricalReplayTests(unittest.TestCase):
             self.assertTrue((output / "replay_manifest.json").exists())
             self.assertTrue((output / "ml_dataset.csv").exists())
             self.assertTrue((output / "dataset_quality.json").exists())
+            self.assertTrue((output / "account_profile_results.csv").exists())
+            self.assertTrue((output / "account_profile_assumptions.json").exists())
+            self.assertTrue((output / "cross_account_wash_sale_matrix.csv").exists())
+            self.assertTrue((output / "universe_metadata.json").exists())
+            self.assertTrue((output / "universe_selection_diagnostics.csv").exists())
 
     def test_writer_accepts_precomputed_hash_after_cache_cleanup(self):
         result = run_replay(
