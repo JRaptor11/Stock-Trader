@@ -1,6 +1,7 @@
 import csv
 import io
 import hashlib
+import json
 import os
 import tempfile
 import time
@@ -164,6 +165,45 @@ class ResearchAppTests(unittest.TestCase):
                 self.assertEqual(payload["status"], "superseded")
                 self.assertIsNone(payload["next_retry_at"])
                 self.assertIn("superseded_at", payload)
+            runtime.active_job_id = None
+
+    def test_manual_retry_preserves_job_id_and_resets_automatic_retry_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = {
+                "SERVICE_MODE": "historical_research",
+                "BROKER_EXECUTION_ENABLED": "false",
+                "RESEARCH_API_TOKEN": self.token,
+                "RESEARCH_DATA_DIR": str(root / "data"),
+                "RESEARCH_JOB_DIR": str(root / "jobs"),
+                "RESEARCH_RESULTS_DIR": str(root / "results"),
+            }
+            with patch.dict(os.environ, env, clear=False), TestClient(app) as client:
+                headers = {"Authorization": f"Bearer {self.token}"}
+                (runtime.job_root / "failed-job.json").write_text(json.dumps({
+                    "job_id": "failed-job", "bars_csv": "bars.csv",
+                }), encoding="utf-8")
+                status_path = runtime.results_root / "failed-job.status.json"
+                status_path.write_text(json.dumps({
+                    "job_id": "failed-job", "status": "failed",
+                    "attempt_count": 4, "blocks_queue": True,
+                    "error": "restart allowance exhausted",
+                    "failure_class": "interrupted_service_restart",
+                    "queued_at": "2026-08-25T00:00:00+00:00",
+                }), encoding="utf-8")
+                with patch("research.app._start_next_job"):
+                    response = client.post("/api/jobs/failed-job/retry", headers=headers)
+                self.assertEqual(200, response.status_code, response.text)
+                payload = json.loads(status_path.read_text(encoding="utf-8"))
+                self.assertEqual("queued", payload["status"])
+                self.assertEqual(0, payload["attempt_count"])
+                self.assertEqual(4, payload["lifetime_attempt_count"])
+                self.assertEqual(1, payload["manual_retry_count"])
+                self.assertFalse(payload["blocks_queue"])
+                self.assertEqual(runtime.maximum_retries, payload["retries_remaining"])
+                self.assertEqual(
+                    "restart allowance exhausted", payload["last_failure"]["error"]
+                )
             runtime.active_job_id = None
 
 

@@ -563,6 +563,55 @@ def resume_queue() -> dict:
     return {"status": "resumed", "cleared_failures": cleared, "active_job_id": runtime.active_job_id}
 
 
+@app.post("/api/jobs/{job_id}/retry", dependencies=[Depends(require_token)])
+def retry_failed_job(job_id: str) -> dict:
+    """Requeue a failed job under the same ID so its checkpoint remains addressable."""
+    job_id = _safe_name(job_id)
+    status_path = runtime.results_root / f"{job_id}.status.json"
+    job_path = runtime.job_root / f"{job_id}.json"
+    with runtime.queue_lock:
+        if runtime.active_job_id == job_id:
+            raise HTTPException(status_code=409, detail="job is already running")
+        if not status_path.is_file():
+            raise HTTPException(status_code=404, detail="job status is not available")
+        if not job_path.is_file() and runtime.store.durable:
+            runtime.store.download_file(f"jobs/{job_path.name}", job_path)
+        if not job_path.is_file():
+            raise HTTPException(status_code=409, detail="durable job definition is missing")
+        payload = json.loads(status_path.read_text(encoding="utf-8"))
+        if payload.get("status") != "failed":
+            raise HTTPException(status_code=409, detail="only a failed job can be retried")
+        prior_attempts = int(payload.get("attempt_count") or 0)
+        retried_at = datetime.now(timezone.utc).isoformat()
+        last_failure = {
+            key: payload.get(key) for key in (
+                "failed_at", "error", "error_type", "failure_class",
+                "retries_exhausted",
+            ) if payload.get(key) is not None
+        }
+        payload.update({
+            "status": "queued", "attempt_count": 0,
+            "lifetime_attempt_count": int(payload.get("lifetime_attempt_count") or 0) + prior_attempts,
+            "manual_retry_count": int(payload.get("manual_retry_count") or 0) + 1,
+            "manual_retry_at": retried_at, "last_failure": last_failure,
+            "blocks_queue": False, "next_retry_at": None,
+            "retries_remaining": runtime.maximum_retries,
+            "retries_exhausted": False,
+        })
+        for stale_key in ("error", "error_type", "failure_class", "failed_at"):
+            payload.pop(stale_key, None)
+        _write_json_atomic(status_path, payload)
+        runtime.store.upload_file(status_path, f"status/{status_path.name}")
+        _start_next_job()
+    return {
+        "job_id": job_id,
+        "status": "starting" if runtime.active_job_id == job_id else "queued",
+        "active_job_id": runtime.active_job_id,
+        "manual_retry_count": payload["manual_retry_count"],
+        "lifetime_attempt_count": payload["lifetime_attempt_count"],
+    }
+
+
 @app.post("/api/jobs/{job_id}/supersede", dependencies=[Depends(require_token)])
 def supersede_job(job_id: str) -> dict:
     """Retire obsolete queued/retry work without deleting its audit history."""

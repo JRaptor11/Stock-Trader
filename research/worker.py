@@ -28,6 +28,8 @@ from research.universes import resolve_universe
 
 
 UTC = timezone.utc
+CHECKPOINT_ENGINE_SCHEMA = 2
+LEGACY_CHECKPOINT_COMMITS = {"61688bd5b95e414f788c721a6d994ea4c608916d"}
 
 
 def _resource_snapshot() -> dict:
@@ -69,6 +71,20 @@ def _write_json_atomic(path: Path, payload: dict) -> None:
 
 
 def _checkpoint_identity(job: dict, source_sha256: str, replay_config: ReplayConfig) -> dict:
+    engine_digest = hashlib.sha256()
+    repository_root = Path(__file__).resolve().parents[1]
+    for relative in (
+        "research/historical_replay.py",
+        "research/walk_forward.py",
+        "research/universes.py",
+        "layers/layer_research_strategy.py",
+        "layers/layer1_ranker.py",
+        "layers/layer2_portfolio.py",
+        "layers/layer3_rebalancer.py",
+    ):
+        path = repository_root / relative
+        engine_digest.update(relative.encode("utf-8"))
+        engine_digest.update(path.read_bytes())
     return {
         "job_id": str(job["job_id"]),
         "source_sha256": source_sha256,
@@ -78,8 +94,23 @@ def _checkpoint_identity(job: dict, source_sha256: str, replay_config: ReplayCon
                 sort_keys=True, default=list,
             ).encode("utf-8")
         ).hexdigest(),
-        "git_commit": os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT"),
+        "engine_schema": CHECKPOINT_ENGINE_SCHEMA,
+        "engine_sha256": engine_digest.hexdigest(),
     }
+
+
+def _checkpoint_identity_matches(stored: dict, expected: dict) -> bool:
+    if stored == expected:
+        return True
+    # One-time migration for checkpoints written by the first durable release.
+    # It is deliberately restricted to that exact deployed commit and still
+    # requires the job, dataset, and replay configuration to match.
+    legacy_commit = str(stored.get("git_commit") or "")
+    stable_keys = ("job_id", "source_sha256", "replay_config_sha256")
+    return (
+        legacy_commit in LEGACY_CHECKPOINT_COMMITS
+        and all(stored.get(key) == expected.get(key) for key in stable_keys)
+    )
 
 
 def _write_checkpoint_bundle(
@@ -109,7 +140,9 @@ def _restore_checkpoint_bundle(
     try:
         with zipfile.ZipFile(bundle_path) as bundle:
             manifest = json.loads(bundle.read("checkpoint.json"))
-            if manifest.get("identity") != expected_identity:
+            if not _checkpoint_identity_matches(
+                dict(manifest.get("identity") or {}), expected_identity
+            ):
                 return None, {}
             restored = {}
             spill_root.mkdir(parents=True, exist_ok=True)
