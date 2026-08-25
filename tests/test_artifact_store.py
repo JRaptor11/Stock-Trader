@@ -13,6 +13,7 @@ class _FakeS3Client:
     def __init__(self):
         self.uploads = []
         self.downloads = []
+        self.deletes = []
 
     def upload_file(self, path, bucket, key):
         self.uploads.append((path, bucket, key))
@@ -20,6 +21,9 @@ class _FakeS3Client:
     def download_file(self, bucket, key, path):
         self.downloads.append((bucket, key, path))
         Path(path).write_bytes(b"restored")
+
+    def delete_object(self, **kwargs):
+        self.deletes.append(kwargs)
 
     def get_paginator(self, name):
         client = self
@@ -69,10 +73,14 @@ class ArtifactStoreTests(unittest.TestCase):
                 keys = store.list_keys("status/")
                 restored = store.download_file(keys[0], destination)
                 total_bytes = store.total_bytes()
+                store.delete_file("checkpoints/job.zip")
             self.assertTrue(restored)
             self.assertEqual(destination.read_bytes(), b"restored")
         self.assertEqual(keys, ["status/job.status.json"])
         self.assertEqual(total_bytes, 123)
+        self.assertEqual(client.deletes, [{
+            "Bucket": "results", "Key": "research/runs/checkpoints/job.zip",
+        }])
 
 
 if __name__ == "__main__":

@@ -19,6 +19,9 @@ class ArtifactStore:
     def list_keys(self, prefix: str = "") -> list[str]:
         return []
 
+    def delete_file(self, key: str) -> None:
+        return None
+
     def total_bytes(self) -> int:
         return 0
 
@@ -78,6 +81,9 @@ class S3ArtifactStore(ArtifactStore):
                 key = str(item["Key"])
                 output.append(key[len(base) + 1:] if base and key.startswith(base + "/") else key)
         return output
+
+    def delete_file(self, key: str) -> None:
+        self._client().delete_object(Bucket=self.bucket, Key=self._normalized_key(key))
 
     def total_bytes(self) -> int:
         base = self.prefix.strip("/")

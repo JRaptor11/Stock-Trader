@@ -69,11 +69,14 @@ class BarRow(Mapping):
 class SpilledRows:
     """Append-only JSONL collection used to keep large diagnostics off the heap."""
 
-    def __init__(self, root: str | Path, name: str) -> None:
+    def __init__(
+        self, root: str | Path, name: str, *, existing_path: str | Path | None = None,
+        existing_count: int = 0,
+    ) -> None:
         root = Path(root)
         root.mkdir(parents=True, exist_ok=True)
-        self.path = root / f"{name}-{uuid.uuid4().hex}.jsonl.gz"
-        self._count = 0
+        self.path = Path(existing_path) if existing_path else root / f"{name}-{uuid.uuid4().hex}.jsonl.gz"
+        self._count = int(existing_count)
         self._handle = gzip.open(
             self.path, "at", encoding="utf-8", compresslevel=1
         )
@@ -101,8 +104,19 @@ class SpilledRows:
         return self._count
 
     def close(self) -> None:
-        if not self._handle.closed:
+        if hasattr(self, "_handle") and not self._handle.closed:
             self._handle.close()
+
+    def checkpoint(self) -> dict:
+        """Close the gzip member so its bytes form a crash-safe snapshot."""
+        self.close()
+        return {"path": str(self.path), "count": self._count}
+
+    def reopen(self) -> None:
+        if self._handle.closed:
+            self._handle = gzip.open(
+                self.path, "at", encoding="utf-8", compresslevel=1
+            )
 
     def __del__(self):
         self.close()
@@ -921,6 +935,8 @@ def _walk_forward_results(daily: list[dict], benchmark_daily: list[dict], folds)
 def run_replay(
     rows: list[dict], config: ReplayConfig | None = None, progress_callback=None,
     spill_directory: str | Path | None = None, initial_checkpoint: dict | None = None,
+    initial_spills: dict | None = None, checkpoint_callback=None,
+    checkpoint_every_sessions: int = 10,
 ) -> dict:
     config = config or ReplayConfig()
     if any(
@@ -987,8 +1003,17 @@ def run_replay(
     }
     production_builder = Layer2PortfolioBuilder()
     ranker = Layer1StockRanker(None)
+    initial_spills = dict(initial_spills or {})
+
     def collection(name: str):
-        return SpilledRows(spill_directory, name) if spill_directory else []
+        if not spill_directory:
+            return []
+        restored = dict(initial_spills.get(name) or {})
+        return SpilledRows(
+            spill_directory, name,
+            existing_path=restored.get("path"),
+            existing_count=int(restored.get("count") or 0),
+        )
 
     cycle_rows = collection("cycles")
     decision_rows = collection("decisions")
@@ -1003,15 +1028,62 @@ def run_replay(
         row["timestamp"] for row in rows if _is_regular_session(row["timestamp"])
     })
     started = time.monotonic()
-    completed_sessions: set[str] = set()
-    timestamp_index = 0
+    completed_sessions: set[str] = set(checkpoint.get("completed_session_dates") or [])
+    timestamp_index = int(checkpoint.get("completed_timestamps") or 0)
+    last_processed_timestamp = (
+        _timestamp(checkpoint["last_processed_timestamp"])
+        if checkpoint.get("last_processed_timestamp") else None
+    )
+    current_session_date = None
+
+    def replay_checkpoint(processed_at: datetime | None) -> dict:
+        return {
+            "version": 2,
+            "strategy_names": sorted(strategy_configs),
+            "portfolios": {name: _portfolio_checkpoint(value) for name, value in portfolios.items()},
+            "history": history,
+            "last_observed_at": {
+                symbol: value.isoformat() for symbol, value in last_observed_at.items()
+            },
+            "last_decision": last_decision.isoformat() if last_decision else None,
+            "last_processed_timestamp": processed_at.isoformat() if processed_at else None,
+            "completed_timestamps": timestamp_index,
+            "completed_session_dates": sorted(completed_sessions),
+            "cycle_id": cycle_id,
+            "prior_close_equity": prior_close_equity,
+            "walk_forward_daily_history": list(checkpoint.get("walk_forward_daily_history") or []),
+            "benchmark_daily_history": list(checkpoint.get("benchmark_daily_history") or []),
+            "evaluation_session_dates": list(checkpoint.get("evaluation_session_dates") or []),
+        }
+
+    def persist_checkpoint(processed_at: datetime | None, *, force: bool = False) -> None:
+        if not checkpoint_callback or not spill_directory:
+            return
+        if not force and len(completed_sessions) % max(1, checkpoint_every_sessions):
+            return
+        collections = {
+            "cycles": cycle_rows, "decisions": decision_rows, "orders": order_rows,
+            "features": feature_rows, "eligibility": eligibility_rows,
+        }
+        spill_state = {name: values.checkpoint() for name, values in collections.items()}
+        try:
+            checkpoint_callback(replay_checkpoint(processed_at), spill_state)
+        finally:
+            for values in collections.values():
+                values.reopen()
     grouped_rows = itertools.groupby(rows, key=lambda row: row["timestamp"])
     for ts, timestamp_rows in grouped_rows:
         if not _is_regular_session(ts):
             continue
+        if last_processed_timestamp and ts <= last_processed_timestamp:
+            continue
+        session_date = ts.astimezone(MARKET_TZ).date().isoformat()
+        if current_session_date and session_date != current_session_date:
+            completed_sessions.add(current_session_date)
+            persist_checkpoint(last_processed_timestamp)
+        current_session_date = session_date
         timestamp_index += 1
         timestamp_rows = list(timestamp_rows)
-        session_date = ts.astimezone(MARKET_TZ).date().isoformat()
         raw_bars = {row["symbol"]: row for row in timestamp_rows}
         bars = dict(raw_bars)
         order_rows.extend(sum((
@@ -1023,6 +1095,7 @@ def run_replay(
             history[symbol].append({key: value for key, value in bar.items() if key not in {"timestamp", "symbol"}})
             if len(history[symbol]) > max(61, config.warmup_bars):
                 del history[symbol][:-max(61, config.warmup_bars)]
+        last_processed_timestamp = ts
         if last_decision and (ts - last_decision) < timedelta(minutes=config.decision_interval_minutes):
             continue
         ready = {symbol: values for symbol, values in history.items() if len(values) >= config.warmup_bars}
@@ -1229,7 +1302,6 @@ def run_replay(
             for item in decisions:
                 decision_rows.append({"timestamp": ts.isoformat(), "cycle_id": cycle_id, "strategy_name": name, **item})
 
-        completed_sessions.add(session_date)
         if progress_callback and (
             timestamp_index % 25 == 0 or timestamp_index == regular_timestamp_count
         ):
@@ -1245,6 +1317,9 @@ def run_replay(
                 "elapsed_seconds": round(time.monotonic() - started, 1),
             })
 
+    if current_session_date:
+        completed_sessions.add(current_session_date)
+    persist_checkpoint(last_processed_timestamp, force=True)
     if progress_callback:
         progress_callback({"stage": "building_future_labels", "percent_complete": 100.0})
     # Build only lightweight per-symbol reference lists after the main replay.
@@ -1355,15 +1430,7 @@ def run_replay(
         "cross_account_wash_sales": cross_account_wash_sales,
         "universe_selection": universe_selection,
         "checkpoint": {
-            "version": 1,
-            "strategy_names": sorted(strategy_configs),
-            "portfolios": {name: _portfolio_checkpoint(value) for name, value in portfolios.items()},
-            "history": history,
-            "last_observed_at": {
-                symbol: value.isoformat() for symbol, value in last_observed_at.items()
-            },
-            "last_decision": last_decision.isoformat() if last_decision else None,
-            "cycle_id": cycle_id,
+            **replay_checkpoint(last_processed_timestamp),
             "prior_close_equity": final_close_equity,
             "walk_forward_daily_history": combined_daily_history,
             "benchmark_daily_history": combined_benchmark_history,

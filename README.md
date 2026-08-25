@@ -309,6 +309,7 @@ Copy `.env.example` to `.env` and replace placeholders. The most important group
 | `RESEARCH_S3_*` | Optional durable S3-compatible artifact storage configuration |
 | `RESEARCH_MAX_QUEUED_JOBS` | Caps pending experiments to prevent accidental workload growth |
 | `RESEARCH_STATUS_UPLOAD_SECONDS` | Controls deduplicated durable progress updates; minimum 30 seconds |
+| `RESEARCH_CHECKPOINT_EVERY_SESSIONS` | Uploads resumable replay state and accumulated diagnostic partitions to durable storage; defaults to every 10 completed sessions |
 | `RESEARCH_MAX_RETRIES` | Automatic retries allowed after transient job failures |
 | `RESEARCH_RETRY_*_SECONDS` | Exponential retry delay and maximum backoff |
 | `RESEARCH_R2_STORAGE_BUDGET_BYTES` | Refuses large uploads above the configured object-storage safety budget |

@@ -8,7 +8,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from research.worker import _resolved_child, execute_job
+from research.worker import (
+    _resolved_child, _restore_checkpoint_bundle, _write_checkpoint_bundle,
+    execute_job,
+)
 
 
 class ResearchWorkerTests(unittest.TestCase):
@@ -135,6 +138,34 @@ class ResearchWorkerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(ValueError):
                 _resolved_child(Path(directory), "../outside.csv")
+
+    def test_durable_checkpoint_bundle_round_trips_spills_and_rejects_mismatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            spill = root / "cycles.jsonl.gz"
+            import gzip
+            with gzip.open(spill, "wt", encoding="utf-8") as handle:
+                handle.write('{"cycle":1}\n')
+            bundle = root / "checkpoint.zip"
+            identity = {"job_id": "job", "source_sha256": "abc", "git_commit": "def"}
+            _write_checkpoint_bundle(
+                bundle, identity=identity,
+                checkpoint={"completed_timestamps": 78},
+                spills={"cycles": {"path": str(spill), "count": 1}},
+            )
+            checkpoint, spills = _restore_checkpoint_bundle(
+                bundle, expected_identity=identity, spill_root=root / "restored",
+            )
+            self.assertEqual(78, checkpoint["completed_timestamps"])
+            self.assertEqual(1, spills["cycles"]["count"])
+            with gzip.open(spills["cycles"]["path"], "rt", encoding="utf-8") as handle:
+                self.assertEqual('{"cycle":1}', handle.read().strip())
+            rejected, rejected_spills = _restore_checkpoint_bundle(
+                bundle, expected_identity={**identity, "source_sha256": "changed"},
+                spill_root=root / "rejected",
+            )
+            self.assertIsNone(rejected)
+            self.assertEqual({}, rejected_spills)
 
 
 if __name__ == "__main__":

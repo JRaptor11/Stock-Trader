@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from config.service_mode import ServiceMode, validate_service_startup
+from research.artifact_store import artifact_store_from_env
 from research.historical_replay import ReplayConfig, SpilledRows, load_bar_csv, run_replay, write_replay
 from research.universes import resolve_universe
 
@@ -65,6 +66,62 @@ def _write_json_atomic(path: Path, payload: dict) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     temporary.replace(path)
+
+
+def _checkpoint_identity(job: dict, source_sha256: str, replay_config: ReplayConfig) -> dict:
+    return {
+        "job_id": str(job["job_id"]),
+        "source_sha256": source_sha256,
+        "replay_config_sha256": hashlib.sha256(
+            json.dumps(
+                {field.name: getattr(replay_config, field.name) for field in fields(ReplayConfig)},
+                sort_keys=True, default=list,
+            ).encode("utf-8")
+        ).hexdigest(),
+        "git_commit": os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT"),
+    }
+
+
+def _write_checkpoint_bundle(
+    destination: Path, *, identity: dict, checkpoint: dict, spills: dict,
+) -> None:
+    temporary = destination.with_suffix(destination.suffix + ".tmp")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_STORED) as bundle:
+        manifest_spills = {}
+        for name, state in spills.items():
+            source = Path(state["path"])
+            archive_name = f"spills/{name}.jsonl.gz"
+            bundle.write(source, archive_name)
+            manifest_spills[name] = {"archive_name": archive_name, "count": int(state["count"])}
+        bundle.writestr("checkpoint.json", json.dumps({
+            "format_version": 1, "identity": identity,
+            "checkpoint": checkpoint, "spills": manifest_spills,
+        }, separators=(",", ":"), default=str))
+    temporary.replace(destination)
+
+
+def _restore_checkpoint_bundle(
+    bundle_path: Path, *, expected_identity: dict, spill_root: Path,
+) -> tuple[dict | None, dict]:
+    if not bundle_path.is_file():
+        return None, {}
+    try:
+        with zipfile.ZipFile(bundle_path) as bundle:
+            manifest = json.loads(bundle.read("checkpoint.json"))
+            if manifest.get("identity") != expected_identity:
+                return None, {}
+            restored = {}
+            spill_root.mkdir(parents=True, exist_ok=True)
+            for name, state in dict(manifest.get("spills") or {}).items():
+                destination = spill_root / f"{name}.restored.jsonl.gz"
+                with bundle.open(state["archive_name"]) as source, destination.open("wb") as output:
+                    shutil.copyfileobj(source, output)
+                restored[name] = {"path": str(destination), "count": int(state["count"])}
+            return dict(manifest["checkpoint"]), restored
+    except (OSError, KeyError, ValueError, zipfile.BadZipFile, json.JSONDecodeError):
+        logging.warning("Ignoring invalid research checkpoint bundle %s", bundle_path, exc_info=True)
+        return None, {}
 
 
 def _config_from_job(job: dict) -> ReplayConfig:
@@ -142,6 +199,15 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
             _write_json_atomic(status_path, latest_status)
 
         replay_config = _config_from_job(job)
+        store = artifact_store_from_env()
+        checkpoint_key = f"checkpoints/{job_id}.zip"
+        checkpoint_bundle = results_root / f".{job_id}.checkpoint.zip"
+        identity = _checkpoint_identity(job, source_sha256, replay_config)
+        if store.durable and not checkpoint_bundle.is_file():
+            store.download_file(checkpoint_key, checkpoint_bundle)
+        resumed_checkpoint, resumed_spills = _restore_checkpoint_bundle(
+            checkpoint_bundle, expected_identity=identity, spill_root=spill,
+        )
         initial_checkpoint = None
         continuation_of = str(job.get("continuation_of") or "").strip()
         if continuation_of:
@@ -152,9 +218,58 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
                 raise FileNotFoundError(f"continuation archive is not available: {archive}")
             with zipfile.ZipFile(archive) as bundle:
                 initial_checkpoint = json.loads(bundle.read("replay_checkpoint.json"))
+            # Cross-job continuation carries investment and evaluation state,
+            # but same-dataset cursor fields are only valid for restart recovery.
+            for recovery_key in (
+                "last_processed_timestamp", "completed_timestamps",
+                "completed_session_dates",
+            ):
+                initial_checkpoint.pop(recovery_key, None)
             # The archive is a restored cache; R2 remains authoritative and
             # the checkpoint is now resident in memory.
             archive.unlink(missing_ok=True)
+
+        if resumed_checkpoint:
+            # A same-job durable checkpoint is newer than the prior-year
+            # continuation state and already incorporates it.
+            initial_checkpoint = resumed_checkpoint
+            latest_status.update({
+                "resumed_from_durable_checkpoint": True,
+                "resumed_completed_session": (
+                    list(resumed_checkpoint.get("completed_session_dates") or [None])[-1]
+                ),
+                "resumed_completed_timestamps": int(
+                    resumed_checkpoint.get("completed_timestamps") or 0
+                ),
+            })
+            _write_json_atomic(status_path, latest_status)
+
+        checkpoint_upload_count = 0
+
+        def persist_durable_checkpoint(checkpoint_payload: dict, spill_payload: dict) -> None:
+            nonlocal checkpoint_upload_count
+            _write_checkpoint_bundle(
+                checkpoint_bundle, identity=identity,
+                checkpoint=checkpoint_payload, spills=spill_payload,
+            )
+            if store.durable:
+                durable_uri = store.upload_file(checkpoint_bundle, checkpoint_key)
+            else:
+                durable_uri = None
+            checkpoint_upload_count += 1
+            latest_status.update({
+                "checkpoint_at": datetime.now(UTC).isoformat(),
+                "checkpoint_completed_session": (
+                    list(checkpoint_payload.get("completed_session_dates") or [None])[-1]
+                ),
+                "checkpoint_completed_timestamps": int(
+                    checkpoint_payload.get("completed_timestamps") or 0
+                ),
+                "checkpoint_upload_count": checkpoint_upload_count,
+                "checkpoint_durable_uri": durable_uri,
+            })
+            _write_json_atomic(status_path, latest_status)
+
         result = run_replay(
             load_bar_csv(
                 bars_path,
@@ -167,6 +282,11 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
             ), replay_config,
             progress_callback=update_progress, spill_directory=spill,
             initial_checkpoint=initial_checkpoint,
+            initial_spills=resumed_spills,
+            checkpoint_callback=persist_durable_checkpoint,
+            checkpoint_every_sessions=max(
+                1, int(os.getenv("RESEARCH_CHECKPOINT_EVERY_SESSIONS", "10"))
+            ),
         )
         write_replay(
             result, staging, source_path=bars_path,
@@ -190,6 +310,8 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
         ):
             completed_status.pop(stale_key, None)
         _write_json_atomic(status_path, completed_status)
+        # The coordinator only removes this object after the final archive is
+        # durably verified; until then it remains a restart recovery point.
         return output
     except Exception as exc:
         if spill.exists():
