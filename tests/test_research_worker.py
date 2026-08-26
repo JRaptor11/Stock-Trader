@@ -167,6 +167,20 @@ class ResearchWorkerTests(unittest.TestCase):
             self.assertIsNone(rejected)
             self.assertEqual({}, rejected_spills)
 
+    def test_known_compatible_engine_fingerprint_can_resume(self):
+        from research.worker import _checkpoint_identity_matches
+        stable = {
+            "job_id": "job", "source_sha256": "source",
+            "replay_config_sha256": "config",
+        }
+        self.assertTrue(_checkpoint_identity_matches({
+            **stable,
+            "engine_sha256": "ffbe90d7c90f8de10405925b8118f3ebc0d431ecff8754facac1a0994deda4be",
+            "engine_schema": 2,
+        }, {
+            **stable, "engine_sha256": "new", "engine_schema": 2,
+        }))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -185,6 +185,15 @@ class ReplayConfig:
         return max(0.0, self.spread_bps / 2.0 + self.slippage_bps)
 
 
+def _checkpoint_interval(completion_ratio: float, base_interval: int) -> int:
+    base_interval = max(1, int(base_interval))
+    if completion_ratio >= 0.90:
+        return 1
+    if completion_ratio >= 0.75:
+        return min(5, base_interval)
+    return base_interval
+
+
 @dataclass
 class ReplayPortfolio:
     cash: float
@@ -1059,7 +1068,13 @@ def run_replay(
     def persist_checkpoint(processed_at: datetime | None, *, force: bool = False) -> None:
         if not checkpoint_callback or not spill_directory:
             return
-        if not force and len(completed_sessions) % max(1, checkpoint_every_sessions):
+        completion_ratio = (
+            timestamp_index / regular_timestamp_count if regular_timestamp_count else 1.0
+        )
+        adaptive_interval = _checkpoint_interval(
+            completion_ratio, checkpoint_every_sessions
+        )
+        if not force and len(completed_sessions) % adaptive_interval:
             return
         collections = {
             "cycles": cycle_rows, "decisions": decision_rows, "orders": order_rows,

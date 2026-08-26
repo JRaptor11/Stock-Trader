@@ -1,6 +1,9 @@
 import unittest
 
-from research.job_queue import classify_failure, queued_in_fifo_order, retry_delay_seconds
+from research.job_queue import (
+    classify_failure, progress_aware_restart_state, queued_in_fifo_order,
+    retry_delay_seconds,
+)
 
 
 class ResearchJobQueuePolicyTests(unittest.TestCase):
@@ -40,6 +43,34 @@ class ResearchJobQueuePolicyTests(unittest.TestCase):
             classify_failure("EndpointConnectionError"),
             (True, "transient_infrastructure_or_worker"),
         )
+
+    def test_durable_progress_renews_consecutive_retry_allowance(self):
+        state = progress_aware_restart_state({
+            "attempt_started_checkpoint_timestamps": 100,
+            "checkpoint_completed_timestamps": 200,
+            "consecutive_restarts_without_progress": 3,
+            "lifetime_restart_count": 7,
+        }, maximum_consecutive=3, maximum_lifetime=20)
+        self.assertTrue(state["checkpoint_advanced_during_attempt"])
+        self.assertEqual(0, state["consecutive_restarts_without_progress"])
+        self.assertEqual(8, state["lifetime_restart_count"])
+        self.assertTrue(state["retry_allowed"])
+
+    def test_no_progress_and_lifetime_limits_stop_restart_loop(self):
+        no_progress = progress_aware_restart_state({
+            "attempt_started_checkpoint_timestamps": 100,
+            "checkpoint_completed_timestamps": 100,
+            "consecutive_restarts_without_progress": 3,
+            "lifetime_restart_count": 4,
+        }, maximum_consecutive=3, maximum_lifetime=20)
+        self.assertEqual(4, no_progress["consecutive_restarts_without_progress"])
+        self.assertFalse(no_progress["retry_allowed"])
+        lifetime = progress_aware_restart_state({
+            "attempt_started_checkpoint_timestamps": 100,
+            "checkpoint_completed_timestamps": 200,
+            "lifetime_restart_count": 20,
+        }, maximum_consecutive=3, maximum_lifetime=20)
+        self.assertFalse(lifetime["retry_allowed"])
 
 
 if __name__ == "__main__":

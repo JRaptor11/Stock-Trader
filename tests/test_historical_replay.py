@@ -8,7 +8,7 @@ from pathlib import Path
 
 from research.historical_replay import (
     ReplayConfig, ReplayPortfolio, SpilledRows, _account_profile_summaries,
-    _cross_account_wash_sale_matrix, _future_labels, _record_tax_fill,
+    _checkpoint_interval, _cross_account_wash_sale_matrix, _future_labels, _record_tax_fill,
     _timestamp, _walk_forward_results,
     load_bar_csv, run_replay, write_replay,
 )
@@ -18,6 +18,11 @@ from layers.layer_research_strategy import STRATEGIES
 
 
 class HistoricalReplayTests(unittest.TestCase):
+    def test_checkpoint_interval_becomes_more_frequent_near_completion(self):
+        self.assertEqual(10, _checkpoint_interval(0.50, 10))
+        self.assertEqual(5, _checkpoint_interval(0.75, 10))
+        self.assertEqual(1, _checkpoint_interval(0.90, 10))
+
     def test_tax_ledger_tracks_holding_period_and_forward_wash_exposure(self):
         portfolio = ReplayPortfolio(cash=100000.0)
         acquired = datetime(2024, 1, 2, tzinfo=timezone.utc)

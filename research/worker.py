@@ -30,6 +30,10 @@ from research.universes import resolve_universe
 UTC = timezone.utc
 CHECKPOINT_ENGINE_SCHEMA = 2
 LEGACY_CHECKPOINT_COMMITS = {"61688bd5b95e414f788c721a6d994ea4c608916d"}
+COMPATIBLE_CHECKPOINT_ENGINE_HASHES = {
+    # 9b4dd8f: same state schema before adaptive checkpoint scheduling.
+    "ffbe90d7c90f8de10405925b8118f3ebc0d431ecff8754facac1a0994deda4be",
+}
 
 
 def _resource_snapshot() -> dict:
@@ -108,7 +112,10 @@ def _checkpoint_identity_matches(stored: dict, expected: dict) -> bool:
     legacy_commit = str(stored.get("git_commit") or "")
     stable_keys = ("job_id", "source_sha256", "replay_config_sha256")
     return (
-        legacy_commit in LEGACY_CHECKPOINT_COMMITS
+        (
+            legacy_commit in LEGACY_CHECKPOINT_COMMITS
+            or stored.get("engine_sha256") in COMPATIBLE_CHECKPOINT_ENGINE_HASHES
+        )
         and all(stored.get(key) == expected.get(key) for key in stable_keys)
     )
 
@@ -266,14 +273,22 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
             # A same-job durable checkpoint is newer than the prior-year
             # continuation state and already incorporates it.
             initial_checkpoint = resumed_checkpoint
+            restored_timestamps = int(
+                resumed_checkpoint.get("completed_timestamps") or 0
+            )
+            restored_session = (
+                list(resumed_checkpoint.get("completed_session_dates") or [None])[-1]
+            )
             latest_status.update({
                 "resumed_from_durable_checkpoint": True,
-                "resumed_completed_session": (
-                    list(resumed_checkpoint.get("completed_session_dates") or [None])[-1]
-                ),
-                "resumed_completed_timestamps": int(
-                    resumed_checkpoint.get("completed_timestamps") or 0
-                ),
+                "resumed_completed_session": restored_session,
+                "resumed_completed_timestamps": restored_timestamps,
+                # The recovery bundle is authoritative even when the periodic
+                # durable status snapshot lagged behind it during a restart.
+                "checkpoint_completed_session": restored_session,
+                "checkpoint_completed_timestamps": restored_timestamps,
+                "attempt_started_checkpoint_timestamps": restored_timestamps,
+                "checkpoint_restored_at": datetime.now(UTC).isoformat(),
             })
             _write_json_atomic(status_path, latest_status)
 

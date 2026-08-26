@@ -23,7 +23,10 @@ from fastapi.responses import FileResponse
 
 from config.service_mode import ServiceMode, validate_service_startup
 from research.artifact_store import artifact_store_from_env
-from research.job_queue import classify_failure, queued_in_fifo_order, retry_delay_seconds
+from research.job_queue import (
+    classify_failure, progress_aware_restart_state, queued_in_fifo_order,
+    retry_delay_seconds,
+)
 from research.worker import _write_json_atomic
 
 
@@ -46,6 +49,7 @@ class ResearchRuntime:
         self.status_upload_seconds = 60.0
         self.storage_budget_bytes = 8 * 1024**3
         self.maximum_retries = 3
+        self.maximum_lifetime_restarts = 20
         self.retry_base_seconds = 30.0
         self.retry_max_seconds = 300.0
         self.cleanup_local_artifacts = True
@@ -64,6 +68,9 @@ class ResearchRuntime:
             1024**3, int(os.getenv("RESEARCH_R2_STORAGE_BUDGET_BYTES", str(8 * 1024**3)))
         )
         self.maximum_retries = max(0, int(os.getenv("RESEARCH_MAX_RETRIES", "3")))
+        self.maximum_lifetime_restarts = max(
+            1, int(os.getenv("RESEARCH_MAX_LIFETIME_RESTARTS", "20"))
+        )
         self.retry_base_seconds = max(5.0, float(os.getenv("RESEARCH_RETRY_BASE_SECONDS", "30")))
         self.retry_max_seconds = max(
             self.retry_base_seconds, float(os.getenv("RESEARCH_RETRY_MAX_SECONDS", "300"))
@@ -282,26 +289,33 @@ def _run_job(job_id: str, job_path: Path) -> None:
                 previous = json.loads(status_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 pass
-        attempt_count = max(1, int(previous.get("attempt_count") or 1))
         retryable, failure_class = _classify_failure(exc, previous)
-        if retryable and attempt_count <= runtime.maximum_retries:
+        retry_state = progress_aware_restart_state(
+            previous, maximum_consecutive=runtime.maximum_retries,
+            maximum_lifetime=runtime.maximum_lifetime_restarts,
+        ) if retryable else {}
+        if retryable and retry_state["retry_allowed"]:
             retry_delay = retry_delay_seconds(
-                attempt_count, maximum_retries=runtime.maximum_retries,
+                max(1, retry_state["consecutive_restarts_without_progress"]),
+                maximum_retries=runtime.maximum_retries,
                 base_seconds=runtime.retry_base_seconds,
                 maximum_seconds=runtime.retry_max_seconds,
             )
             next_retry = datetime.now(timezone.utc) + timedelta(seconds=retry_delay)
             _write_json_atomic(status_path, {
-                **previous, "job_id": job_id, "status": "retry_wait",
+                **previous, **retry_state, "job_id": job_id, "status": "retry_wait",
                 "failed_at": datetime.now(timezone.utc).isoformat(),
                 "error": str(exc), "failure_class": failure_class,
                 "retryable": True, "next_retry_at": next_retry.isoformat(),
-                "retries_remaining": runtime.maximum_retries - attempt_count + 1,
+                "retries_remaining": max(
+                    0, runtime.maximum_retries
+                    - retry_state["consecutive_restarts_without_progress"] + 1
+                ),
                 "blocks_queue": False,
             })
         else:
             _write_json_atomic(status_path, {
-                **previous, "job_id": job_id, "status": "failed",
+                **previous, **retry_state, "job_id": job_id, "status": "failed",
                 "failed_at": datetime.now(timezone.utc).isoformat(),
                 "error": str(exc), "failure_class": failure_class,
                 "retryable": retryable, "retries_exhausted": retryable,
@@ -409,10 +423,12 @@ def _launch_job(job_id: str, job_path: Path) -> bool:
             return False
     status_path = runtime.results_root / f"{job_id}.status.json"
     previous = json.loads(status_path.read_text(encoding="utf-8")) if status_path.is_file() else {}
+    durable_checkpoint = int(previous.get("checkpoint_completed_timestamps") or 0)
     _write_json_atomic(status_path, {
         **previous, "job_id": job_id, "status": "starting",
         "started_by_coordinator_at": datetime.now(timezone.utc).isoformat(),
         "attempt_count": int(previous.get("attempt_count") or 0) + 1,
+        "attempt_started_checkpoint_timestamps": durable_checkpoint,
         "next_retry_at": None, "blocks_queue": False,
     })
     runtime.active_job_id = job_id
@@ -488,29 +504,36 @@ def _recover_interrupted_job() -> None:
     job_path = runtime.job_root / f"{job_id}.json"
     if not job_path.is_file():
         return
-    attempt_count = max(1, int(payload.get("attempt_count") or 1))
     status_path = runtime.results_root / f"{job_id}.status.json"
-    if attempt_count > runtime.maximum_retries:
+    retry_state = progress_aware_restart_state(
+        payload, maximum_consecutive=runtime.maximum_retries,
+        maximum_lifetime=runtime.maximum_lifetime_restarts,
+    )
+    if not retry_state["retry_allowed"]:
         _write_json_atomic(status_path, {
-            **payload, "status": "failed", "blocks_queue": True,
+            **payload, **retry_state, "status": "failed", "blocks_queue": True,
             "failed_at": datetime.now(timezone.utc).isoformat(),
             "failure_class": "interrupted_service_restart",
-            "error": "automatic restart retry allowance exhausted",
+            "error": "progress-aware restart retry allowance exhausted",
             "retryable": True, "retries_exhausted": True,
             "retries_remaining": 0, "next_retry_at": None,
         })
         runtime.store.upload_file(status_path, f"status/{status_path.name}")
         return
     delay = retry_delay_seconds(
-        attempt_count, maximum_retries=runtime.maximum_retries,
+        max(1, retry_state["consecutive_restarts_without_progress"]),
+        maximum_retries=runtime.maximum_retries,
         base_seconds=runtime.retry_base_seconds,
         maximum_seconds=runtime.retry_max_seconds,
     )
     _write_json_atomic(status_path, {
-        **payload, "status": "retry_wait", "blocks_queue": False,
+        **payload, **retry_state, "status": "retry_wait", "blocks_queue": False,
         "failure_class": "interrupted_service_restart", "retryable": True,
         "next_retry_at": (datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat(),
-        "retries_remaining": runtime.maximum_retries - attempt_count + 1,
+        "retries_remaining": max(
+            0, runtime.maximum_retries
+            - retry_state["consecutive_restarts_without_progress"] + 1
+        ),
     })
     runtime.store.upload_file(status_path, f"status/{status_path.name}")
     _start_next_job()
@@ -594,6 +617,12 @@ def retry_failed_job(job_id: str) -> dict:
             "lifetime_attempt_count": int(payload.get("lifetime_attempt_count") or 0) + prior_attempts,
             "manual_retry_count": int(payload.get("manual_retry_count") or 0) + 1,
             "manual_retry_at": retried_at, "last_failure": last_failure,
+            "lifetime_restart_count": int(
+                payload.get("lifetime_restart_count")
+                or payload.get("lifetime_attempt_count")
+                or prior_attempts
+            ),
+            "consecutive_restarts_without_progress": 0,
             "blocks_queue": False, "next_retry_at": None,
             "retries_remaining": runtime.maximum_retries,
             "retries_exhausted": False,

@@ -311,6 +311,7 @@ Copy `.env.example` to `.env` and replace placeholders. The most important group
 | `RESEARCH_STATUS_UPLOAD_SECONDS` | Controls deduplicated durable progress updates; minimum 30 seconds |
 | `RESEARCH_CHECKPOINT_EVERY_SESSIONS` | Uploads resumable replay state and accumulated diagnostic partitions to durable storage; defaults to every 10 completed sessions |
 | `RESEARCH_MAX_RETRIES` | Automatic retries allowed after transient job failures |
+| `RESEARCH_MAX_LIFETIME_RESTARTS` | Hard lifetime safety ceiling for restart recovery even when durable progress keeps renewing the consecutive retry allowance; defaults to 20 |
 | `RESEARCH_RETRY_*_SECONDS` | Exponential retry delay and maximum backoff |
 | `RESEARCH_R2_STORAGE_BUDGET_BYTES` | Refuses large uploads above the configured object-storage safety budget |
 | `RESEARCH_CLEANUP_LOCAL_ARTIFACTS` | Defaults to `true`; removes R2-backed datasets and results from Render's ephemeral disk after each job and restores result ZIPs on demand |
