@@ -24,7 +24,9 @@ from pathlib import Path
 
 from config.service_mode import ServiceMode, validate_service_startup
 from research.artifact_store import artifact_store_from_env
-from research.historical_replay import ReplayConfig, SpilledRows, load_bar_csv, run_replay, write_replay
+from research.historical_replay import (
+    ReplayConfig, SpilledRows, load_bar_csv, run_replay, write_replay_archive,
+)
 from research.universes import resolve_universe
 
 
@@ -37,10 +39,12 @@ COMPATIBLE_CHECKPOINT_ENGINE_HASHES = {
     # e6ad700: deployed adaptive/progress-aware checkpoint format. The memory
     # changes preserve that schema so the currently running job can resume.
     "ef4acb8906cb097dfa5304a3b977ac004ed537a008e5f929540fdd3f487e6c98",
+    # 42b2b76: memory-bounded checkpoint serialization; state schema unchanged.
+    "22f68855cecc32589e5583c56d2216f737d55eeb266d3ebfe9927a1f80235378",
 }
 
 
-def _resource_snapshot() -> dict:
+def _resource_snapshot(storage_path: str | Path | None = None) -> dict:
     try:
         import resource
         usage = resource.getrusage(resource.RUSAGE_SELF)
@@ -75,6 +79,17 @@ def _resource_snapshot() -> dict:
     limit = snapshot.get("service_memory_limit_bytes")
     if current is not None and limit:
         snapshot["service_memory_pct"] = round(current / limit * 100.0, 2)
+    if storage_path is not None:
+        try:
+            usage = shutil.disk_usage(Path(storage_path))
+            snapshot.update({
+                "temporary_storage_total_bytes": usage.total,
+                "temporary_storage_used_bytes": usage.used,
+                "temporary_storage_free_bytes": usage.free,
+                "temporary_storage_pct": round(usage.used / usage.total * 100.0, 2),
+            })
+        except OSError:
+            pass
     return snapshot
 
 
@@ -225,14 +240,15 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
     bars_path = _resolved_child(Path(data_root), job["bars_csv"])
     results_root = Path(results_root).resolve()
     output = _resolved_child(results_root, job_id)
+    final_archive = _resolved_child(results_root, f"{job_id}-results.zip")
     if not bars_path.is_file():
         raise FileNotFoundError(f"historical bars file does not exist: {bars_path}")
-    if output.exists():
-        raise FileExistsError(f"result directory already exists: {output}")
+    if output.exists() or final_archive.exists():
+        raise FileExistsError(f"result artifact already exists for job: {job_id}")
 
     started_at = datetime.now(UTC).isoformat()
     status_path = results_root / f"{job_id}.status.json"
-    staging = results_root / f".{job_id}.{uuid.uuid4().hex}.tmp"
+    staging = results_root / f".{job_id}.{uuid.uuid4().hex}.results.zip.tmp"
     spill = results_root / f".{job_id}.spill"
     if spill.exists():
         shutil.rmtree(spill)
@@ -246,7 +262,7 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
         **previous_status,
         "job_id": job_id, "status": "running", "started_at": started_at,
         "job_path": str(job_path), "bars_path": str(bars_path),
-        "heartbeat_at": started_at, **_resource_snapshot(),
+        "heartbeat_at": started_at, **_resource_snapshot(results_root),
     }
     # A retry may reuse the durable status document from an earlier attempt.
     # Do not expose stale failure, completion, or progress metadata as if it
@@ -269,7 +285,8 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
         def update_progress(progress: dict) -> None:
             latest_status.update(progress)
             latest_status.update({
-                "heartbeat_at": datetime.now(UTC).isoformat(), **_resource_snapshot(),
+                "heartbeat_at": datetime.now(UTC).isoformat(),
+                **_resource_snapshot(results_root),
             })
             _write_json_atomic(status_path, latest_status)
 
@@ -283,6 +300,11 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
         resumed_checkpoint, resumed_spills = _restore_checkpoint_bundle(
             checkpoint_bundle, expected_identity=identity, spill_root=spill,
         )
+        if store.durable:
+            # The durable copy is authoritative. Keeping the downloaded bundle
+            # beside its extracted spills needlessly duplicates hundreds of
+            # megabytes on Render's 2 GiB temporary volume.
+            checkpoint_bundle.unlink(missing_ok=True)
         initial_checkpoint = None
         continuation_of = str(job.get("continuation_of") or "").strip()
         if continuation_of:
@@ -352,6 +374,8 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
                 "checkpoint_durable_uri": durable_uri,
             })
             _write_json_atomic(status_path, latest_status)
+            if store.durable:
+                checkpoint_bundle.unlink(missing_ok=True)
 
         result = run_replay(
             load_bar_csv(
@@ -371,20 +395,26 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
                 1, int(os.getenv("RESEARCH_CHECKPOINT_EVERY_SESSIONS", "10"))
             ),
         )
-        write_replay(
+        update_progress({"stage": "writing_result_archive"})
+        write_replay_archive(
             result, staging, source_path=bars_path,
             source_sha256=source_sha256,
             experiment={"job_id": job_id, "job": job, "job_path": str(job_path)},
+            release_spills=True,
+            progress_callback=lambda progress: update_progress({
+                "stage": "writing_result_archive", **progress,
+            }),
         )
         for value in result.values():
             if isinstance(value, SpilledRows):
                 value.close()
         if spill.exists():
             shutil.rmtree(spill)
-        staging.replace(output)
+        staging.replace(final_archive)
         completed_status = {
             **latest_status, "job_id": job_id, "status": "complete", "started_at": started_at,
-            "completed_at": datetime.now(UTC).isoformat(), "output": str(output),
+            "completed_at": datetime.now(UTC).isoformat(),
+            "archive": str(final_archive),
             "percent_complete": 100.0,
         }
         for stale_key in (
@@ -395,12 +425,12 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
         _write_json_atomic(status_path, completed_status)
         # The coordinator only removes this object after the final archive is
         # durably verified; until then it remains a restart recovery point.
-        return output
+        return final_archive
     except Exception as exc:
         if spill.exists():
             shutil.rmtree(spill)
         if staging.exists():
-            shutil.rmtree(staging)
+            staging.unlink(missing_ok=True)
         _write_json_atomic(status_path, {
             **latest_status, "job_id": job_id, "status": "failed", "started_at": started_at,
             "failed_at": datetime.now(UTC).isoformat(), "error": str(exc),

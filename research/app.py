@@ -239,8 +239,9 @@ def _run_job(job_id: str, job_path: Path) -> None:
     retry_delay = None
     try:
         output = runtime.results_root / job_id
+        archive = runtime.results_root / f"{job_id}-results.zip"
         status_path = runtime.results_root / f"{job_id}.status.json"
-        if not (output / "replay_manifest.json").is_file():
+        if not archive.is_file() and not (output / "replay_manifest.json").is_file():
             command = [
                 sys.executable, "-m", "research.worker", "--job", str(job_path),
                 "--data-root", str(runtime.data_root), "--results-root", str(runtime.results_root),
@@ -266,10 +267,15 @@ def _run_job(job_id: str, job_path: Path) -> None:
                         "the service may have exceeded its memory or CPU allowance"
                     )
                 raise RuntimeError(f"research worker exited with code {process.returncode}")
-        if not output.is_dir():
-            raise RuntimeError("research worker completed without a result directory")
-        archive_base = runtime.results_root / f"{job_id}-results"
-        archive = Path(shutil.make_archive(str(archive_base), "zip", root_dir=output))
+        # New workers write the final archive directly to avoid holding an
+        # expanded result tree and its ZIP simultaneously. Preserve the legacy
+        # directory path so in-flight deployments from older commits can still
+        # be finalized safely.
+        if not archive.is_file():
+            if not output.is_dir():
+                raise RuntimeError("research worker completed without a result archive")
+            archive_base = runtime.results_root / f"{job_id}-results"
+            archive = Path(shutil.make_archive(str(archive_base), "zip", root_dir=output))
         runtime.ensure_storage_capacity(archive)
         result_uri = runtime.store.upload_file(archive, f"results/{archive.name}")
         runtime.record_storage_write(archive.stat().st_size)

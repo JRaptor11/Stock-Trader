@@ -5,6 +5,7 @@ import bisect
 import csv
 import gzip
 import hashlib
+import io
 import itertools
 import json
 import math
@@ -14,6 +15,7 @@ import statistics
 import sys
 import time
 import uuid
+import zipfile
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, fields
@@ -33,6 +35,19 @@ from utils.numeric import safe_float
 UTC = timezone.utc
 MARKET_TZ = ZoneInfo("America/New_York")
 REQUIRED_COLUMNS = {"timestamp", "symbol", "open", "high", "low", "close", "volume"}
+CSV_ARTIFACTS = {
+    "cycles": "replay_cycles.csv",
+    "daily": "replay_daily.csv",
+    "decisions": "replay_decisions.csv",
+    "orders": "replay_orders.csv",
+    "dataset": "ml_dataset.csv",
+    "eligibility": "replay_eligibility.csv",
+    "benchmark_daily": "benchmark_daily.csv",
+    "walk_forward_results": "walk_forward_results.csv",
+    "account_profiles": "account_profile_results.csv",
+    "cross_account_wash_sales": "cross_account_wash_sale_matrix.csv",
+    "universe_selection": "universe_selection_diagnostics.csv",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -1500,49 +1515,40 @@ def run_replay(
     }
 
 
-def _write_csv(path: Path, rows) -> None:
+def _write_csv_handle(handle, rows, progress_callback=None) -> None:
     if not rows:
-        path.write_text("", encoding="utf-8")
         return
     fields = []
     for row in rows:
         for key in row:
             if key not in fields:
                 fields.append(key)
+    writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
+    writer.writeheader()
+    total_rows = len(rows)
+    for row_index, row in enumerate(rows, start=1):
+        writer.writerow({key: json.dumps(value, sort_keys=True) if isinstance(value, (dict, list)) else value for key, value in row.items()})
+        if progress_callback and (
+            row_index == total_rows or row_index % 5000 == 0
+        ):
+            progress_callback(row_index, total_rows)
+
+
+def _write_csv(path: Path, rows) -> None:
     with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({key: json.dumps(value, sort_keys=True) if isinstance(value, (dict, list)) else value for key, value in row.items()})
+        _write_csv_handle(handle, rows)
 
 
-def write_replay(
-    result: dict,
-    output_dir: str | Path,
-    *,
-    source_path: str | Path | None = None,
-    source_sha256: str | None = None,
-    experiment: dict | None = None,
-) -> Path:
-    output = Path(output_dir)
-    output.mkdir(parents=True, exist_ok=True)
-    for key, filename in {
-        "cycles": "replay_cycles.csv", "daily": "replay_daily.csv", "decisions": "replay_decisions.csv",
-        "orders": "replay_orders.csv", "dataset": "ml_dataset.csv",
-        "eligibility": "replay_eligibility.csv",
-        "benchmark_daily": "benchmark_daily.csv",
-        "walk_forward_results": "walk_forward_results.csv",
-        "account_profiles": "account_profile_results.csv",
-        "cross_account_wash_sales": "cross_account_wash_sale_matrix.csv",
-        "universe_selection": "universe_selection_diagnostics.csv",
-    }.items():
-        _write_csv(output / filename, result[key])
-    (output / "walk_forward_folds.json").write_text(json.dumps(result["walk_forward_folds"], indent=2), encoding="utf-8")
-    (output / "dataset_quality.json").write_text(json.dumps(result["dataset_quality"], indent=2), encoding="utf-8")
-    (output / "universe_metadata.json").write_text(json.dumps(result["universe"], indent=2), encoding="utf-8")
-    (output / "replay_summary.json").write_text(json.dumps(result["summary"], indent=2), encoding="utf-8")
-    (output / "benchmark_summary.json").write_text(json.dumps(result["benchmark_summary"], indent=2), encoding="utf-8")
-    (output / "account_profile_assumptions.json").write_text(json.dumps({
+def _write_json_handle(handle, payload, heartbeat=None) -> None:
+    encoder = json.JSONEncoder(indent=2, default=str)
+    for chunk_index, chunk in enumerate(encoder.iterencode(payload), start=1):
+        handle.write(chunk)
+        if heartbeat and chunk_index % 5000 == 0:
+            heartbeat()
+
+
+def _account_profile_assumptions(result: dict) -> dict:
+    return {
         "taxable_short_term_rate": result["config"]["taxable_short_term_rate"],
         "taxable_long_term_rate": result["config"]["taxable_long_term_rate"],
         "taxable_state_rate": result["config"]["taxable_state_rate"],
@@ -1555,9 +1561,14 @@ def write_replay(
         "wash_sale_model": "forward 30-day same-symbol replacement estimate",
         "roth_model": "qualified-distribution tax-free assumption",
         "disclaimer": "Research estimate; not tax advice or a tax-return calculation.",
-    }, indent=2), encoding="utf-8")
-    (output / "replay_checkpoint.json").write_text(json.dumps(result["checkpoint"], indent=2), encoding="utf-8")
-    manifest = {
+    }
+
+
+def _replay_manifest(
+    result: dict, *, source_path: str | Path | None,
+    source_sha256: str | None, experiment: dict | None,
+) -> dict:
+    return {
         "created_at": datetime.now(UTC).isoformat(), "source_path": str(source_path) if source_path else None,
         "source_sha256": source_sha256 or (
             hashlib.sha256(Path(source_path).read_bytes()).hexdigest()
@@ -1574,18 +1585,135 @@ def write_replay(
         "config": result["config"], "symbols": result["symbols"],
         "universe": result["universe"],
         "session_dates": result["session_dates"],
-        "evaluation_session_dates": result["evaluation_session_dates"], "row_counts": {
-            key: len(result[key]) for key in (
-                "cycles", "daily", "decisions", "orders", "dataset", "eligibility",
-                "benchmark_daily", "walk_forward_results",
-                "account_profiles",
-                "cross_account_wash_sales",
-                "universe_selection",
-            )
-        },
+        "evaluation_session_dates": result["evaluation_session_dates"],
+        "row_counts": {key: len(result[key]) for key in CSV_ARTIFACTS},
     }
+
+
+def write_replay(
+    result: dict,
+    output_dir: str | Path,
+    *,
+    source_path: str | Path | None = None,
+    source_sha256: str | None = None,
+    experiment: dict | None = None,
+) -> Path:
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    for key, filename in CSV_ARTIFACTS.items():
+        _write_csv(output / filename, result[key])
+    (output / "walk_forward_folds.json").write_text(json.dumps(result["walk_forward_folds"], indent=2), encoding="utf-8")
+    (output / "dataset_quality.json").write_text(json.dumps(result["dataset_quality"], indent=2), encoding="utf-8")
+    (output / "universe_metadata.json").write_text(json.dumps(result["universe"], indent=2), encoding="utf-8")
+    (output / "replay_summary.json").write_text(json.dumps(result["summary"], indent=2), encoding="utf-8")
+    (output / "benchmark_summary.json").write_text(json.dumps(result["benchmark_summary"], indent=2), encoding="utf-8")
+    (output / "account_profile_assumptions.json").write_text(
+        json.dumps(_account_profile_assumptions(result), indent=2), encoding="utf-8"
+    )
+    (output / "replay_checkpoint.json").write_text(json.dumps(result["checkpoint"], indent=2), encoding="utf-8")
+    manifest = _replay_manifest(
+        result, source_path=source_path, source_sha256=source_sha256,
+        experiment=experiment,
+    )
     (output / "replay_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return output
+
+
+def write_replay_archive(
+    result: dict,
+    archive_path: str | Path,
+    *,
+    source_path: str | Path | None = None,
+    source_sha256: str | None = None,
+    experiment: dict | None = None,
+    release_spills: bool = False,
+    progress_callback=None,
+) -> Path:
+    """Write result artifacts directly into one ZIP with bounded local storage."""
+    archive_path = Path(archive_path)
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest = _replay_manifest(
+        result, source_path=source_path, source_sha256=source_sha256,
+        experiment=experiment,
+    )
+    json_artifacts = {
+        "walk_forward_folds.json": result["walk_forward_folds"],
+        "dataset_quality.json": result["dataset_quality"],
+        "universe_metadata.json": result["universe"],
+        "replay_summary.json": result["summary"],
+        "benchmark_summary.json": result["benchmark_summary"],
+        "account_profile_assumptions.json": _account_profile_assumptions(result),
+        "replay_checkpoint.json": result["checkpoint"],
+        "replay_manifest.json": manifest,
+    }
+    with zipfile.ZipFile(
+        archive_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1,
+    ) as bundle:
+        total_rows = sum(manifest["row_counts"].values())
+        completed_rows = 0
+        for key, filename in CSV_ARTIFACTS.items():
+            rows = result[key]
+            member_rows = len(rows)
+
+            def report_member_progress(member_completed: int, _member_total: int) -> None:
+                if progress_callback:
+                    progress_callback({
+                        "archive_member": filename,
+                        "archive_completed_rows": completed_rows + member_completed,
+                        "archive_total_rows": total_rows,
+                        "archive_percent_complete": round(
+                            (completed_rows + member_completed) / total_rows * 100.0, 2
+                        ) if total_rows else 100.0,
+                        "archive_bytes_written": archive_path.stat().st_size,
+                    })
+
+            with bundle.open(filename, "w") as raw_handle:
+                with io.TextIOWrapper(
+                    raw_handle, encoding="utf-8", newline=""
+                ) as text_handle:
+                    _write_csv_handle(
+                        text_handle, rows,
+                        progress_callback=report_member_progress,
+                    )
+            completed_rows += member_rows
+            if release_spills and isinstance(rows, SpilledRows):
+                rows.close()
+                rows.path.unlink(missing_ok=True)
+            if progress_callback:
+                progress_callback({
+                    "archive_member": filename,
+                    "archive_completed_rows": completed_rows,
+                    "archive_total_rows": total_rows,
+                    "archive_percent_complete": round(
+                        completed_rows / total_rows * 100.0, 2
+                    ) if total_rows else 100.0,
+                    "archive_bytes_written": archive_path.stat().st_size,
+                })
+        for filename, payload in json_artifacts.items():
+            def report_json_progress() -> None:
+                if progress_callback:
+                    progress_callback({
+                        "archive_member": filename,
+                        "archive_completed_rows": completed_rows,
+                        "archive_total_rows": total_rows,
+                        "archive_percent_complete": 100.0,
+                        "archive_bytes_written": archive_path.stat().st_size,
+                    })
+
+            with bundle.open(filename, "w") as raw_handle:
+                with io.TextIOWrapper(raw_handle, encoding="utf-8") as text_handle:
+                    _write_json_handle(
+                        text_handle, payload, heartbeat=report_json_progress,
+                    )
+            if progress_callback:
+                progress_callback({
+                    "archive_member": filename,
+                    "archive_completed_rows": completed_rows,
+                    "archive_total_rows": total_rows,
+                    "archive_percent_complete": 100.0,
+                    "archive_bytes_written": archive_path.stat().st_size,
+                })
+    return archive_path
 
 
 def main(argv=None) -> int:

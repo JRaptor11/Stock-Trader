@@ -3,6 +3,7 @@ import hashlib
 import json
 import tempfile
 import unittest
+import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -10,7 +11,7 @@ from research.historical_replay import (
     ReplayConfig, ReplayPortfolio, SpilledRows, _account_profile_summaries,
     _checkpoint_interval, _cross_account_wash_sale_matrix, _future_labels, _record_tax_fill,
     _portfolio_checkpoint, _timestamp, _walk_forward_results,
-    load_bar_csv, run_replay, write_replay,
+    load_bar_csv, run_replay, write_replay, write_replay_archive,
 )
 from research.replay_parity import compare_replay_to_live
 from research.walk_forward import build_walk_forward_folds
@@ -395,6 +396,26 @@ class HistoricalReplayTests(unittest.TestCase):
             for value in actual.values():
                 if isinstance(value, SpilledRows):
                     value.close()
+
+    def test_direct_archive_releases_spills_after_each_member(self):
+        rows = self._bars()
+        config = ReplayConfig(warmup_bars=61, require_benchmark=False)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result = run_replay(rows, config, spill_directory=root / "spill")
+            spill_paths = [
+                value.path for value in result.values()
+                if isinstance(value, SpilledRows)
+            ]
+            archive = write_replay_archive(
+                result, root / "results.zip", release_spills=True,
+            )
+            self.assertTrue(archive.is_file())
+            self.assertTrue(all(not path.exists() for path in spill_paths))
+            with zipfile.ZipFile(archive) as bundle:
+                names = set(bundle.namelist())
+                self.assertIn("replay_manifest.json", names)
+                self.assertIn("ml_dataset.csv", names)
 
     def test_replay_requires_benchmark_by_default(self):
         with self.assertRaisesRegex(ValueError, "required benchmark"):

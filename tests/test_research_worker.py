@@ -54,7 +54,8 @@ class ResearchWorkerTests(unittest.TestCase):
             }
             with patch.dict(os.environ, env, clear=False):
                 output = execute_job(job, data, results)
-            manifest = json.loads((output / "replay_manifest.json").read_text(encoding="utf-8"))
+            with zipfile.ZipFile(output) as bundle:
+                manifest = json.loads(bundle.read("replay_manifest.json"))
             status = json.loads((results / "smoke-test.status.json").read_text(encoding="utf-8"))
             self.assertEqual(status["status"], "complete")
             self.assertEqual(status["percent_complete"], 100.0)
@@ -96,7 +97,8 @@ class ResearchWorkerTests(unittest.TestCase):
                 "BROKER_EXECUTION_ENABLED": "false",
             }, clear=False):
                 output = execute_job(job, data, results)
-            written = json.loads((output / "replay_checkpoint.json").read_text(encoding="utf-8"))
+            with zipfile.ZipFile(output) as bundle:
+                written = json.loads(bundle.read("replay_checkpoint.json"))
             self.assertGreater(written["cycle_id"], 41)
 
     def test_retry_start_clears_stale_failure_and_progress_fields(self):
