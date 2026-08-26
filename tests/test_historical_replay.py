@@ -6,6 +6,7 @@ import unittest
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from research.historical_replay import (
     ReplayConfig, ReplayPortfolio, SpilledRows, _account_profile_summaries,
@@ -446,6 +447,31 @@ class HistoricalReplayTests(unittest.TestCase):
                 names = set(bundle.namelist())
                 self.assertIn("replay_manifest.json", names)
                 self.assertIn("ml_dataset.csv", names)
+
+    def test_direct_archive_enables_zip64_for_csv_members(self):
+        rows = self._bars()
+        config = ReplayConfig(warmup_bars=61, require_benchmark=False)
+        original_open = zipfile.ZipFile.open
+        write_flags = []
+
+        def tracking_open(bundle, name, mode="r", pwd=None, *, force_zip64=False):
+            if mode == "w":
+                write_flags.append((name, force_zip64))
+            return original_open(
+                bundle, name, mode=mode, pwd=pwd, force_zip64=force_zip64,
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result = run_replay(rows, config, spill_directory=root / "spill")
+            with patch.object(zipfile.ZipFile, "open", new=tracking_open):
+                write_replay_archive(result, root / "results.zip", release_spills=True)
+        csv_write_flags = [
+            force_zip64 for name, force_zip64 in write_flags
+            if str(name).endswith(".csv")
+        ]
+        self.assertTrue(csv_write_flags)
+        self.assertTrue(all(csv_write_flags))
 
     def test_replay_requires_benchmark_by_default(self):
         with self.assertRaisesRegex(ValueError, "required benchmark"):

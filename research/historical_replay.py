@@ -1765,7 +1765,10 @@ def write_replay_archive(
                         "archive_bytes_written": archive_path.stat().st_size,
                     })
 
-            with bundle.open(filename, "w") as raw_handle:
+            # A CSV can exceed the classic ZIP member limit even when its
+            # compressed bytes are small. Opt into ZIP64 before writing so
+            # zipfile does not discover the size too late while closing it.
+            with bundle.open(filename, "w", force_zip64=True) as raw_handle:
                 with io.TextIOWrapper(
                     raw_handle, encoding="utf-8", newline=""
                 ) as text_handle:

@@ -51,6 +51,8 @@ COMPATIBLE_CHECKPOINT_ENGINE_HASHES = {
     "311baddd18fdc5dac6eabba68f4edf9d824e5954006bc16f49cf40ae76b6e26f",
     # 3e8cf35: source-row release before labels; checkpoint state unchanged.
     "5529cf0dc733f1da8ef04dfa76cb41128a7cfe868552eb0019a640a89b6cc117",
+    # 6637c51: packed label arrays; checkpoint state schema unchanged.
+    "d67819e740ead8420aea3ad918ebe179f0bad788f278dbdffbee160e64e5fe56",
 }
 
 
