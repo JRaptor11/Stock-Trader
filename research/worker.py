@@ -43,6 +43,9 @@ COMPATIBLE_CHECKPOINT_ENGINE_HASHES = {
     "22f68855cecc32589e5583c56d2216f737d55eeb266d3ebfe9927a1f80235378",
     # 24bed51: direct result archive finalization; state schema unchanged.
     "25a3241a992c971de15017ca411319ff8a55574c0c3235ec1f7be19c6bc6bd3d",
+    # d0c2e9e: legacy tax-event compaction; state schema unchanged. Restoring
+    # this checkpoint also compacts its still-expanded per-fill tax lots.
+    "16053458cea91bf9c4c86feb32071ebaaa6de299cbbbebc16aa0de0417981ed6",
 }
 
 
@@ -401,15 +404,28 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
             ),
         )
         update_progress({"stage": "writing_result_archive"})
+        last_archive_progress_at = 0.0
+
+        def update_archive_progress(progress: dict) -> None:
+            nonlocal last_archive_progress_at
+            now = time.monotonic()
+            if now - last_archive_progress_at < 5.0:
+                return
+            last_archive_progress_at = now
+            update_progress({"stage": "writing_result_archive", **progress})
+
         write_replay_archive(
             result, staging, source_path=bars_path,
             source_sha256=source_sha256,
             experiment={"job_id": job_id, "job": job, "job_path": str(job_path)},
             release_spills=True,
-            progress_callback=lambda progress: update_progress({
-                "stage": "writing_result_archive", **progress,
-            }),
+            progress_callback=update_archive_progress,
         )
+        update_progress({
+            "stage": "result_archive_ready",
+            "archive_bytes_written": staging.stat().st_size,
+            "archive_percent_complete": 100.0,
+        })
         for value in result.values():
             if isinstance(value, SpilledRows):
                 value.close()

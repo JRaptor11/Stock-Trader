@@ -258,10 +258,20 @@ def _record_tax_fill(
             remaining -= matched
             portfolio.wash_sale_loss_exposure += matched * float(loss["loss_per_share"])
         pending[:] = [item for item in pending if float(item["remaining_qty"]) > 0]
-        lots.append({
-            "qty": qty, "cost_per_share": fill_price + basis_adjustment / qty,
-            "acquired_at": ts.isoformat(),
-        })
+        adjusted_cost = fill_price + basis_adjustment / qty
+        if lots and _timestamp(lots[-1]["acquired_at"]).date() == ts.date():
+            prior_qty = float(lots[-1]["qty"])
+            combined_qty = prior_qty + qty
+            lots[-1]["cost_per_share"] = (
+                prior_qty * float(lots[-1]["cost_per_share"])
+                + qty * adjusted_cost
+            ) / combined_qty
+            lots[-1]["qty"] = combined_qty
+        else:
+            lots.append({
+                "qty": qty, "cost_per_share": adjusted_cost,
+                "acquired_at": ts.isoformat(),
+            })
         return
     remaining = qty
     while remaining > 0 and lots:
@@ -841,6 +851,10 @@ def _portfolio_checkpoint(portfolio: ReplayPortfolio) -> dict:
 def _portfolio_from_checkpoint(payload: dict) -> ReplayPortfolio:
     values = dict(payload)
     values["pending_at"] = _timestamp(values["pending_at"]) if values.get("pending_at") else None
+    values["tax_lots"] = {
+        symbol: _compact_tax_lots(lots)
+        for symbol, lots in dict(values.get("tax_lots") or {}).items()
+    }
     values["buy_events"] = _compact_daily_tax_events(
         values.get("buy_events") or [], timestamp_key="bought_at",
     )
@@ -849,6 +863,29 @@ def _portfolio_from_checkpoint(payload: dict) -> ReplayPortfolio:
         weighted_key="loss_per_share",
     )
     return ReplayPortfolio(**values)
+
+
+def _compact_tax_lots(lots: list[dict]) -> list[dict]:
+    """Merge same-day FIFO lots while retaining weighted cost and lot order."""
+    compacted = []
+    for source in lots:
+        lot = dict(source)
+        if not compacted or (
+            _timestamp(compacted[-1]["acquired_at"]).date()
+            != _timestamp(lot["acquired_at"]).date()
+        ):
+            compacted.append(lot)
+            continue
+        existing = compacted[-1]
+        old_qty = float(existing["qty"])
+        added_qty = float(lot["qty"])
+        total_qty = old_qty + added_qty
+        existing["cost_per_share"] = (
+            old_qty * float(existing["cost_per_share"])
+            + added_qty * float(lot["cost_per_share"])
+        ) / total_qty
+        existing["qty"] = total_qty
+    return compacted
 
 
 def _compact_daily_tax_events(

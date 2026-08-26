@@ -72,6 +72,19 @@ class HistoricalReplayTests(unittest.TestCase):
         self.assertEqual(1, len(restored.loss_sale_events))
         self.assertEqual(8.0, restored.loss_sale_events[0]["loss_per_share"])
 
+    def test_legacy_checkpoint_tax_lots_are_compacted_during_restore(self):
+        restored = _portfolio_from_checkpoint({
+            "cash": 100000.0,
+            "tax_lots": {"AAA": [
+                {"qty": 2, "cost_per_share": 100, "acquired_at": "2026-01-05T14:30:00+00:00"},
+                {"qty": 3, "cost_per_share": 110, "acquired_at": "2026-01-05T15:30:00+00:00"},
+                {"qty": 1, "cost_per_share": 120, "acquired_at": "2026-01-06T14:30:00+00:00"},
+            ]},
+        })
+        self.assertEqual(2, len(restored.tax_lots["AAA"]))
+        self.assertEqual(5.0, restored.tax_lots["AAA"][0]["qty"])
+        self.assertEqual(106.0, restored.tax_lots["AAA"][0]["cost_per_share"])
+
     def test_account_profiles_report_taxable_and_roth_outputs(self):
         portfolio = ReplayPortfolio(
             cash=110000.0, realized_short_term_gain=10000.0,
