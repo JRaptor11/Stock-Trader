@@ -49,6 +49,8 @@ COMPATIBLE_CHECKPOINT_ENGINE_HASHES = {
     # 72eacb2: restored-lot compaction and archive status throttling; state
     # schema unchanged while post-replay bar retention is reduced.
     "311baddd18fdc5dac6eabba68f4edf9d824e5954006bc16f49cf40ae76b6e26f",
+    # 3e8cf35: source-row release before labels; checkpoint state unchanged.
+    "5529cf0dc733f1da8ef04dfa76cb41128a7cfe868552eb0019a640a89b6cc117",
 }
 
 

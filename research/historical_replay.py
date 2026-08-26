@@ -16,6 +16,7 @@ import sys
 import time
 import uuid
 import zipfile
+from array import array
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, fields
@@ -81,27 +82,20 @@ class BarRow(Mapping):
         return len(self._fields)
 
 
-@dataclass(frozen=True, slots=True)
-class LabelBar(Mapping):
-    """Reduced bar retained after replay for forward-label construction."""
+@dataclass(slots=True)
+class LabelSeries:
+    """Packed per-symbol data needed by forward-label construction."""
 
-    timestamp: datetime
-    high: float
-    low: float
-    close: float
+    timestamps: list[datetime] = field(default_factory=list)
+    highs: array = field(default_factory=lambda: array("d"))
+    lows: array = field(default_factory=lambda: array("d"))
+    closes: array = field(default_factory=lambda: array("d"))
 
-    _fields = ("timestamp", "high", "low", "close")
-
-    def __getitem__(self, key):
-        if key not in self._fields:
-            raise KeyError(key)
-        return getattr(self, key)
-
-    def __iter__(self):
-        return iter(self._fields)
-
-    def __len__(self):
-        return len(self._fields)
+    def append(self, row: Mapping) -> None:
+        self.timestamps.append(row["timestamp"])
+        self.highs.append(float(row["high"]))
+        self.lows.append(float(row["low"]))
+        self.closes.append(float(row["close"]))
 
 
 class SpilledRows:
@@ -547,19 +541,21 @@ def _future_labels(
     horizons = {"10m": 10, "30m": 30, "60m": 60}
     series = {}
     for symbol, values in bars_by_symbol.items():
-        values = list(values)
-        values.sort(key=lambda item: item[0] if isinstance(item, tuple) else item["timestamp"])
-        timestamps = [
-            item[0] if isinstance(item, tuple) else item["timestamp"]
-            for item in values
-        ]
-        series[symbol] = (
-            values, timestamps,
+        if isinstance(values, LabelSeries):
+            series[symbol] = values
+            continue
+        ordered = sorted(
+            values, key=lambda item: item[0] if isinstance(item, tuple) else item["timestamp"]
         )
+        packed = LabelSeries()
+        for item in ordered:
+            packed.append(item[1] if isinstance(item, tuple) else item)
+        series[symbol] = packed
     total_features = len(features)
     for feature_index, feature in enumerate(features, start=1):
         ts, symbol = _timestamp(feature["timestamp"]), feature["symbol"]
-        values, timestamps = series[symbol]
+        values = series[symbol]
+        timestamps = values.timestamps
         next_index = bisect.bisect_right(timestamps, ts)
         row = dict(feature)
         # A sparse feed can legitimately have no bar for this symbol at the
@@ -569,28 +565,26 @@ def _future_labels(
         for label, minutes in horizons.items():
             target_ts = ts + timedelta(minutes=minutes)
             target_index = bisect.bisect_left(timestamps, target_ts)
-            target_item = values[target_index] if target_index < len(values) else None
-            target_bar = (
-                target_item[1] if isinstance(target_item, tuple) else target_item
-            ) if target_item is not None and timestamps[target_index] == target_ts else None
-            valid = target_bar is not None and target_ts.astimezone(MARKET_TZ).date() == ts.astimezone(MARKET_TZ).date()
+            valid = (
+                target_index < len(timestamps)
+                and timestamps[target_index] == target_ts
+                and target_ts.astimezone(MARKET_TZ).date() == ts.astimezone(MARKET_TZ).date()
+            )
             row[f"forward_return_{label}"] = (
-                round(float(target_bar["close"]) / start - 1.0, 10) if valid else None
+                round(values.closes[target_index] / start - 1.0, 10) if valid else None
             )
         window_end = ts + timedelta(minutes=60)
-        window = []
-        for future_item in itertools.islice(values, next_index, None):
-            future_ts = future_item[0] if isinstance(future_item, tuple) else future_item["timestamp"]
-            future_bar = future_item[1] if isinstance(future_item, tuple) else future_item
-            if future_ts > window_end:
-                break
-            if future_ts.astimezone(MARKET_TZ).date() == ts.astimezone(MARKET_TZ).date():
-                window.append(future_bar)
+        window_stop = bisect.bisect_right(timestamps, window_end, lo=next_index)
+        session_date = ts.astimezone(MARKET_TZ).date()
+        window = [
+            index for index in range(next_index, window_stop)
+            if timestamps[index].astimezone(MARKET_TZ).date() == session_date
+        ]
         row["max_favorable_excursion_60m"] = (
-            round(max(float(item["high"]) for item in window) / start - 1.0, 10) if window else None
+            round(max(values.highs[index] for index in window) / start - 1.0, 10) if window else None
         )
         row["max_adverse_excursion_60m"] = (
-            round(min(float(item["low"]) for item in window) / start - 1.0, 10) if window else None
+            round(min(values.lows[index] for index in window) / start - 1.0, 10) if window else None
         )
         row["label_available_60m"] = row["forward_return_60m"] is not None
         output.append(row)
@@ -1515,12 +1509,9 @@ def run_replay(
     # Replace full OHLCV rows with the four fields labels require. Keeping the
     # original rows here retained open/volume/trade/vwap values across more
     # than 500k bars and left too little memory headroom on the hosted worker.
-    label_bars_by_symbol = defaultdict(list)
+    label_bars_by_symbol = defaultdict(LabelSeries)
     for row in rows:
-        label_bars_by_symbol[row["symbol"]].append(LabelBar(
-            timestamp=row["timestamp"], high=float(row["high"]),
-            low=float(row["low"]), close=float(row["close"]),
-        ))
+        label_bars_by_symbol[row["symbol"]].append(row)
     if release_source_rows:
         rows.clear()
     dataset = _future_labels(
