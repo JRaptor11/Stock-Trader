@@ -81,6 +81,29 @@ class BarRow(Mapping):
         return len(self._fields)
 
 
+@dataclass(frozen=True, slots=True)
+class LabelBar(Mapping):
+    """Reduced bar retained after replay for forward-label construction."""
+
+    timestamp: datetime
+    high: float
+    low: float
+    close: float
+
+    _fields = ("timestamp", "high", "low", "close")
+
+    def __getitem__(self, key):
+        if key not in self._fields:
+            raise KeyError(key)
+        return getattr(self, key)
+
+    def __iter__(self):
+        return iter(self._fields)
+
+    def __len__(self):
+        return len(self._fields)
+
+
 class SpilledRows:
     """Append-only JSONL collection used to keep large diagnostics off the heap."""
 
@@ -1081,7 +1104,7 @@ def run_replay(
     rows: list[dict], config: ReplayConfig | None = None, progress_callback=None,
     spill_directory: str | Path | None = None, initial_checkpoint: dict | None = None,
     initial_spills: dict | None = None, checkpoint_callback=None,
-    checkpoint_every_sessions: int = 10,
+    checkpoint_every_sessions: int = 10, release_source_rows: bool = False,
 ) -> dict:
     config = config or ReplayConfig()
     if any(
@@ -1471,14 +1494,35 @@ def run_replay(
     if current_session_date:
         completed_sessions.add(current_session_date)
     persist_checkpoint(last_processed_timestamp, force=True)
+
+    # Benchmark calculations still need the full bars. Finish them before
+    # releasing fields that future labels do not use.
+    prior_benchmark_history = list(checkpoint.get("benchmark_daily_history") or [])
+    previous_benchmark_close = (
+        float(prior_benchmark_history[-1]["end_price"])
+        if prior_benchmark_history else None
+    )
+    benchmark_daily = _benchmark_daily(rows, benchmark_symbol, previous_benchmark_close)
+    combined_benchmark_history = prior_benchmark_history + benchmark_daily
+    benchmark_start_price = (
+        float(combined_benchmark_history[0]["start_price"])
+        if combined_benchmark_history else None
+    )
+    benchmark_summary = _benchmark_summary(rows, benchmark_symbol, benchmark_start_price)
+
     if progress_callback:
         progress_callback({"stage": "building_future_labels", "percent_complete": 100.0})
-    # Build only lightweight per-symbol reference lists after the main replay.
-    # The previous implementation retained an additional (timestamp, row)
-    # tuple for every bar throughout execution, materially increasing peak RSS.
+    # Replace full OHLCV rows with the four fields labels require. Keeping the
+    # original rows here retained open/volume/trade/vwap values across more
+    # than 500k bars and left too little memory headroom on the hosted worker.
     label_bars_by_symbol = defaultdict(list)
     for row in rows:
-        label_bars_by_symbol[row["symbol"]].append(row)
+        label_bars_by_symbol[row["symbol"]].append(LabelBar(
+            timestamp=row["timestamp"], high=float(row["high"]),
+            low=float(row["low"]), close=float(row["close"]),
+        ))
+    if release_source_rows:
+        rows.clear()
     dataset = _future_labels(
         feature_rows, label_bars_by_symbol, collection("dataset"),
         progress_callback=progress_callback,
@@ -1499,7 +1543,6 @@ def run_replay(
         and first_cycle_by_session[day].astimezone(MARKET_TZ).minute == 30
     ]
     prior_daily_history = list(checkpoint.get("walk_forward_daily_history") or [])
-    prior_benchmark_history = list(checkpoint.get("benchmark_daily_history") or [])
     prior_evaluation_dates = list(checkpoint.get("evaluation_session_dates") or [])
     combined_daily_history = prior_daily_history + list(daily)
     combined_evaluation_dates = sorted(set(prior_evaluation_dates + evaluation_session_dates))
@@ -1507,17 +1550,6 @@ def run_replay(
         combined_evaluation_dates, min_train_sessions=config.min_train_sessions,
         test_sessions=config.test_sessions, step_sessions=config.step_sessions,
     )
-    previous_benchmark_close = (
-        float(prior_benchmark_history[-1]["end_price"])
-        if prior_benchmark_history else None
-    )
-    benchmark_daily = _benchmark_daily(rows, benchmark_symbol, previous_benchmark_close)
-    combined_benchmark_history = prior_benchmark_history + benchmark_daily
-    benchmark_start_price = (
-        float(combined_benchmark_history[0]["start_price"])
-        if combined_benchmark_history else None
-    )
-    benchmark_summary = _benchmark_summary(rows, benchmark_symbol, benchmark_start_price)
     all_walk_forward_results = _walk_forward_results(
         combined_daily_history, combined_benchmark_history, folds
     )

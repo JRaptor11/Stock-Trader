@@ -46,6 +46,9 @@ COMPATIBLE_CHECKPOINT_ENGINE_HASHES = {
     # d0c2e9e: legacy tax-event compaction; state schema unchanged. Restoring
     # this checkpoint also compacts its still-expanded per-fill tax lots.
     "16053458cea91bf9c4c86feb32071ebaaa6de299cbbbebc16aa0de0417981ed6",
+    # 72eacb2: restored-lot compaction and archive status throttling; state
+    # schema unchanged while post-replay bar retention is reduced.
+    "311baddd18fdc5dac6eabba68f4edf9d824e5954006bc16f49cf40ae76b6e26f",
 }
 
 
@@ -402,6 +405,7 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
             checkpoint_every_sessions=max(
                 1, int(os.getenv("RESEARCH_CHECKPOINT_EVERY_SESSIONS", "10"))
             ),
+            release_source_rows=True,
         )
         update_progress({"stage": "writing_result_archive"})
         last_archive_progress_at = 0.0
