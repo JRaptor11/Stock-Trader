@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import logging
 import os
@@ -33,6 +34,9 @@ LEGACY_CHECKPOINT_COMMITS = {"61688bd5b95e414f788c721a6d994ea4c608916d"}
 COMPATIBLE_CHECKPOINT_ENGINE_HASHES = {
     # 9b4dd8f: same state schema before adaptive checkpoint scheduling.
     "ffbe90d7c90f8de10405925b8118f3ebc0d431ecff8754facac1a0994deda4be",
+    # e6ad700: deployed adaptive/progress-aware checkpoint format. The memory
+    # changes preserve that schema so the currently running job can resume.
+    "ef4acb8906cb097dfa5304a3b977ac004ed537a008e5f929540fdd3f487e6c98",
 }
 
 
@@ -45,7 +49,33 @@ def _resource_snapshot() -> dict:
         maximum_rss_bytes = int(maximum_rss if sys.platform == "darwin" else maximum_rss * 1024)
     except ImportError:
         maximum_rss_bytes = 0
-    return {"worker_max_rss_bytes": maximum_rss_bytes, "worker_pid": os.getpid()}
+    snapshot = {"worker_max_rss_bytes": maximum_rss_bytes, "worker_pid": os.getpid()}
+    # Render uses cgroup accounting for the whole service. Worker RSS alone
+    # misses the API/coordinator process and therefore understated the memory
+    # pressure that triggers the 512 MiB instance limit.
+    for key, candidates in {
+        "service_memory_current_bytes": (
+            "/sys/fs/cgroup/memory.current",
+            "/sys/fs/cgroup/memory/memory.usage_in_bytes",
+        ),
+        "service_memory_limit_bytes": (
+            "/sys/fs/cgroup/memory.max",
+            "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+        ),
+    }.items():
+        for candidate in candidates:
+            try:
+                value = Path(candidate).read_text(encoding="utf-8").strip()
+                if value != "max":
+                    snapshot[key] = int(value)
+                break
+            except (OSError, ValueError):
+                continue
+    current = snapshot.get("service_memory_current_bytes")
+    limit = snapshot.get("service_memory_limit_bytes")
+    if current is not None and limit:
+        snapshot["service_memory_pct"] = round(current / limit * 100.0, 2)
+    return snapshot
 
 
 def _resolved_child(root: Path, value: str | Path) -> Path:
@@ -132,10 +162,15 @@ def _write_checkpoint_bundle(
             archive_name = f"spills/{name}.jsonl.gz"
             bundle.write(source, archive_name)
             manifest_spills[name] = {"archive_name": archive_name, "count": int(state["count"])}
-        bundle.writestr("checkpoint.json", json.dumps({
-            "format_version": 1, "identity": identity,
-            "checkpoint": checkpoint, "spills": manifest_spills,
-        }, separators=(",", ":"), default=str))
+        # Stream the manifest into the archive. json.dumps temporarily held a
+        # second complete checkpoint string in memory and was the dominant
+        # near-completion allocation spike on the free Render instance.
+        with bundle.open("checkpoint.json", "w") as raw_handle:
+            with io.TextIOWrapper(raw_handle, encoding="utf-8") as text_handle:
+                json.dump({
+                    "format_version": 1, "identity": identity,
+                    "checkpoint": checkpoint, "spills": manifest_spills,
+                }, text_handle, separators=(",", ":"), default=str)
     temporary.replace(destination)
 
 

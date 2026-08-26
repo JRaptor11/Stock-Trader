@@ -9,7 +9,7 @@ from pathlib import Path
 from research.historical_replay import (
     ReplayConfig, ReplayPortfolio, SpilledRows, _account_profile_summaries,
     _checkpoint_interval, _cross_account_wash_sale_matrix, _future_labels, _record_tax_fill,
-    _timestamp, _walk_forward_results,
+    _portfolio_checkpoint, _timestamp, _walk_forward_results,
     load_bar_csv, run_replay, write_replay,
 )
 from research.replay_parity import compare_replay_to_live
@@ -35,6 +35,24 @@ class HistoricalReplayTests(unittest.TestCase):
         self.assertEqual(50.0, portfolio.realized_loss)
         self.assertEqual(50.0, portfolio.wash_sale_loss_exposure)
         self.assertEqual(101.0, portfolio.tax_lots["AAA"][0]["cost_per_share"])
+
+    def test_tax_events_are_compacted_by_symbol_and_day(self):
+        portfolio = ReplayPortfolio(cash=100000.0)
+        started = datetime(2026, 1, 5, 14, 30, tzinfo=timezone.utc)
+        _record_tax_fill(portfolio, "AAA", "BUY", 2, 100.0, started)
+        _record_tax_fill(
+            portfolio, "AAA", "BUY", 3, 101.0, started + timedelta(minutes=5)
+        )
+        self.assertEqual(1, len(portfolio.buy_events))
+        self.assertEqual(5.0, portfolio.buy_events[0]["qty"])
+
+    def test_portfolio_checkpoint_does_not_deep_copy_large_event_lists(self):
+        portfolio = ReplayPortfolio(
+            cash=100000.0,
+            buy_events=[{"symbol": "AAA", "bought_at": "2026-01-05T14:30:00+00:00", "qty": 2}],
+        )
+        checkpoint = _portfolio_checkpoint(portfolio)
+        self.assertIs(portfolio.buy_events, checkpoint["buy_events"])
 
     def test_account_profiles_report_taxable_and_roth_outputs(self):
         portfolio = ReplayPortfolio(

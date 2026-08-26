@@ -16,7 +16,7 @@ import time
 import uuid
 from collections import defaultdict
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -227,9 +227,11 @@ def _record_tax_fill(
     cutoff = ts - timedelta(days=30)
     pending[:] = [item for item in pending if _timestamp(item["sold_at"]) >= cutoff]
     if side == "BUY":
-        portfolio.buy_events.append({
-            "symbol": symbol, "bought_at": ts.isoformat(), "qty": qty,
-        })
+        _append_daily_tax_event(
+            portfolio.buy_events,
+            {"symbol": symbol, "bought_at": ts.isoformat(), "qty": qty},
+            timestamp_key="bought_at",
+        )
         remaining = qty
         basis_adjustment = 0.0
         for loss in pending:
@@ -264,14 +266,49 @@ def _record_tax_fill(
                 "sold_at": ts.isoformat(), "remaining_qty": sold,
                 "loss_per_share": loss / sold,
             })
-            portfolio.loss_sale_events.append({
-                "symbol": symbol, "sold_at": ts.isoformat(), "qty": sold,
-                "loss_per_share": loss / sold,
-            })
+            _append_daily_tax_event(
+                portfolio.loss_sale_events,
+                {
+                    "symbol": symbol, "sold_at": ts.isoformat(), "qty": sold,
+                    "loss_per_share": loss / sold,
+                },
+                timestamp_key="sold_at", weighted_key="loss_per_share",
+            )
         lot["qty"] -= sold
         remaining -= sold
         if lot["qty"] <= 0:
             lots.pop(0)
+
+
+def _append_daily_tax_event(
+    events: list[dict], event: dict, *, timestamp_key: str,
+    weighted_key: str | None = None,
+) -> None:
+    """Compact same-symbol intraday tax events without changing day-level results.
+
+    Cross-account wash-sale diagnostics only use the symbol, calendar day,
+    quantity, and (for losses) total loss. Keeping every five-minute fill made
+    long replay checkpoints grow without bound and caused large serialization
+    spikes on memory-constrained workers.
+    """
+    event_day = _timestamp(event[timestamp_key]).date()
+    existing = next((
+        item for item in reversed(events)
+        if item["symbol"] == event["symbol"]
+        and _timestamp(item[timestamp_key]).date() == event_day
+    ), None)
+    if existing is None:
+        events.append(event)
+        return
+    old_qty = float(existing["qty"])
+    added_qty = float(event["qty"])
+    total_qty = old_qty + added_qty
+    if weighted_key and total_qty:
+        existing[weighted_key] = (
+            old_qty * float(existing[weighted_key])
+            + added_qty * float(event[weighted_key])
+        ) / total_qty
+    existing["qty"] = total_qty
 
 
 def _timestamp(value: str) -> datetime:
@@ -740,18 +777,21 @@ def _dataset_quality(rows: list[dict], symbols: list[str], benchmark_symbol: str
     """Measure whether each requested security has a comparable regular-session sample."""
     regular = [row for row in rows if _is_regular_session(row["timestamp"])]
     timestamps_by_session = defaultdict(set)
-    observed = defaultdict(set)
+    # Input uniqueness is validated by load_bar_csv, so retaining a set of
+    # every timestamp for every (session, symbol) duplicates hundreds of
+    # thousands of references just to derive a count.
+    observed = defaultdict(int)
     for row in regular:
         session_date = row["timestamp"].astimezone(MARKET_TZ).date().isoformat()
         timestamps_by_session[session_date].add(row["timestamp"])
-        observed[(session_date, row["symbol"])].add(row["timestamp"])
+        observed[(session_date, row["symbol"])] += 1
     requested = list(symbols)
     if benchmark_symbol and benchmark_symbol not in requested:
         requested.append(benchmark_symbol)
     details = []
     for session_date, expected in sorted(timestamps_by_session.items()):
         for symbol in requested:
-            count = len(observed.get((session_date, symbol), set()))
+            count = observed.get((session_date, symbol), 0)
             details.append({
                 "session_date": session_date,
                 "symbol": symbol,
@@ -772,7 +812,13 @@ def _dataset_quality(rows: list[dict], symbols: list[str], benchmark_symbol: str
 
 
 def _portfolio_checkpoint(portfolio: ReplayPortfolio) -> dict:
-    payload = asdict(portfolio)
+    # Avoid dataclasses.asdict here: it recursively duplicates every lot and
+    # tax event immediately before JSON serialization, doubling peak memory at
+    # the most checkpoint-heavy part of a replay.
+    payload = {
+        item.name: getattr(portfolio, item.name)
+        for item in fields(ReplayPortfolio)
+    }
     payload["pending_at"] = portfolio.pending_at.isoformat() if portfolio.pending_at else None
     return payload
 
