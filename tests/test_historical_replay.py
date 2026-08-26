@@ -10,7 +10,7 @@ from pathlib import Path
 from research.historical_replay import (
     ReplayConfig, ReplayPortfolio, SpilledRows, _account_profile_summaries,
     _checkpoint_interval, _cross_account_wash_sale_matrix, _future_labels, _record_tax_fill,
-    _portfolio_checkpoint, _timestamp, _walk_forward_results,
+    _portfolio_checkpoint, _portfolio_from_checkpoint, _timestamp, _walk_forward_results,
     load_bar_csv, run_replay, write_replay, write_replay_archive,
 )
 from research.replay_parity import compare_replay_to_live
@@ -54,6 +54,23 @@ class HistoricalReplayTests(unittest.TestCase):
         )
         checkpoint = _portfolio_checkpoint(portfolio)
         self.assertIs(portfolio.buy_events, checkpoint["buy_events"])
+
+    def test_legacy_checkpoint_tax_events_are_compacted_during_restore(self):
+        restored = _portfolio_from_checkpoint({
+            "cash": 100000.0,
+            "buy_events": [
+                {"symbol": "AAA", "bought_at": "2026-01-05T14:30:00+00:00", "qty": 2},
+                {"symbol": "AAA", "bought_at": "2026-01-05T15:30:00+00:00", "qty": 3},
+            ],
+            "loss_sale_events": [
+                {"symbol": "AAA", "sold_at": "2026-01-06T14:30:00+00:00", "qty": 2, "loss_per_share": 5},
+                {"symbol": "AAA", "sold_at": "2026-01-06T15:30:00+00:00", "qty": 3, "loss_per_share": 10},
+            ],
+        })
+        self.assertEqual(1, len(restored.buy_events))
+        self.assertEqual(5.0, restored.buy_events[0]["qty"])
+        self.assertEqual(1, len(restored.loss_sale_events))
+        self.assertEqual(8.0, restored.loss_sale_events[0]["loss_per_share"])
 
     def test_account_profiles_report_taxable_and_roth_outputs(self):
         portfolio = ReplayPortfolio(

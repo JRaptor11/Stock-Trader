@@ -841,7 +841,45 @@ def _portfolio_checkpoint(portfolio: ReplayPortfolio) -> dict:
 def _portfolio_from_checkpoint(payload: dict) -> ReplayPortfolio:
     values = dict(payload)
     values["pending_at"] = _timestamp(values["pending_at"]) if values.get("pending_at") else None
+    values["buy_events"] = _compact_daily_tax_events(
+        values.get("buy_events") or [], timestamp_key="bought_at",
+    )
+    values["loss_sale_events"] = _compact_daily_tax_events(
+        values.get("loss_sale_events") or [], timestamp_key="sold_at",
+        weighted_key="loss_per_share",
+    )
     return ReplayPortfolio(**values)
+
+
+def _compact_daily_tax_events(
+    events: list[dict], *, timestamp_key: str,
+    weighted_key: str | None = None,
+) -> list[dict]:
+    """Migrate legacy per-fill checkpoint events into day-level aggregates."""
+    compacted = []
+    indexes = {}
+    for source in events:
+        event = dict(source)
+        key = (
+            str(event.get("symbol") or ""),
+            _timestamp(event[timestamp_key]).date(),
+        )
+        existing_index = indexes.get(key)
+        if existing_index is None:
+            indexes[key] = len(compacted)
+            compacted.append(event)
+            continue
+        existing = compacted[existing_index]
+        old_qty = float(existing["qty"])
+        added_qty = float(event["qty"])
+        total_qty = old_qty + added_qty
+        if weighted_key and total_qty:
+            existing[weighted_key] = (
+                old_qty * float(existing[weighted_key])
+                + added_qty * float(event[weighted_key])
+            ) / total_qty
+        existing["qty"] = total_qty
+    return compacted
 
 
 def _benchmark_daily(

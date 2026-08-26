@@ -41,6 +41,8 @@ COMPATIBLE_CHECKPOINT_ENGINE_HASHES = {
     "ef4acb8906cb097dfa5304a3b977ac004ed537a008e5f929540fdd3f487e6c98",
     # 42b2b76: memory-bounded checkpoint serialization; state schema unchanged.
     "22f68855cecc32589e5583c56d2216f737d55eeb266d3ebfe9927a1f80235378",
+    # 24bed51: direct result archive finalization; state schema unchanged.
+    "25a3241a992c971de15017ca411319ff8a55574c0c3235ec1f7be19c6bc6bd3d",
 }
 
 
@@ -81,12 +83,14 @@ def _resource_snapshot(storage_path: str | Path | None = None) -> dict:
         snapshot["service_memory_pct"] = round(current / limit * 100.0, 2)
     if storage_path is not None:
         try:
-            usage = shutil.disk_usage(Path(storage_path))
+            local_files = [
+                path for path in Path(storage_path).rglob("*") if path.is_file()
+            ]
             snapshot.update({
-                "temporary_storage_total_bytes": usage.total,
-                "temporary_storage_used_bytes": usage.used,
-                "temporary_storage_free_bytes": usage.free,
-                "temporary_storage_pct": round(usage.used / usage.total * 100.0, 2),
+                "local_result_storage_bytes": sum(
+                    path.stat().st_size for path in local_files
+                ),
+                "local_result_file_count": len(local_files),
             })
         except OSError:
             pass
@@ -262,6 +266,7 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
         **previous_status,
         "job_id": job_id, "status": "running", "started_at": started_at,
         "job_path": str(job_path), "bars_path": str(bars_path),
+        "source_dataset_bytes": bars_path.stat().st_size,
         "heartbeat_at": started_at, **_resource_snapshot(results_root),
     }
     # A retry may reuse the durable status document from an earlier attempt.
