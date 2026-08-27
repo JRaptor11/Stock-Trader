@@ -25,8 +25,8 @@ from pathlib import Path
 from config.service_mode import ServiceMode, validate_service_startup
 from research.artifact_store import artifact_store_from_env
 from research.historical_replay import (
-    ReplayConfig, SpilledRows, _drop_file_cache, load_bar_csv, run_replay,
-    write_replay_archive,
+    ReplayConfig, SpilledRows, _drop_file_cache, _timestamp, load_bar_csv,
+    run_replay, write_replay_archive,
 )
 from research.universes import resolve_universe
 
@@ -56,6 +56,9 @@ COMPATIBLE_CHECKPOINT_ENGINE_HASHES = {
     "d67819e740ead8420aea3ad918ebe179f0bad788f278dbdffbee160e64e5fe56",
     # 7f7e559: ZIP64 result members; checkpoint state schema unchanged.
     "794c2e5c073c11c4ff72a6a0f664fce1dc79bd007bcd8a60abc217d3a37dc88a",
+    # 9a26b01: packed label timestamps and page-cache release; checkpoint
+    # state schema unchanged.
+    "445cd2ddca81c94c9b317c4ca36180ee115bc142664f2a74cba1a704a28a367c",
 }
 
 
@@ -398,16 +401,35 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
             if store.durable:
                 checkpoint_bundle.unlink(missing_ok=True)
 
-        result = run_replay(
-            load_bar_csv(
+        included_symbols = (
+            set(resolve_universe(replay_config.universe_name) or replay_config.candidate_symbols)
+            | {replay_config.benchmark_symbol}
+        ) if (replay_config.universe_name or replay_config.candidate_symbols) else None
+        completed_through = (
+            _timestamp(resumed_checkpoint["last_processed_timestamp"])
+            if resumed_checkpoint and resumed_checkpoint.get("last_processed_timestamp")
+            else None
+        )
+        replay_rows = load_bar_csv(
+            bars_path,
+            start_date=replay_config.data_start_date,
+            end_date=replay_config.data_end_date,
+            include_symbols=included_symbols,
+            compact_for_postprocess=completed_through is not None,
+        )
+        # Compact rows omit volume/trade/vwap and are valid only when the
+        # durable checkpoint covers every selected bar. Fall back safely if a
+        # partial checkpoint is ever passed through this path.
+        if completed_through and replay_rows and replay_rows[-1]["timestamp"] > completed_through:
+            replay_rows.clear()
+            replay_rows = load_bar_csv(
                 bars_path,
                 start_date=replay_config.data_start_date,
                 end_date=replay_config.data_end_date,
-                include_symbols=(
-                    set(resolve_universe(replay_config.universe_name) or replay_config.candidate_symbols)
-                    | {replay_config.benchmark_symbol}
-                ) if (replay_config.universe_name or replay_config.candidate_symbols) else None,
-            ), replay_config,
+                include_symbols=included_symbols,
+            )
+        result = run_replay(
+            replay_rows, replay_config,
             progress_callback=update_progress, spill_directory=spill,
             initial_checkpoint=initial_checkpoint,
             initial_spills=resumed_spills,

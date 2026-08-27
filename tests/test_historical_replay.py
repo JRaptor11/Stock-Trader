@@ -269,6 +269,26 @@ class HistoricalReplayTests(unittest.TestCase):
             rows = load_bar_csv(path, include_symbols={"AAA"})
             self.assertEqual(["AAA"], [row["symbol"] for row in rows])
 
+    def test_loader_can_omit_replay_only_fields_for_completed_checkpoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bars.csv"
+            with path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=[
+                    "timestamp", "symbol", "open", "high", "low", "close",
+                    "volume", "trade_count", "vwap",
+                ])
+                writer.writeheader()
+                writer.writerow({
+                    "timestamp": "2026-01-05T14:30:00+00:00", "symbol": "AAA",
+                    "open": 100, "high": 101, "low": 99, "close": 100,
+                    "volume": 1000, "trade_count": 50, "vwap": 100.1,
+                })
+            rows = load_bar_csv(path, compact_for_postprocess=True)
+            self.assertEqual(100.0, rows[0]["open"])
+            self.assertEqual(101.0, rows[0]["high"])
+            with self.assertRaises(KeyError):
+                _ = rows[0]["volume"]
+
     def test_replay_config_rejects_inverted_date_range(self):
         with self.assertRaisesRegex(ValueError, "data_start_date"):
             ReplayConfig(

@@ -84,6 +84,31 @@ class BarRow(Mapping):
         return len(self._fields)
 
 
+@dataclass(frozen=True, slots=True)
+class PostprocessBarRow(Mapping):
+    """Reduced source row used when a checkpoint has finished all replay bars."""
+
+    timestamp: datetime
+    symbol: str
+    open: float
+    high: float
+    low: float
+    close: float
+
+    _fields = ("timestamp", "symbol", "open", "high", "low", "close")
+
+    def __getitem__(self, key):
+        if key not in self._fields:
+            raise KeyError(key)
+        return getattr(self, key)
+
+    def __iter__(self):
+        return iter(self._fields)
+
+    def __len__(self):
+        return len(self._fields)
+
+
 @dataclass(slots=True)
 class LabelSeries:
     """Packed per-symbol data needed by forward-label construction."""
@@ -397,6 +422,7 @@ def load_bar_csv(
     start_date: str | None = None,
     end_date: str | None = None,
     include_symbols: set[str] | None = None,
+    compact_for_postprocess: bool = False,
 ) -> list[dict]:
     """Load long-form OHLCV bars and reject ambiguous historical input."""
     path = Path(path)
@@ -430,11 +456,17 @@ def load_bar_csv(
                 raise ValueError(f"invalid bar at line {line}: missing symbol")
             if include_symbols and symbol not in include_symbols:
                 continue
+            value_names = (
+                ("open", "high", "low", "close")
+                if compact_for_postprocess else
+                ("open", "high", "low", "close", "volume", "trade_count", "vwap")
+            )
             values = {}
-            for name in ("open", "high", "low", "close", "volume", "trade_count", "vwap"):
+            for name in value_names:
                 value = raw.get(name)
                 values[name] = float(value) if value not in (None, "") else 0.0
-            row = BarRow(timestamp=ts, symbol=symbol, **values)
+            row_type = PostprocessBarRow if compact_for_postprocess else BarRow
+            row = row_type(timestamp=ts, symbol=symbol, **values)
             if min(row["open"], row["high"], row["low"], row["close"]) <= 0:
                 raise ValueError(f"non-positive OHLC value at line {line}")
             if row["high"] < max(row["open"], row["close"], row["low"]):
