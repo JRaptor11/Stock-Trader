@@ -25,7 +25,8 @@ from pathlib import Path
 from config.service_mode import ServiceMode, validate_service_startup
 from research.artifact_store import artifact_store_from_env
 from research.historical_replay import (
-    ReplayConfig, SpilledRows, load_bar_csv, run_replay, write_replay_archive,
+    ReplayConfig, SpilledRows, _drop_file_cache, load_bar_csv, run_replay,
+    write_replay_archive,
 )
 from research.universes import resolve_universe
 
@@ -53,6 +54,8 @@ COMPATIBLE_CHECKPOINT_ENGINE_HASHES = {
     "5529cf0dc733f1da8ef04dfa76cb41128a7cfe868552eb0019a640a89b6cc117",
     # 6637c51: packed label arrays; checkpoint state schema unchanged.
     "d67819e740ead8420aea3ad918ebe179f0bad788f278dbdffbee160e64e5fe56",
+    # 7f7e559: ZIP64 result members; checkpoint state schema unchanged.
+    "794c2e5c073c11c4ff72a6a0f664fce1dc79bd007bcd8a60abc217d3a37dc88a",
 }
 
 
@@ -190,6 +193,7 @@ def _write_checkpoint_bundle(
             source = Path(state["path"])
             archive_name = f"spills/{name}.jsonl.gz"
             bundle.write(source, archive_name)
+            _drop_file_cache(source)
             manifest_spills[name] = {"archive_name": archive_name, "count": int(state["count"])}
         # Stream the manifest into the archive. json.dumps temporarily held a
         # second complete checkpoint string in memory and was the dominant
@@ -221,6 +225,7 @@ def _restore_checkpoint_bundle(
                 destination = spill_root / f"{name}.restored.jsonl.gz"
                 with bundle.open(state["archive_name"]) as source, destination.open("wb") as output:
                     shutil.copyfileobj(source, output)
+                _drop_file_cache(destination)
                 restored[name] = {"path": str(destination), "count": int(state["count"])}
             return dict(manifest["checkpoint"]), restored
     except (OSError, KeyError, ValueError, zipfile.BadZipFile, json.JSONDecodeError):
@@ -374,6 +379,7 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
             )
             if store.durable:
                 durable_uri = store.upload_file(checkpoint_bundle, checkpoint_key)
+                _drop_file_cache(checkpoint_bundle)
             else:
                 durable_uri = None
             checkpoint_upload_count += 1

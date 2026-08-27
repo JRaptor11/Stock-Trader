@@ -23,6 +23,7 @@ from fastapi.responses import FileResponse
 
 from config.service_mode import ServiceMode, validate_service_startup
 from research.artifact_store import artifact_store_from_env
+from research.historical_replay import _drop_file_cache
 from research.job_queue import (
     classify_failure, progress_aware_restart_state, queued_in_fifo_order,
     retry_delay_seconds,
@@ -278,6 +279,7 @@ def _run_job(job_id: str, job_path: Path) -> None:
             archive = Path(shutil.make_archive(str(archive_base), "zip", root_dir=output))
         runtime.ensure_storage_capacity(archive)
         result_uri = runtime.store.upload_file(archive, f"results/{archive.name}")
+        _drop_file_cache(archive)
         runtime.record_storage_write(archive.stat().st_size)
         status_payload = _status(job_id)
         status_payload.update({

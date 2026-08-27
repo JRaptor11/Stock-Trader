@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import bisect
+import ctypes
 import csv
+import gc
 import gzip
 import hashlib
 import io
@@ -86,16 +88,41 @@ class BarRow(Mapping):
 class LabelSeries:
     """Packed per-symbol data needed by forward-label construction."""
 
-    timestamps: list[datetime] = field(default_factory=list)
+    timestamps: array = field(default_factory=lambda: array("q"))
+    session_days: array = field(default_factory=lambda: array("i"))
     highs: array = field(default_factory=lambda: array("d"))
     lows: array = field(default_factory=lambda: array("d"))
     closes: array = field(default_factory=lambda: array("d"))
 
     def append(self, row: Mapping) -> None:
-        self.timestamps.append(row["timestamp"])
+        timestamp = _timestamp(row["timestamp"])
+        self.timestamps.append(int(timestamp.timestamp()))
+        self.session_days.append(timestamp.astimezone(MARKET_TZ).date().toordinal())
         self.highs.append(float(row["high"]))
         self.lows.append(float(row["low"]))
         self.closes.append(float(row["close"]))
+
+
+def _drop_file_cache(path: str | Path) -> None:
+    """Best-effort release of Linux page cache charged to hosted memory."""
+    if not hasattr(os, "posix_fadvise") or not hasattr(os, "POSIX_FADV_DONTNEED"):
+        return
+    try:
+        with Path(path).open("rb") as handle:
+            os.posix_fadvise(handle.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
+    except OSError:
+        pass
+
+
+def _release_heap() -> None:
+    """Return discarded replay objects to the OS when the allocator permits."""
+    gc.collect()
+    if not sys.platform.startswith("linux"):
+        return
+    try:
+        ctypes.CDLL(None).malloc_trim(0)
+    except (AttributeError, OSError):
+        pass
 
 
 class SpilledRows:
@@ -127,10 +154,13 @@ class SpilledRows:
             self._handle.close()
         if not self.path.exists():
             return
-        with gzip.open(self.path, "rt", encoding="utf-8") as handle:
-            for line in handle:
-                if line.strip():
-                    yield json.loads(line)
+        try:
+            with gzip.open(self.path, "rt", encoding="utf-8") as handle:
+                for line in handle:
+                    if line.strip():
+                        yield json.loads(line)
+        finally:
+            _drop_file_cache(self.path)
 
     def __len__(self) -> int:
         return self._count
@@ -138,6 +168,7 @@ class SpilledRows:
     def close(self) -> None:
         if hasattr(self, "_handle") and not self._handle.closed:
             self._handle.close()
+            _drop_file_cache(self.path)
 
     def checkpoint(self) -> dict:
         """Close the gzip member so its bytes form a crash-safe snapshot."""
@@ -554,9 +585,11 @@ def _future_labels(
     total_features = len(features)
     for feature_index, feature in enumerate(features, start=1):
         ts, symbol = _timestamp(feature["timestamp"]), feature["symbol"]
+        ts_seconds = int(ts.timestamp())
+        session_day = ts.astimezone(MARKET_TZ).date().toordinal()
         values = series[symbol]
         timestamps = values.timestamps
-        next_index = bisect.bisect_right(timestamps, ts)
+        next_index = bisect.bisect_right(timestamps, ts_seconds)
         row = dict(feature)
         # A sparse feed can legitimately have no bar for this symbol at the
         # cohort timestamp. The feature close is the exact stale-safe value
@@ -564,21 +597,21 @@ def _future_labels(
         start = float(feature["close"])
         for label, minutes in horizons.items():
             target_ts = ts + timedelta(minutes=minutes)
-            target_index = bisect.bisect_left(timestamps, target_ts)
+            target_seconds = int(target_ts.timestamp())
+            target_index = bisect.bisect_left(timestamps, target_seconds)
             valid = (
                 target_index < len(timestamps)
-                and timestamps[target_index] == target_ts
-                and target_ts.astimezone(MARKET_TZ).date() == ts.astimezone(MARKET_TZ).date()
+                and timestamps[target_index] == target_seconds
+                and values.session_days[target_index] == session_day
             )
             row[f"forward_return_{label}"] = (
                 round(values.closes[target_index] / start - 1.0, 10) if valid else None
             )
-        window_end = ts + timedelta(minutes=60)
+        window_end = int((ts + timedelta(minutes=60)).timestamp())
         window_stop = bisect.bisect_right(timestamps, window_end, lo=next_index)
-        session_date = ts.astimezone(MARKET_TZ).date()
         window = [
             index for index in range(next_index, window_stop)
-            if timestamps[index].astimezone(MARKET_TZ).date() == session_date
+            if values.session_days[index] == session_day
         ]
         row["max_favorable_excursion_60m"] = (
             round(max(values.highs[index] for index in window) / start - 1.0, 10) if window else None
@@ -1510,15 +1543,19 @@ def run_replay(
     # original rows here retained open/volume/trade/vwap values across more
     # than 500k bars and left too little memory headroom on the hosted worker.
     label_bars_by_symbol = defaultdict(LabelSeries)
-    for row in rows:
+    for row_index, row in enumerate(rows):
         label_bars_by_symbol[row["symbol"]].append(row)
+        if release_source_rows:
+            rows[row_index] = None
     if release_source_rows:
         rows.clear()
+        _release_heap()
     dataset = _future_labels(
         feature_rows, label_bars_by_symbol, collection("dataset"),
         progress_callback=progress_callback,
     )
     label_bars_by_symbol.clear()
+    _release_heap()
     if progress_callback:
         progress_callback({"stage": "building_daily_summaries"})
     daily = _daily_summaries(cycle_rows, order_rows, prior_close_equity)
