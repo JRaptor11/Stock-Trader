@@ -24,6 +24,7 @@ from utils.numeric import safe_float, safe_int
 from utils.symbols import normalize_symbol
 from utils.misc_utils import with_retries
 from market.stream import FakeTrade
+from utils.system_utils import resource_snapshot
 
 from layers.layer_csv import LAYER_CSV_FILES, layer_csv_path, read_csv_rows
 from diagnostics.daily_review import REVIEW_PACKAGE_DIR
@@ -467,6 +468,7 @@ def run_diagnostics():
         "last_trade_time": app_state.get("last_trade_time"),
         "connection_error_count": app_state.get("connection_error_count", 0),
         "dev_routes_enabled": getattr(config, "ENABLE_DEV_ROUTES", False),
+        "resources": resource_snapshot(),
     }
 
 
