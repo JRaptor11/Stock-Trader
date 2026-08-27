@@ -62,6 +62,9 @@ COMPATIBLE_CHECKPOINT_ENGINE_HASHES = {
     # 6f9b30e: compact completed-checkpoint source bars; checkpoint state
     # schema unchanged.
     "00cafb6762cc7d0fef0681ea5917b2ca63d5676863f7e2fde87a46e98652fedd",
+    # 4234e21: incremental gzip/ZIP cache eviction; checkpoint state schema
+    # unchanged.
+    "61f62a352ba6548fae6a2bc6f196255cc19f72d2b83ac96746de78f05d613f39",
 }
 
 

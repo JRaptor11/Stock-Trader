@@ -84,29 +84,110 @@ class BarRow(Mapping):
         return len(self._fields)
 
 
-@dataclass(frozen=True, slots=True)
-class PostprocessBarRow(Mapping):
-    """Reduced source row used when a checkpoint has finished all replay bars."""
+class PackedPostprocessRow(Mapping):
+    """Ephemeral mapping view over one row in a packed post-process table."""
 
-    timestamp: datetime
-    symbol: str
-    open: float
-    high: float
-    low: float
-    close: float
-
+    __slots__ = ("_rows", "_index")
     _fields = ("timestamp", "symbol", "open", "high", "low", "close")
 
+    def __init__(self, rows, index: int) -> None:
+        self._rows = rows
+        self._index = index
+
     def __getitem__(self, key):
-        if key not in self._fields:
+        index = self._index
+        if key == "timestamp":
+            return datetime.fromtimestamp(self._rows.timestamps[index], UTC)
+        if key == "symbol":
+            return self._rows.symbols[self._rows.symbol_codes[index]]
+        values = getattr(self._rows, f"{key}s", None)
+        if values is None or key not in {"open", "high", "low", "close"}:
             raise KeyError(key)
-        return getattr(self, key)
+        return values[index]
 
     def __iter__(self):
         return iter(self._fields)
 
     def __len__(self):
         return len(self._fields)
+
+
+class PackedPostprocessRows:
+    """Columnar OHLC rows for completed-checkpoint diagnostics."""
+
+    is_sorted = True
+
+    def __init__(self) -> None:
+        self.timestamps = array("q")
+        self.symbol_codes = array("H")
+        self.opens = array("d")
+        self.highs = array("d")
+        self.lows = array("d")
+        self.closes = array("d")
+        self.symbols = []
+        self._symbol_indexes = {}
+        self._ordered = True
+        self._last_key = None
+
+    def append_values(
+        self, timestamp: datetime, symbol: str, *, open: float, high: float,
+        low: float, close: float,
+    ) -> None:
+        code = self._symbol_indexes.get(symbol)
+        if code is None:
+            code = len(self.symbols)
+            if code >= 65536:
+                raise ValueError("too many symbols for packed post-process rows")
+            self._symbol_indexes[symbol] = code
+            self.symbols.append(symbol)
+        epoch = int(timestamp.timestamp())
+        key = (epoch, symbol)
+        if self._last_key is not None and key < self._last_key:
+            self._ordered = False
+        self._last_key = key
+        self.timestamps.append(epoch)
+        self.symbol_codes.append(code)
+        self.opens.append(open)
+        self.highs.append(high)
+        self.lows.append(low)
+        self.closes.append(close)
+
+    def sort(self) -> None:
+        if self._ordered:
+            return
+        order = sorted(
+            range(len(self)),
+            key=lambda index: (
+                self.timestamps[index], self.symbols[self.symbol_codes[index]],
+            ),
+        )
+        for name in ("timestamps", "symbol_codes", "opens", "highs", "lows", "closes"):
+            values = getattr(self, name)
+            setattr(self, name, array(values.typecode, (values[index] for index in order)))
+        self._ordered = True
+        self._last_key = None
+
+    def clear(self) -> None:
+        for name in ("timestamps", "symbol_codes", "opens", "highs", "lows", "closes"):
+            del getattr(self, name)[:]
+        self.symbols.clear()
+        self._symbol_indexes.clear()
+
+    def __len__(self) -> int:
+        return len(self.timestamps)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[item] for item in range(*index.indices(len(self)))]
+        if index < 0:
+            index += len(self)
+        if not 0 <= index < len(self):
+            raise IndexError(index)
+        return PackedPostprocessRow(self, index)
+
+    def __iter__(self):
+        for index in range(len(self)):
+            yield PackedPostprocessRow(self, index)
 
 
 @dataclass(slots=True)
@@ -455,7 +536,7 @@ def load_bar_csv(
         missing = REQUIRED_COLUMNS - set(reader.fieldnames or [])
         if missing:
             raise ValueError(f"bar CSV missing required columns: {sorted(missing)}")
-        rows = []
+        rows = PackedPostprocessRows() if compact_for_postprocess else []
         timestamp_cache = {}
         for line, raw in enumerate(reader, start=2):
             source_timestamp = datetime.fromisoformat(
@@ -489,16 +570,20 @@ def load_bar_csv(
             for name in value_names:
                 value = raw.get(name)
                 values[name] = float(value) if value not in (None, "") else 0.0
-            row_type = PostprocessBarRow if compact_for_postprocess else BarRow
-            row = row_type(timestamp=ts, symbol=symbol, **values)
-            if min(row["open"], row["high"], row["low"], row["close"]) <= 0:
+            if min(values["open"], values["high"], values["low"], values["close"]) <= 0:
                 raise ValueError(f"non-positive OHLC value at line {line}")
-            if row["high"] < max(row["open"], row["close"], row["low"]):
+            if values["high"] < max(values["open"], values["close"], values["low"]):
                 raise ValueError(f"invalid high at line {line}")
-            if row["low"] > min(row["open"], row["close"], row["high"]):
+            if values["low"] > min(values["open"], values["close"], values["high"]):
                 raise ValueError(f"invalid low at line {line}")
-            rows.append(row)
-    rows.sort(key=lambda row: (row["timestamp"], row["symbol"]))
+            if compact_for_postprocess:
+                rows.append_values(ts, symbol, **values)
+            else:
+                rows.append(BarRow(timestamp=ts, symbol=symbol, **values))
+    if compact_for_postprocess:
+        rows.sort()
+    else:
+        rows.sort(key=lambda row: (row["timestamp"], row["symbol"]))
     for previous, current in zip(rows, rows[1:]):
         previous_key = (previous["timestamp"], previous["symbol"])
         current_key = (current["timestamp"], current["symbol"])
@@ -906,13 +991,16 @@ def _universe_selection_diagnostics(decisions) -> list[dict]:
 
 def _dataset_quality(rows: list[dict], symbols: list[str], benchmark_symbol: str) -> dict:
     """Measure whether each requested security has a comparable regular-session sample."""
-    regular = [row for row in rows if _is_regular_session(row["timestamp"])]
+    regular_count = 0
     timestamps_by_session = defaultdict(set)
     # Input uniqueness is validated by load_bar_csv, so retaining a set of
     # every timestamp for every (session, symbol) duplicates hundreds of
     # thousands of references just to derive a count.
     observed = defaultdict(int)
-    for row in regular:
+    for row in rows:
+        if not _is_regular_session(row["timestamp"]):
+            continue
+        regular_count += 1
         session_date = row["timestamp"].astimezone(MARKET_TZ).date().isoformat()
         timestamps_by_session[session_date].add(row["timestamp"])
         observed[(session_date, row["symbol"])] += 1
@@ -931,7 +1019,7 @@ def _dataset_quality(rows: list[dict], symbols: list[str], benchmark_symbol: str
                 "coverage_pct": round(count / len(expected) * 100.0, 4) if expected else 0.0,
             })
     return {
-        "regular_session_rows": len(regular),
+        "regular_session_rows": regular_count,
         "session_count": len(timestamps_by_session),
         "requested_symbols": requested,
         "average_coverage_pct": round(
@@ -1190,7 +1278,7 @@ def run_replay(
     checkpoint_every_sessions: int = 10, release_source_rows: bool = False,
 ) -> dict:
     config = config or ReplayConfig()
-    if any(
+    if not getattr(rows, "is_sorted", False) and any(
         (rows[index]["timestamp"], rows[index]["symbol"])
         > (rows[index + 1]["timestamp"], rows[index + 1]["symbol"])
         for index in range(len(rows) - 1)
@@ -1601,7 +1689,7 @@ def run_replay(
     label_bars_by_symbol = defaultdict(LabelSeries)
     for row_index, row in enumerate(rows):
         label_bars_by_symbol[row["symbol"]].append(row)
-        if release_source_rows:
+        if release_source_rows and isinstance(rows, list):
             rows[row_index] = None
     if release_source_rows:
         rows.clear()
