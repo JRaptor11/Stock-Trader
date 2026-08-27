@@ -134,8 +134,21 @@ def _drop_file_cache(path: str | Path) -> None:
         return
     try:
         with Path(path).open("rb") as handle:
+            os.fsync(handle.fileno())
             os.posix_fadvise(handle.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
     except OSError:
+        pass
+
+
+def _drop_open_file_cache(handle) -> None:
+    """Flush and evict pages for an open hosted-output file."""
+    if not hasattr(os, "posix_fadvise") or not hasattr(os, "POSIX_FADV_DONTNEED"):
+        return
+    try:
+        handle.flush()
+        os.fsync(handle.fileno())
+        os.posix_fadvise(handle.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
+    except (AttributeError, OSError, ValueError):
         pass
 
 
@@ -168,11 +181,22 @@ class SpilledRows:
     def append(self, row: dict) -> None:
         self._handle.write(json.dumps(row, separators=(",", ":"), default=str) + "\n")
         self._count += 1
+        self._release_append_cache_if_needed()
 
     def extend(self, rows) -> None:
         for row in rows:
             self._handle.write(json.dumps(row, separators=(",", ":"), default=str) + "\n")
             self._count += 1
+            self._release_append_cache_if_needed()
+
+    def _release_append_cache_if_needed(self) -> None:
+        if self._count % 25000:
+            return
+        self._handle.flush()
+        gzip_handle = getattr(self._handle, "buffer", None)
+        raw_handle = getattr(gzip_handle, "fileobj", None)
+        if raw_handle is not None:
+            _drop_open_file_cache(raw_handle)
 
     def __iter__(self):
         if not self._handle.closed:
@@ -1818,11 +1842,17 @@ def write_replay_archive(
     ) as bundle:
         total_rows = sum(manifest["row_counts"].values())
         completed_rows = 0
+        last_cache_release_at = 0.0
         for key, filename in CSV_ARTIFACTS.items():
             rows = result[key]
             member_rows = len(rows)
 
             def report_member_progress(member_completed: int, _member_total: int) -> None:
+                nonlocal last_cache_release_at
+                now = time.monotonic()
+                if now - last_cache_release_at >= 15.0 and bundle.fp is not None:
+                    _drop_open_file_cache(bundle.fp)
+                    last_cache_release_at = now
                 if progress_callback:
                     progress_callback({
                         "archive_member": filename,
@@ -1846,6 +1876,8 @@ def write_replay_archive(
                         progress_callback=report_member_progress,
                     )
             completed_rows += member_rows
+            if bundle.fp is not None:
+                _drop_open_file_cache(bundle.fp)
             if release_spills and isinstance(rows, SpilledRows):
                 rows.close()
                 rows.path.unlink(missing_ok=True)

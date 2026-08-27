@@ -59,6 +59,9 @@ COMPATIBLE_CHECKPOINT_ENGINE_HASHES = {
     # 9a26b01: packed label timestamps and page-cache release; checkpoint
     # state schema unchanged.
     "445cd2ddca81c94c9b317c4ca36180ee115bc142664f2a74cba1a704a28a367c",
+    # 6f9b30e: compact completed-checkpoint source bars; checkpoint state
+    # schema unchanged.
+    "00cafb6762cc7d0fef0681ea5917b2ca63d5676863f7e2fde87a46e98652fedd",
 }
 
 
