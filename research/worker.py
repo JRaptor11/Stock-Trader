@@ -422,6 +422,7 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
             end_date=replay_config.data_end_date,
             include_symbols=included_symbols,
             compact_for_postprocess=completed_through is not None,
+            compact_for_replay=completed_through is None,
         )
         # Compact rows omit volume/trade/vwap and are valid only when the
         # durable checkpoint covers every selected bar. Fall back safely if a
@@ -433,6 +434,7 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
                 start_date=replay_config.data_start_date,
                 end_date=replay_config.data_end_date,
                 include_symbols=included_symbols,
+                compact_for_replay=True,
             )
         result = run_replay(
             replay_rows, replay_config,

@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from research.historical_replay import (
-    ReplayConfig, ReplayPortfolio, SpilledRows, _account_profile_summaries,
+    PackedReplayRows, ReplayConfig, ReplayPortfolio, SpilledRows, _account_profile_summaries,
     _checkpoint_interval, _cross_account_wash_sale_matrix, _future_labels, _record_tax_fill,
     _portfolio_checkpoint, _portfolio_from_checkpoint, _timestamp, _walk_forward_results,
     load_bar_csv, run_replay, write_replay, write_replay_archive,
@@ -288,6 +288,26 @@ class HistoricalReplayTests(unittest.TestCase):
             self.assertEqual(101.0, rows[0]["high"])
             with self.assertRaises(KeyError):
                 _ = rows[0]["volume"]
+
+    def test_loader_can_pack_full_rows_for_fresh_replay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bars.csv"
+            with path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=[
+                    "timestamp", "symbol", "open", "high", "low", "close",
+                    "volume", "trade_count", "vwap",
+                ])
+                writer.writeheader()
+                writer.writerow({
+                    "timestamp": "2026-01-05T14:30:00+00:00", "symbol": "AAA",
+                    "open": 100, "high": 101, "low": 99, "close": 100,
+                    "volume": 1000, "trade_count": 50, "vwap": 100.1,
+                })
+            rows = load_bar_csv(path, compact_for_replay=True)
+            self.assertIsInstance(rows, PackedReplayRows)
+            self.assertEqual(1000.0, rows[0]["volume"])
+            self.assertEqual(50.0, rows[0]["trade_count"])
+            self.assertEqual(100.1, rows[0]["vwap"])
 
     def test_replay_config_rejects_inverted_date_range(self):
         with self.assertRaisesRegex(ValueError, "data_start_date"):

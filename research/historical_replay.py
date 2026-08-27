@@ -190,6 +190,92 @@ class PackedPostprocessRows:
             yield PackedPostprocessRow(self, index)
 
 
+class PackedReplayRow(Mapping):
+    """Ephemeral mapping view over a full columnar replay row."""
+
+    __slots__ = ("_rows", "_index")
+    _fields = BarRow._fields
+
+    def __init__(self, rows, index: int) -> None:
+        self._rows = rows
+        self._index = index
+
+    def __getitem__(self, key):
+        index = self._index
+        if key == "timestamp":
+            return datetime.fromtimestamp(self._rows.timestamps[index], UTC)
+        if key == "symbol":
+            return self._rows.symbols[self._rows.symbol_codes[index]]
+        values = getattr(self._rows, f"{key}s", None)
+        if values is None or key not in self._fields:
+            raise KeyError(key)
+        return values[index]
+
+    def __iter__(self):
+        return iter(self._fields)
+
+    def __len__(self):
+        return len(self._fields)
+
+
+class PackedReplayRows(PackedPostprocessRows):
+    """Columnar full OHLCV rows for memory-bounded fresh replays."""
+
+    _value_columns = (
+        "opens", "highs", "lows", "closes", "volumes", "trade_counts", "vwaps",
+    )
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.volumes = array("d")
+        self.trade_counts = array("d")
+        self.vwaps = array("d")
+
+    def append_values(
+        self, timestamp: datetime, symbol: str, *, open: float, high: float,
+        low: float, close: float, volume: float, trade_count: float, vwap: float,
+    ) -> None:
+        super().append_values(
+            timestamp, symbol, open=open, high=high, low=low, close=close,
+        )
+        self.volumes.append(volume)
+        self.trade_counts.append(trade_count)
+        self.vwaps.append(vwap)
+
+    def sort(self) -> None:
+        if self._ordered:
+            return
+        order = sorted(
+            range(len(self)),
+            key=lambda index: (
+                self.timestamps[index], self.symbols[self.symbol_codes[index]],
+            ),
+        )
+        for name in ("timestamps", "symbol_codes", *self._value_columns):
+            values = getattr(self, name)
+            setattr(self, name, array(values.typecode, (values[index] for index in order)))
+        self._ordered = True
+        self._last_key = None
+
+    def clear(self) -> None:
+        super().clear()
+        for name in ("volumes", "trade_counts", "vwaps"):
+            del getattr(self, name)[:]
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[item] for item in range(*index.indices(len(self)))]
+        if index < 0:
+            index += len(self)
+        if not 0 <= index < len(self):
+            raise IndexError(index)
+        return PackedReplayRow(self, index)
+
+    def __iter__(self):
+        for index in range(len(self)):
+            yield PackedReplayRow(self, index)
+
+
 @dataclass(slots=True)
 class LabelSeries:
     """Packed per-symbol data needed by forward-label construction."""
@@ -528,6 +614,7 @@ def load_bar_csv(
     end_date: str | None = None,
     include_symbols: set[str] | None = None,
     compact_for_postprocess: bool = False,
+    compact_for_replay: bool = False,
 ) -> list[dict]:
     """Load long-form OHLCV bars and reject ambiguous historical input."""
     path = Path(path)
@@ -536,7 +623,12 @@ def load_bar_csv(
         missing = REQUIRED_COLUMNS - set(reader.fieldnames or [])
         if missing:
             raise ValueError(f"bar CSV missing required columns: {sorted(missing)}")
-        rows = PackedPostprocessRows() if compact_for_postprocess else []
+        if compact_for_postprocess:
+            rows = PackedPostprocessRows()
+        elif compact_for_replay:
+            rows = PackedReplayRows()
+        else:
+            rows = []
         timestamp_cache = {}
         for line, raw in enumerate(reader, start=2):
             source_timestamp = datetime.fromisoformat(
@@ -576,15 +668,17 @@ def load_bar_csv(
                 raise ValueError(f"invalid high at line {line}")
             if values["low"] > min(values["open"], values["close"], values["high"]):
                 raise ValueError(f"invalid low at line {line}")
-            if compact_for_postprocess:
+            if compact_for_postprocess or compact_for_replay:
                 rows.append_values(ts, symbol, **values)
             else:
                 rows.append(BarRow(timestamp=ts, symbol=symbol, **values))
-    if compact_for_postprocess:
+    if compact_for_postprocess or compact_for_replay:
         rows.sort()
     else:
         rows.sort(key=lambda row: (row["timestamp"], row["symbol"]))
-    for previous, current in zip(rows, rows[1:]):
+    # Avoid materializing hundreds of thousands of ephemeral columnar views.
+    for index in range(1, len(rows)):
+        previous, current = rows[index - 1], rows[index]
         previous_key = (previous["timestamp"], previous["symbol"])
         current_key = (current["timestamp"], current["symbol"])
         if previous_key == current_key:
