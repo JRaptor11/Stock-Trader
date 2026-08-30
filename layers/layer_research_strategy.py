@@ -104,7 +104,32 @@ STRATEGIES = {
         "minimum_positive_300m_breadth": 0.60,
         "benchmark_core_weight": 0.70,
     },
+    "SPY_CORE_85_TACTICAL_15_300M": {
+        "target_mode": "single_horizon", "horizon_minutes": 300,
+        "alpha": 0.12, "max_step": 0.02,
+        "minimum_positive_300m_breadth": 0.60,
+        "benchmark_core_weight": 0.85,
+    },
+    "SPY_CORE_90_TACTICAL_10_300M": {
+        "target_mode": "single_horizon", "horizon_minutes": 300,
+        "alpha": 0.12, "max_step": 0.02,
+        "minimum_positive_300m_breadth": 0.60,
+        "benchmark_core_weight": 0.90,
+    },
 }
+
+# Candidates prioritized for comparative reporting. STRATEGIES deliberately
+# remains broader so earlier ideas continue to produce diagnostic evidence.
+RESEARCH_SHORTLIST = (
+    "CURRENT_CONTROL",
+    "SPY_TACTICAL_OVERLAY_300M",
+    "SPY_CORE_85_TACTICAL_15_300M",
+    "SPY_CORE_90_TACTICAL_10_300M",
+    "REGIME_LOW_TURNOVER_300M",
+    "OVERNIGHT_REGIME_300M",
+    "OVERNIGHT_REGIME_300M_30M_EXIT",
+    "VOLATILITY_TARGETED_300M",
+)
 
 # The broad moderate-sizing grid and the early-entry/mean-reversion variants
 # were useful discovery experiments, but are intentionally excluded from the

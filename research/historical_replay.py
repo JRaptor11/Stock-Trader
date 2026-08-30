@@ -29,7 +29,9 @@ from zoneinfo import ZoneInfo
 from layers.layer1_ranker import Layer1StockRanker
 from layers.layer2_portfolio import Layer2PortfolioBuilder
 from layers.layer3_rebalancer import build_layer3_shadow_plan, source_bar_market_session_info
-from layers.layer_research_strategy import STRATEGIES, _raw_research_target, _smooth_target
+from layers.layer_research_strategy import (
+    RESEARCH_SHORTLIST, STRATEGIES, _raw_research_target, _smooth_target,
+)
 from research.walk_forward import build_walk_forward_folds
 from research.universes import SECTORS, resolve_universe, universe_metadata
 from utils.numeric import safe_float
@@ -926,6 +928,7 @@ def _daily_summaries(cycles, orders, prior_close_equity: dict | None = None) -> 
 def _account_profile_summaries(
     portfolios: dict[str, ReplayPortfolio], summaries: list[dict],
     ending_prices: dict[str, float], ending_at: datetime, config: ReplayConfig,
+    benchmark_summary: dict | None = None,
 ) -> list[dict]:
     """Estimate comparable pretax, taxable, and Roth terminal outcomes.
 
@@ -962,6 +965,8 @@ def _account_profile_summaries(
         taxable_liability = federal_tax + state_tax
         common = {
             "strategy_name": name,
+            "research_priority": "shortlist" if name in RESEARCH_SHORTLIST else "diagnostic",
+            "reporting_scope": "cumulative_since_replay_origin",
             "pretax_final_equity": round(final_equity, 2),
             "pretax_return": round(final_equity / config.initial_cash - 1.0, 10),
             "turnover": summary["turnover"], "trade_count": summary["trade_count"],
@@ -1000,6 +1005,93 @@ def _account_profile_summaries(
                 "tax_model": "qualified_distribution_assumption",
             },
         ))
+    benchmark = dict(benchmark_summary or {})
+    benchmark_return = benchmark.get("return")
+    if benchmark_return is not None:
+        final_equity = config.initial_cash * (1.0 + float(benchmark_return))
+        gain = max(0.0, final_equity - config.initial_cash)
+        # A multi-year cumulative replay represents a long-term terminal sale.
+        # Short standalone jobs conservatively use the short-term rate.
+        holding_days = int(benchmark.get("holding_days") or 0)
+        federal_rate = (
+            config.taxable_long_term_rate if holding_days > 365
+            else config.taxable_short_term_rate
+        )
+        liability = gain * (federal_rate + config.taxable_state_rate)
+        common = {
+            "strategy_name": "SPY_BUY_HOLD",
+            "research_priority": "shortlist_benchmark",
+            "pretax_final_equity": round(final_equity, 2),
+            "pretax_return": round(float(benchmark_return), 10),
+            "turnover": round(config.initial_cash, 2),
+            "trade_count": 1,
+            "max_drawdown_pct": benchmark.get("max_drawdown_pct"),
+            "reporting_scope": "cumulative_since_replay_origin",
+        }
+        output.extend((
+            {**common, "account_profile": "PRETAX", "estimated_tax_liability": 0.0,
+             "estimated_after_tax_equity": round(final_equity, 2),
+             "estimated_after_tax_return": common["pretax_return"]},
+            {**common, "account_profile": "CA_SINGLE_105K",
+             "estimated_tax_liability": round(liability, 2),
+             "estimated_after_tax_equity": round(final_equity - liability, 2),
+             "estimated_after_tax_return": round(
+                 (final_equity - liability) / config.initial_cash - 1.0, 10),
+             "tax_model": "buy_hold_terminal_liquidation"},
+            {**common, "account_profile": "ROTH_IRA", "estimated_tax_liability": 0.0,
+             "estimated_after_tax_equity": round(final_equity, 2),
+             "estimated_after_tax_return": common["pretax_return"],
+             "tax_model": "qualified_distribution_assumption"},
+        ))
+    return output
+
+
+def _period_strategy_summaries(
+    daily: list[dict], portfolios: dict[str, ReplayPortfolio],
+    baseline_portfolios: dict[str, dict], baseline_equity: dict[str, float],
+    config: ReplayConfig,
+) -> list[dict]:
+    """Describe only rows processed by this job, independent of continuation state."""
+    by_strategy = defaultdict(list)
+    for row in daily:
+        by_strategy[row["strategy_name"]].append(row)
+    output = []
+    for name, portfolio in portfolios.items():
+        rows = sorted(by_strategy.get(name, []), key=lambda row: row["session_date"])
+        start_equity = float(baseline_equity.get(name, config.initial_cash))
+        end_equity = float(rows[-1]["last_equity"]) if rows else start_equity
+        baseline = baseline_portfolios.get(name, {})
+        turnover = max(0.0, portfolio.turnover - float(baseline.get("turnover") or 0.0))
+        trade_count = max(0, portfolio.trade_count - int(baseline.get("trade_count") or 0))
+        reversals = max(0, portfolio.reversals - int(baseline.get("reversals") or 0))
+        peak = start_equity
+        max_drawdown = 0.0
+        for row in rows:
+            peak = max(peak, float(row["last_equity"]))
+            if peak:
+                max_drawdown = min(max_drawdown, float(row["last_equity"]) / peak - 1.0)
+            max_drawdown = min(
+                max_drawdown, float(row.get("maximum_drawdown_pct") or 0.0)
+            )
+        pnl = end_equity - start_equity
+        output.append({
+            "strategy_name": name,
+            "research_priority": "shortlist" if name in RESEARCH_SHORTLIST else "diagnostic",
+            "reporting_scope": "standalone_job_period",
+            "period_start_equity": round(start_equity, 2),
+            "period_end_equity": round(end_equity, 2),
+            "period_pnl": round(pnl, 2),
+            "period_return": round(end_equity / start_equity - 1.0, 10) if start_equity else None,
+            "period_max_drawdown_pct": round(max_drawdown, 10),
+            "period_turnover": round(turnover, 2),
+            "period_trade_count": trade_count,
+            "period_direction_reversal_count": reversals,
+            **{
+                f"period_pnl_with_additional_{bps}bp_cost": round(
+                    pnl - turnover * bps / 10000.0, 2
+                ) for bps in (1, 5, 10, 20)
+            },
+        })
     return output
 
 
@@ -1245,6 +1337,33 @@ def _benchmark_summary(
     }
 
 
+def _benchmark_metrics(daily: list[dict], benchmark_symbol: str) -> dict:
+    """Return an unambiguous benchmark summary for exactly the supplied days."""
+    values = sorted(daily, key=lambda row: row["session_date"])
+    if not values:
+        return {
+            "symbol": benchmark_symbol, "reporting_scope": "standalone_job_period",
+            "return": None, "start_price": None, "end_price": None,
+            "max_drawdown_pct": None, "holding_days": 0,
+        }
+    growth = 1.0
+    peak = 1.0
+    max_drawdown = 0.0
+    for row in values:
+        growth *= 1.0 + float(row["session_return"])
+        peak = max(peak, growth)
+        max_drawdown = min(max_drawdown, growth / peak - 1.0)
+    first_day = datetime.fromisoformat(values[0]["session_date"]).date()
+    last_day = datetime.fromisoformat(values[-1]["session_date"]).date()
+    return {
+        "symbol": benchmark_symbol, "reporting_scope": "standalone_job_period",
+        "return": round(growth - 1.0, 10),
+        "start_price": values[0]["start_price"], "end_price": values[-1]["end_price"],
+        "max_drawdown_pct": round(max_drawdown, 10),
+        "holding_days": (last_day - first_day).days,
+    }
+
+
 def _compound(returns: list[float]) -> float:
     value = 1.0
     for item in returns:
@@ -1425,9 +1544,15 @@ def run_replay(
     }
     strategy_configs = dict(STRATEGIES)
     checkpoint_strategies = set(checkpoint.get("strategy_names") or [])
-    if checkpoint and checkpoint_strategies and checkpoint_strategies != set(strategy_configs):
-        raise ValueError("checkpoint strategy registry does not match this replay")
+    unknown_checkpoint_strategies = checkpoint_strategies - set(strategy_configs)
+    if checkpoint and unknown_checkpoint_strategies:
+        raise ValueError(
+            "checkpoint contains strategies absent from this replay: "
+            + ", ".join(sorted(unknown_checkpoint_strategies))
+        )
+    introduced_strategies = sorted(set(strategy_configs) - checkpoint_strategies) if checkpoint else []
     saved_portfolios = dict(checkpoint.get("portfolios") or {})
+    baseline_portfolios = {name: dict(value) for name, value in saved_portfolios.items()}
     portfolios = {
         name: _portfolio_from_checkpoint(saved_portfolios[name])
         if name in saved_portfolios else
@@ -1456,6 +1581,10 @@ def run_replay(
     last_decision = _timestamp(checkpoint["last_decision"]) if checkpoint.get("last_decision") else None
     cycle_id = int(checkpoint.get("cycle_id") or 0)
     prior_close_equity = dict(checkpoint.get("prior_close_equity") or {})
+    baseline_equity = {
+        name: float(prior_close_equity.get(name, config.initial_cash))
+        for name in strategy_configs
+    }
 
     regular_timestamp_count = len({
         row["timestamp"] for row in rows if _is_regular_session(row["timestamp"])
@@ -1774,6 +1903,15 @@ def run_replay(
         if combined_benchmark_history else None
     )
     benchmark_summary = _benchmark_summary(rows, benchmark_symbol, benchmark_start_price)
+    benchmark_period_summary = _benchmark_metrics(benchmark_daily, benchmark_symbol)
+    cumulative_benchmark_metrics = _benchmark_metrics(
+        combined_benchmark_history, benchmark_symbol
+    )
+    benchmark_summary.update({
+        "reporting_scope": "cumulative_since_replay_origin",
+        "max_drawdown_pct": cumulative_benchmark_metrics["max_drawdown_pct"],
+        "holding_days": cumulative_benchmark_metrics["holding_days"],
+    })
 
     if progress_callback:
         progress_callback({"stage": "building_future_labels", "percent_complete": 100.0})
@@ -1841,7 +1979,10 @@ def run_replay(
     for name, portfolio in portfolios.items():
         final = summary_state[name]["final"] or {}
         summaries.append({
-            "strategy_name": name, "final_equity": final.get("equity", config.initial_cash),
+            "strategy_name": name,
+            "research_priority": "shortlist" if name in RESEARCH_SHORTLIST else "diagnostic",
+            "reporting_scope": "cumulative_since_replay_origin",
+            "final_equity": final.get("equity", config.initial_cash),
             "pnl": final.get("pnl", 0.0),
             "max_drawdown_pct": summary_state[name]["max_drawdown_pct"],
             "turnover": round(portfolio.turnover, 2), "trade_count": portfolio.trade_count,
@@ -1857,7 +1998,10 @@ def run_replay(
         for symbol, values in history.items() if values
     }
     account_profiles = _account_profile_summaries(
-        portfolios, summaries, ending_prices, ending_at, config
+        portfolios, summaries, ending_prices, ending_at, config, benchmark_summary
+    )
+    period_summaries = _period_strategy_summaries(
+        daily, portfolios, baseline_portfolios, baseline_equity, config
     )
     cross_account_wash_sales = _cross_account_wash_sale_matrix(portfolios)
     universe_selection = _universe_selection_diagnostics(decision_rows)
@@ -1874,8 +2018,17 @@ def run_replay(
         "dataset": dataset, "walk_forward_folds": [fold.as_dict() for fold in output_folds],
         "walk_forward_results": walk_forward_results,
         "benchmark_daily": benchmark_daily, "benchmark_summary": benchmark_summary,
+        "benchmark_period_summary": benchmark_period_summary,
         "dataset_quality": quality, "universe": universe,
-        "summary": summaries, "account_profiles": account_profiles,
+        "continuation_metadata": {
+            "is_continuation": bool(checkpoint),
+            "introduced_strategies": introduced_strategies,
+            "introduced_strategy_cumulative_results_are_not_origin_comparable": bool(
+                introduced_strategies
+            ),
+        },
+        "summary": summaries, "period_summary": period_summaries,
+        "account_profiles": account_profiles,
         "cross_account_wash_sales": cross_account_wash_sales,
         "universe_selection": universe_selection,
         "checkpoint": {
@@ -1954,9 +2107,17 @@ def _replay_manifest(
         "strategy_registry_sha256": hashlib.sha256(
             json.dumps(STRATEGIES, sort_keys=True).encode("utf-8")
         ).hexdigest(),
+        "strategy_count": len(STRATEGIES),
+        "research_shortlist": list(RESEARCH_SHORTLIST),
+        "strategy_reporting": {
+            "all_strategies_retained_for_diagnostics": True,
+            "shortlist_is_shadow_only": True,
+            "production_execution_changed": False,
+        },
         "experiment": experiment,
         "config": result["config"], "symbols": result["symbols"],
         "universe": result["universe"],
+        "continuation_metadata": result["continuation_metadata"],
         "session_dates": result["session_dates"],
         "evaluation_session_dates": result["evaluation_session_dates"],
         "row_counts": {key: len(result[key]) for key in CSV_ARTIFACTS},
@@ -1979,7 +2140,9 @@ def write_replay(
     (output / "dataset_quality.json").write_text(json.dumps(result["dataset_quality"], indent=2), encoding="utf-8")
     (output / "universe_metadata.json").write_text(json.dumps(result["universe"], indent=2), encoding="utf-8")
     (output / "replay_summary.json").write_text(json.dumps(result["summary"], indent=2), encoding="utf-8")
+    (output / "period_summary.json").write_text(json.dumps(result["period_summary"], indent=2), encoding="utf-8")
     (output / "benchmark_summary.json").write_text(json.dumps(result["benchmark_summary"], indent=2), encoding="utf-8")
+    (output / "benchmark_period_summary.json").write_text(json.dumps(result["benchmark_period_summary"], indent=2), encoding="utf-8")
     (output / "account_profile_assumptions.json").write_text(
         json.dumps(_account_profile_assumptions(result), indent=2), encoding="utf-8"
     )
@@ -2014,7 +2177,9 @@ def write_replay_archive(
         "dataset_quality.json": result["dataset_quality"],
         "universe_metadata.json": result["universe"],
         "replay_summary.json": result["summary"],
+        "period_summary.json": result["period_summary"],
         "benchmark_summary.json": result["benchmark_summary"],
+        "benchmark_period_summary.json": result["benchmark_period_summary"],
         "account_profile_assumptions.json": _account_profile_assumptions(result),
         "replay_checkpoint.json": result["checkpoint"],
         "replay_manifest.json": manifest,

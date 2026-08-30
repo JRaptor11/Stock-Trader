@@ -11,7 +11,8 @@ from unittest.mock import patch
 from research.historical_replay import (
     PackedReplayRows, ReplayConfig, ReplayPortfolio, SpilledRows, _account_profile_summaries,
     _checkpoint_interval, _cross_account_wash_sale_matrix, _future_labels, _record_tax_fill,
-    _portfolio_checkpoint, _portfolio_from_checkpoint, _timestamp, _walk_forward_results,
+    _period_strategy_summaries, _portfolio_checkpoint, _portfolio_from_checkpoint,
+    _timestamp, _walk_forward_results,
     load_bar_csv, run_replay, write_replay, write_replay_archive,
 )
 from research.replay_parity import compare_replay_to_live
@@ -102,6 +103,39 @@ class HistoricalReplayTests(unittest.TestCase):
         by_profile = {row["account_profile"]: row for row in rows}
         self.assertEqual(107000.0, by_profile["CA_SINGLE_105K"]["estimated_after_tax_equity"])
         self.assertEqual(110000.0, by_profile["ROTH_IRA"]["estimated_after_tax_equity"])
+
+    def test_account_profiles_include_spy_buy_and_hold(self):
+        rows = _account_profile_summaries(
+            {}, [], {}, datetime(2026, 1, 5, tzinfo=timezone.utc),
+            ReplayConfig(
+                initial_cash=100000.0, taxable_long_term_rate=0.15,
+                taxable_state_rate=0.05,
+            ),
+            {"return": 0.20, "holding_days": 730, "max_drawdown_pct": -0.10},
+        )
+        profiles = {
+            row["account_profile"]: row
+            for row in rows if row["strategy_name"] == "SPY_BUY_HOLD"
+        }
+        self.assertEqual(120000.0, profiles["ROTH_IRA"]["estimated_after_tax_equity"])
+        self.assertEqual(116000.0, profiles["CA_SINGLE_105K"]["estimated_after_tax_equity"])
+
+    def test_period_summary_subtracts_continuation_counters(self):
+        portfolio = ReplayPortfolio(
+            cash=105000.0, turnover=15000.0, trade_count=5, reversals=2,
+        )
+        rows = _period_strategy_summaries(
+            [{
+                "strategy_name": "TEST", "session_date": "2026-01-05",
+                "last_equity": 105000.0,
+            }],
+            {"TEST": portfolio},
+            {"TEST": {"turnover": 10000.0, "trade_count": 3, "reversals": 1}},
+            {"TEST": 100000.0}, ReplayConfig(),
+        )
+        self.assertEqual(0.05, rows[0]["period_return"])
+        self.assertEqual(5000.0, rows[0]["period_turnover"])
+        self.assertEqual(2, rows[0]["period_trade_count"])
 
     def test_cross_account_matrix_checks_buys_before_and_after_loss_sale(self):
         taxable = ReplayPortfolio(cash=100000.0)
@@ -429,6 +463,8 @@ class HistoricalReplayTests(unittest.TestCase):
             self.assertTrue((output / "dataset_quality.json").exists())
             self.assertTrue((output / "account_profile_results.csv").exists())
             self.assertTrue((output / "account_profile_assumptions.json").exists())
+            self.assertTrue((output / "period_summary.json").exists())
+            self.assertTrue((output / "benchmark_period_summary.json").exists())
             self.assertTrue((output / "cross_account_wash_sale_matrix.csv").exists())
             self.assertTrue((output / "universe_metadata.json").exists())
             self.assertTrue((output / "universe_selection_diagnostics.csv").exists())
