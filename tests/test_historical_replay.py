@@ -18,6 +18,7 @@ from research.historical_replay import (
 from research.replay_parity import compare_replay_to_live
 from research.walk_forward import build_walk_forward_folds
 from layers.layer_research_strategy import STRATEGIES
+from layers.layer3_rebalancer import build_layer3_plan_from_snapshots
 
 
 class HistoricalReplayTests(unittest.TestCase):
@@ -119,6 +120,47 @@ class HistoricalReplayTests(unittest.TestCase):
         }
         self.assertEqual(120000.0, profiles["ROTH_IRA"]["estimated_after_tax_equity"])
         self.assertEqual(116000.0, profiles["CA_SINGLE_105K"]["estimated_after_tax_equity"])
+
+    def test_tax_profile_does_not_deduct_deferred_wash_sale_loss_twice(self):
+        portfolio = ReplayPortfolio(
+            cash=110000.0, realized_short_term_gain=10000.0,
+            realized_loss=10000.0, wash_sale_loss_exposure=10000.0,
+        )
+        summaries = [{
+            "strategy_name": "TEST", "final_equity": 110000.0,
+            "turnover": 20000.0, "trade_count": 2, "max_drawdown_pct": -0.1,
+        }]
+        rows = _account_profile_summaries(
+            {"TEST": portfolio}, summaries, {},
+            datetime(2026, 1, 5, tzinfo=timezone.utc),
+            ReplayConfig(taxable_short_term_rate=0.30, taxable_state_rate=0.0),
+        )
+        taxable = next(row for row in rows if row["account_profile"] == "CA_SINGLE_105K")
+        self.assertEqual(3000.0, taxable["estimated_tax_liability"])
+        self.assertEqual(0.0, taxable["currently_deductible_realized_loss"])
+        self.assertEqual(10000.0, taxable["deferred_wash_sale_loss"])
+
+    def test_shadow_drift_override_allows_small_overlay_adjustment(self):
+        common = {
+            "planner_source": "TEST", "target": {"AAA": 0.02, "CASH": 0.98},
+            "account": {"equity": 100000.0, "cash": 98200.0, "buying_power": 98200.0},
+            "positions": {"AAA": {"qty": 18.0, "market_value": 1800.0}},
+            "ranked_prices": {"AAA": 100.0}, "seen_counts": {"AAA": 3},
+            "absent_counts": {}, "cycle_id": 1, "plan_id": "test",
+            "plan_created_at": "2026-01-05T15:00:00+00:00",
+            "plan_expires_at": "2026-01-05T15:10:00+00:00",
+            "plan_ttl_seconds": 600, "rolling_limits_active": False,
+        }
+        default = build_layer3_plan_from_snapshots(**common)
+        sleeve_aware = build_layer3_plan_from_snapshots(
+            **common, minimum_abs_weight_drift=0.001,
+        )
+        default_row = next(row for row in default["plan"] if row["symbol"] == "AAA")
+        override_row = next(row for row in sleeve_aware["plan"] if row["symbol"] == "AAA")
+        self.assertEqual("buy_drift_below_threshold", default_row["reason"])
+        self.assertTrue(default_row["drift_rejected"])
+        self.assertEqual("BUY", override_row["decision"])
+        self.assertEqual(0.001, override_row["minimum_abs_weight_drift"])
 
     def test_period_summary_subtracts_continuation_counters(self):
         portfolio = ReplayPortfolio(
@@ -468,6 +510,7 @@ class HistoricalReplayTests(unittest.TestCase):
             self.assertTrue((output / "cross_account_wash_sale_matrix.csv").exists())
             self.assertTrue((output / "universe_metadata.json").exists())
             self.assertTrue((output / "universe_selection_diagnostics.csv").exists())
+            self.assertTrue((output / "overlay_rebalance_diagnostics.csv").exists())
 
     def test_writer_accepts_precomputed_hash_after_cache_cleanup(self):
         result = run_replay(

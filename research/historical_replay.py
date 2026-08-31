@@ -30,7 +30,8 @@ from layers.layer1_ranker import Layer1StockRanker
 from layers.layer2_portfolio import Layer2PortfolioBuilder
 from layers.layer3_rebalancer import build_layer3_shadow_plan, source_bar_market_session_info
 from layers.layer_research_strategy import (
-    RESEARCH_SHORTLIST, STRATEGIES, _raw_research_target, _smooth_target,
+    CORE_OVERLAY_COMPARISON_GROUP, RESEARCH_SHORTLIST, STRATEGIES,
+    _raw_research_target, _smooth_target,
 )
 from research.walk_forward import build_walk_forward_folds
 from research.universes import SECTORS, resolve_universe, universe_metadata
@@ -52,6 +53,7 @@ CSV_ARTIFACTS = {
     "account_profiles": "account_profile_results.csv",
     "cross_account_wash_sales": "cross_account_wash_sale_matrix.csv",
     "universe_selection": "universe_selection_diagnostics.csv",
+    "overlay_rebalance": "overlay_rebalance_diagnostics.csv",
 }
 
 
@@ -953,7 +955,16 @@ def _account_profile_summaries(
                     unrealized_short += gain
         total_short = portfolio.realized_short_term_gain + unrealized_short
         total_long = portfolio.realized_long_term_gain + unrealized_long
-        deductible_losses = portfolio.realized_loss
+        # Replacement purchases defer wash-sale losses into their adjusted
+        # basis. Deducting those losses here as well would double count them
+        # and can incorrectly reduce a profitable strategy's tax to zero.
+        disallowed_wash_losses = min(
+            portfolio.realized_loss, portfolio.wash_sale_loss_exposure
+        )
+        deductible_realized_loss = max(
+            0.0, portfolio.realized_loss - disallowed_wash_losses
+        )
+        deductible_losses = deductible_realized_loss
         net_short = total_short - min(max(total_short, 0.0), deductible_losses)
         deductible_losses -= min(max(total_short, 0.0), deductible_losses)
         net_long = total_long - min(max(total_long, 0.0), deductible_losses)
@@ -989,6 +1000,10 @@ def _account_profile_summaries(
                 "realized_short_term_gain": round(portfolio.realized_short_term_gain, 2),
                 "realized_long_term_gain": round(portfolio.realized_long_term_gain, 2),
                 "realized_loss": round(portfolio.realized_loss, 2),
+                "currently_deductible_realized_loss": round(
+                    deductible_realized_loss, 2
+                ),
+                "deferred_wash_sale_loss": round(disallowed_wash_losses, 2),
                 "unrealized_short_term_gain": round(unrealized_short, 2),
                 "unrealized_long_term_gain": round(unrealized_long, 2),
                 "wash_sale_loss_exposure": round(portfolio.wash_sale_loss_exposure, 2),
@@ -1578,6 +1593,7 @@ def run_replay(
     order_rows = collection("orders")
     feature_rows = collection("features")
     eligibility_rows = collection("eligibility")
+    overlay_rebalance_rows = collection("overlay_rebalance")
     last_decision = _timestamp(checkpoint["last_decision"]) if checkpoint.get("last_decision") else None
     cycle_id = int(checkpoint.get("cycle_id") or 0)
     prior_close_equity = dict(checkpoint.get("prior_close_equity") or {})
@@ -1739,6 +1755,8 @@ def run_replay(
         control_equity = None
         for name, strategy_config in strategy_configs.items():
             portfolio = portfolios[name]
+            benchmark_core = 0.0
+            benchmark_core_applied = False
             if strategy_config.get("mode") == "control":
                 target, decisions = production_target, []
             else:
@@ -1753,6 +1771,7 @@ def run_replay(
                     strategy_config.get("benchmark_core_weight"), 0.0
                 )
                 if benchmark_core > 0 and benchmark_symbol in prices:
+                    benchmark_core_applied = True
                     tactical_scale = max(0.0, 1.0 - benchmark_core)
                     raw_target = {
                         symbol: round(weight * tactical_scale, 6)
@@ -1844,8 +1863,58 @@ def run_replay(
                 bootstrap_eligible_symbols=set(target) - {"CASH", "_meta"},
                 open_order_symbols=set(), open_order_details={}, fail_safe_active=False,
                 last_trade_prices=prices, source_bar_timestamp=ts.isoformat(),
+                minimum_abs_weight_drift=strategy_config.get(
+                    "shadow_min_abs_weight_drift"
+                ) if benchmark_core_applied else None,
             )
-            portfolio.pending_plan = list(plan_result.get("plan") or [])
+            plan_rows = list(plan_result.get("plan") or [])
+            if benchmark_core_applied:
+                tactical_rows = [
+                    row for row in plan_rows if row.get("symbol") != benchmark_symbol
+                ]
+                rejected_rows = [
+                    row for row in tactical_rows if row.get("drift_rejected")
+                ]
+                executable_rows = [
+                    row for row in tactical_rows
+                    if row.get("decision") in {"BUY", "SELL"}
+                    and safe_float(row.get("planned_notional"), 0.0) > 0
+                ]
+                overlay_rebalance_rows.append({
+                    "timestamp": ts.isoformat(),
+                    "session_date": ts.astimezone(MARKET_TZ).date().isoformat(),
+                    "cycle_id": cycle_id, "strategy_name": name,
+                    "benchmark_symbol": benchmark_symbol,
+                    "benchmark_core_weight": benchmark_core,
+                    "tactical_sleeve_weight": round(1.0 - benchmark_core, 6),
+                    "target_tactical_weight": round(sum(
+                        safe_float(row.get("target_weight"), 0.0)
+                        for row in tactical_rows
+                    ), 6),
+                    "current_tactical_weight": round(sum(
+                        safe_float(row.get("current_weight"), 0.0)
+                        for row in tactical_rows
+                    ), 6),
+                    "desired_tactical_adjustment_notional": round(sum(
+                        abs(safe_float(row.get("delta_value"), 0.0))
+                        for row in tactical_rows
+                    ), 2),
+                    "planned_tactical_trade_notional": round(sum(
+                        safe_float(row.get("planned_notional"), 0.0)
+                        for row in executable_rows
+                    ), 2),
+                    "drift_rejected_notional": round(sum(
+                        abs(safe_float(row.get("delta_value"), 0.0))
+                        for row in rejected_rows
+                    ), 2),
+                    "tactical_symbol_count": len(tactical_rows),
+                    "executable_tactical_trade_count": len(executable_rows),
+                    "drift_rejected_symbol_count": len(rejected_rows),
+                    "minimum_abs_weight_drift": strategy_config.get(
+                        "shadow_min_abs_weight_drift", 0.025
+                    ),
+                })
+            portfolio.pending_plan = plan_rows
             portfolio.pending_at = ts
             equity = _equity(portfolio, prices)
             portfolio.peak_equity = max(portfolio.peak_equity, equity)
@@ -2031,6 +2100,7 @@ def run_replay(
         "account_profiles": account_profiles,
         "cross_account_wash_sales": cross_account_wash_sales,
         "universe_selection": universe_selection,
+        "overlay_rebalance": overlay_rebalance_rows,
         "checkpoint": {
             **replay_checkpoint(last_processed_timestamp),
             "prior_close_equity": final_close_equity,
@@ -2109,6 +2179,7 @@ def _replay_manifest(
         ).hexdigest(),
         "strategy_count": len(STRATEGIES),
         "research_shortlist": list(RESEARCH_SHORTLIST),
+        "core_overlay_comparison_group": list(CORE_OVERLAY_COMPARISON_GROUP),
         "strategy_reporting": {
             "all_strategies_retained_for_diagnostics": True,
             "shortlist_is_shadow_only": True,

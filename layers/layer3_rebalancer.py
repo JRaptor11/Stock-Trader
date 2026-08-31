@@ -1386,6 +1386,7 @@ def build_layer3_plan_from_snapshots(
     target_hysteresis_by_symbol: (
         dict | None
     ) = None,
+    minimum_abs_weight_drift: float | None = None,
 ) -> dict:
     """
     Shared Layer 3 planning kernel used by REST production and LIVE shadow.
@@ -1410,6 +1411,11 @@ def build_layer3_plan_from_snapshots(
     open_order_details = open_order_details or {}
     opening_transition = opening_transition or {}
     last_trade_prices = last_trade_prices or {}
+    effective_min_abs_weight_drift = (
+        L3_MIN_ABS_WEIGHT_DRIFT
+        if minimum_abs_weight_drift is None
+        else max(0.0, safe_float(minimum_abs_weight_drift, L3_MIN_ABS_WEIGHT_DRIFT))
+    )
 
     planner_state = (
         planner_state
@@ -1575,7 +1581,7 @@ def build_layer3_plan_from_snapshots(
             < L3_MIN_TRADE_VALUE_DOLLARS
             or (
                 abs(delta_weight)
-                < L3_MIN_ABS_WEIGHT_DRIFT
+                < effective_min_abs_weight_drift
                 and relative_drift
                 < L3_MIN_RELATIVE_DRIFT
             )
@@ -1770,6 +1776,14 @@ def build_layer3_plan_from_snapshots(
                 target_hysteresis
             ),
         )
+        row["minimum_trade_value_dollars"] = L3_MIN_TRADE_VALUE_DOLLARS
+        row["minimum_abs_weight_drift"] = round(
+            effective_min_abs_weight_drift, 6
+        )
+        row["minimum_relative_drift"] = L3_MIN_RELATIVE_DRIFT
+        row["drift_rejected"] = reason in {
+            "buy_drift_below_threshold", "sell_drift_below_threshold",
+        }
 
         plan.append(row)
 
@@ -1944,6 +1958,13 @@ def build_layer3_plan_from_snapshots(
         "rolling_trade_limits": (
             rolling_trade_limits
         ),
+        "drift_thresholds": {
+            "minimum_trade_value_dollars": L3_MIN_TRADE_VALUE_DOLLARS,
+            "minimum_abs_weight_drift": round(
+                effective_min_abs_weight_drift, 6
+            ),
+            "minimum_relative_drift": L3_MIN_RELATIVE_DRIFT,
+        },
     }
 
 
@@ -1964,6 +1985,7 @@ def build_layer3_shadow_plan(
     fail_safe_active: bool = False,
     last_trade_prices: dict | None = None,
     source_bar_timestamp=None,
+    minimum_abs_weight_drift: float | None = None,
 ) -> dict:
     """
     Build an isolated shadow Layer 3 plan with the production planning kernel.
@@ -2191,6 +2213,7 @@ def build_layer3_shadow_plan(
                 "diagnostics_by_symbol"
             ]
         ),
+        minimum_abs_weight_drift=minimum_abs_weight_drift,
     )
 
     summary = {
@@ -2308,6 +2331,7 @@ def build_layer3_shadow_plan(
             "rolling_trade_limits",
             {},
         ),
+        "drift_thresholds": built.get("drift_thresholds", {}),
     }
 
     planner_state["last_cycle_id"] = cycle_id
