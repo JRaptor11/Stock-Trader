@@ -22,6 +22,32 @@ from layers.layer3_rebalancer import build_layer3_plan_from_snapshots
 
 
 class HistoricalReplayTests(unittest.TestCase):
+    def test_replay_config_rejects_unknown_strategy_selection(self):
+        with self.assertRaisesRegex(ValueError, "unknown replay strategies"):
+            ReplayConfig(strategy_names=("NOT_A_STRATEGY",))
+
+    def test_overlay_sweep_variants_isolate_one_parameter(self):
+        base_85 = STRATEGIES["SPY_CORE_85_TACTICAL_15_300M"]
+        floor_85 = STRATEGIES["SPY_CORE_85_FLOOR_10BP"]
+        drift_85 = STRATEGIES["SPY_CORE_85_DRIFT_25BP"]
+        self.assertTrue(floor_85["historical_only"])
+        self.assertEqual(
+            base_85["shadow_min_abs_weight_drift"],
+            floor_85["shadow_min_abs_weight_drift"],
+        )
+        self.assertNotEqual(
+            base_85["minimum_retained_target_weight"],
+            floor_85["minimum_retained_target_weight"],
+        )
+        self.assertEqual(
+            base_85["minimum_retained_target_weight"],
+            drift_85["minimum_retained_target_weight"],
+        )
+        self.assertNotEqual(
+            base_85["shadow_min_abs_weight_drift"],
+            drift_85["shadow_min_abs_weight_drift"],
+        )
+
     def test_overlay_smoothing_retains_sleeve_scaled_targets(self):
         target = _smooth_target(
             {"AAA": 0.003, "BBB": 0.001, "CASH": 0.996, "_meta": {}},

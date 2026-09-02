@@ -434,6 +434,7 @@ class ReplayConfig:
     taxpayer_filing_status: str = "single"
     taxpayer_state: str = "CA"
     taxpayer_gross_income: float = 105000.0
+    strategy_names: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         start = (
@@ -462,6 +463,11 @@ class ReplayConfig:
                 raise ValueError(f"{name} must be between zero and one")
         if self.taxpayer_gross_income < 0:
             raise ValueError("taxpayer_gross_income cannot be negative")
+        unknown_strategies = set(self.strategy_names) - set(STRATEGIES)
+        if unknown_strategies:
+            raise ValueError(
+                "unknown replay strategies: " + ", ".join(sorted(unknown_strategies))
+            )
 
     @property
     def adverse_fill_bps(self) -> float:
@@ -1557,7 +1563,10 @@ def run_replay(
         for symbol, value in dict(checkpoint.get("last_observed_at") or {}).items()
         if symbol in all_symbols
     }
-    strategy_configs = dict(STRATEGIES)
+    selected_strategy_names = tuple(config.strategy_names or STRATEGIES)
+    strategy_configs = {
+        name: STRATEGIES[name] for name in selected_strategy_names
+    }
     checkpoint_strategies = set(checkpoint.get("strategy_names") or [])
     unknown_checkpoint_strategies = checkpoint_strategies - set(strategy_configs)
     if checkpoint and unknown_checkpoint_strategies:
@@ -2093,7 +2102,8 @@ def run_replay(
     for row in daily:
         final_close_equity[row["strategy_name"]] = row["last_equity"]
     return {
-        "config": asdict(config), "symbols": symbols, "session_dates": session_dates,
+        "config": asdict(config), "strategy_names": sorted(strategy_configs),
+        "symbols": symbols, "session_dates": session_dates,
         "evaluation_session_dates": evaluation_session_dates,
         "cycles": cycle_rows, "daily": daily, "decisions": decision_rows, "orders": order_rows,
         "eligibility": eligibility_rows,
@@ -2190,7 +2200,8 @@ def _replay_manifest(
         "strategy_registry_sha256": hashlib.sha256(
             json.dumps(STRATEGIES, sort_keys=True).encode("utf-8")
         ).hexdigest(),
-        "strategy_count": len(STRATEGIES),
+        "strategy_count": len(result.get("strategy_names") or STRATEGIES),
+        "selected_strategy_names": list(result.get("strategy_names") or STRATEGIES),
         "research_shortlist": list(RESEARCH_SHORTLIST),
         "core_overlay_comparison_group": list(CORE_OVERLAY_COMPARISON_GROUP),
         "strategy_reporting": {

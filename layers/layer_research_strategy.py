@@ -124,6 +124,33 @@ STRATEGIES = {
     },
 }
 
+# Historical-only one-factor-at-a-time variants. These deliberately stay out
+# of the intraday shadow process: the replay API selects them explicitly for
+# controlled floor and drift-threshold sweeps without increasing live-service
+# memory, log volume, or decision latency.
+_OVERLAY_SWEEP_VARIANTS = {
+    "SPY_CORE_85_FLOOR_10BP": ("SPY_CORE_85_TACTICAL_15_300M", 0.0010, 0.0075),
+    "SPY_CORE_85_FLOOR_15BP": ("SPY_CORE_85_TACTICAL_15_300M", 0.0015, 0.0075),
+    "SPY_CORE_85_FLOOR_50BP": ("SPY_CORE_85_TACTICAL_15_300M", 0.0050, 0.0075),
+    "SPY_CORE_85_DRIFT_25BP": ("SPY_CORE_85_TACTICAL_15_300M", 0.0025, 0.0025),
+    "SPY_CORE_85_DRIFT_50BP": ("SPY_CORE_85_TACTICAL_15_300M", 0.0025, 0.0050),
+    "SPY_CORE_85_DRIFT_100BP": ("SPY_CORE_85_TACTICAL_15_300M", 0.0025, 0.0100),
+    "SPY_CORE_90_FLOOR_05BP": ("SPY_CORE_90_TACTICAL_10_300M", 0.0005, 0.0050),
+    "SPY_CORE_90_FLOOR_10BP": ("SPY_CORE_90_TACTICAL_10_300M", 0.0010, 0.0050),
+    "SPY_CORE_90_FLOOR_25BP": ("SPY_CORE_90_TACTICAL_10_300M", 0.0025, 0.0050),
+    "SPY_CORE_90_DRIFT_20BP": ("SPY_CORE_90_TACTICAL_10_300M", 0.0015, 0.0020),
+    "SPY_CORE_90_DRIFT_35BP": ("SPY_CORE_90_TACTICAL_10_300M", 0.0015, 0.0035),
+    "SPY_CORE_90_DRIFT_75BP": ("SPY_CORE_90_TACTICAL_10_300M", 0.0015, 0.0075),
+}
+for _name, (_base, _floor, _drift) in _OVERLAY_SWEEP_VARIANTS.items():
+    STRATEGIES[_name] = {
+        **STRATEGIES[_base],
+        "minimum_retained_target_weight": _floor,
+        "shadow_min_abs_weight_drift": _drift,
+        "historical_only": True,
+        "experiment_base_strategy": _base,
+    }
+
 # Candidates prioritized for comparative reporting. STRATEGIES deliberately
 # remains broader so earlier ideas continue to produce diagnostic evidence.
 RESEARCH_SHORTLIST = (
@@ -470,7 +497,9 @@ def _initialize(state: dict, layer3_plan: list[dict], summary: dict, prices: dic
             qty * safe_float(prices.get(symbol), 0.0) for symbol, qty in positions.items()
         ))
     state["portfolios"] = {}
-    for name in STRATEGIES:
+    for name, config in STRATEGIES.items():
+        if config.get("historical_only"):
+            continue
         portfolio = {
             "cash": cash, "positions": dict(positions), "planner_state": {},
             "previous_target": None, "cumulative_turnover": 0.0,
@@ -571,6 +600,8 @@ def run_research_strategy_shadow(
     control_equity = None
     equity_by_strategy = {}
     for name, config in STRATEGIES.items():
+        if config.get("historical_only"):
+            continue
         allowed_sources = tuple(config.get("allowed_sources") or ())
         if allowed_sources and source not in allowed_sources:
             continue
