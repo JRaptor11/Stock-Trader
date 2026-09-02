@@ -1910,6 +1910,19 @@ def run_replay(
                     "tactical_symbol_count": len(tactical_rows),
                     "executable_tactical_trade_count": len(executable_rows),
                     "drift_rejected_symbol_count": len(rejected_rows),
+                    "removed_below_minimum_weight": safe_float(
+                        dict(target.get("_meta") or {}).get(
+                            "removed_below_minimum_weight"
+                        ), 0.0
+                    ),
+                    "removed_below_minimum_symbol_count": int(safe_float(
+                        dict(target.get("_meta") or {}).get(
+                            "removed_below_minimum_symbol_count"
+                        ), 0.0
+                    )),
+                    "minimum_retained_target_weight": strategy_config.get(
+                        "minimum_retained_target_weight", 0.005
+                    ),
                     "minimum_abs_weight_drift": strategy_config.get(
                         "shadow_min_abs_weight_drift", 0.025
                     ),

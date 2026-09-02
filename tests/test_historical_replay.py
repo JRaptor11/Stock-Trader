@@ -17,11 +17,25 @@ from research.historical_replay import (
 )
 from research.replay_parity import compare_replay_to_live
 from research.walk_forward import build_walk_forward_folds
-from layers.layer_research_strategy import STRATEGIES
+from layers.layer_research_strategy import STRATEGIES, _smooth_target
 from layers.layer3_rebalancer import build_layer3_plan_from_snapshots
 
 
 class HistoricalReplayTests(unittest.TestCase):
+    def test_overlay_smoothing_retains_sleeve_scaled_targets(self):
+        target = _smooth_target(
+            {"AAA": 0.003, "BBB": 0.001, "CASH": 0.996, "_meta": {}},
+            None,
+            {
+                "alpha": 0.12, "max_step": 0.02,
+                "minimum_retained_target_weight": 0.0015,
+            },
+        )
+        self.assertEqual(0.003, target["AAA"])
+        self.assertNotIn("BBB", target)
+        self.assertEqual(0.001, target["_meta"]["removed_below_minimum_weight"])
+        self.assertEqual(1, target["_meta"]["removed_below_minimum_symbol_count"])
+
     def test_checkpoint_interval_becomes_more_frequent_near_completion(self):
         self.assertEqual(10, _checkpoint_interval(0.50, 10))
         self.assertEqual(5, _checkpoint_interval(0.75, 10))

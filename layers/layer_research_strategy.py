@@ -104,6 +104,7 @@ STRATEGIES = {
         "minimum_positive_300m_breadth": 0.60,
         "benchmark_core_weight": 0.70,
         "shadow_min_abs_weight_drift": 0.015,
+        "minimum_retained_target_weight": 0.005,
     },
     "SPY_CORE_85_TACTICAL_15_300M": {
         "target_mode": "single_horizon", "horizon_minutes": 300,
@@ -111,6 +112,7 @@ STRATEGIES = {
         "minimum_positive_300m_breadth": 0.60,
         "benchmark_core_weight": 0.85,
         "shadow_min_abs_weight_drift": 0.0075,
+        "minimum_retained_target_weight": 0.0025,
     },
     "SPY_CORE_90_TACTICAL_10_300M": {
         "target_mode": "single_horizon", "horizon_minutes": 300,
@@ -118,6 +120,7 @@ STRATEGIES = {
         "minimum_positive_300m_breadth": 0.60,
         "benchmark_core_weight": 0.90,
         "shadow_min_abs_weight_drift": 0.005,
+        "minimum_retained_target_weight": 0.0015,
     },
 }
 
@@ -392,22 +395,32 @@ def _raw_research_target(
 
 
 def _smooth_target(raw_target: dict, previous: dict | None, config: dict) -> dict:
-    if not previous:
-        return dict(raw_target)
+    initial_target = not previous
     symbols = {
-        key for key in set(raw_target) | set(previous)
+        key for key in set(raw_target) | set(previous or {})
         if not str(key).startswith("_") and key != "CASH"
     }
     alpha = config["alpha"]
     max_step = config["max_step"]
+    minimum_retained_weight = max(
+        0.0, safe_float(config.get("minimum_retained_target_weight"), 0.005)
+    )
     weights = {}
+    removed_weight = 0.0
+    removed_symbols = []
     for symbol in symbols:
-        old = safe_float(previous.get(symbol), 0.0)
+        old = safe_float((previous or {}).get(symbol), 0.0)
         raw = safe_float(raw_target.get(symbol), 0.0)
-        desired = old + alpha * (raw - old)
-        value = max(old - max_step, min(old + max_step, desired))
-        if value >= 0.005:
+        if initial_target:
+            value = raw
+        else:
+            desired = old + alpha * (raw - old)
+            value = max(old - max_step, min(old + max_step, desired))
+        if value >= minimum_retained_weight:
             weights[symbol] = value
+        elif value > 0:
+            removed_weight += value
+            removed_symbols.append(symbol)
     total = sum(weights.values())
     if total > 0.95:
         scale = 0.95 / total
@@ -418,6 +431,10 @@ def _smooth_target(raw_target: dict, previous: dict | None, config: dict) -> dic
         **dict(raw_target.get("_meta") or {}),
         "smoothing_alpha": alpha, "smoothing_max_step": max_step,
         "smoothing_mode": "research_path_dependent",
+        "minimum_retained_target_weight": round(minimum_retained_weight, 6),
+        "removed_below_minimum_weight": round(removed_weight, 8),
+        "removed_below_minimum_symbol_count": len(removed_symbols),
+        "removed_below_minimum_symbols": sorted(removed_symbols),
     }
     return target
 
