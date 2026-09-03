@@ -36,6 +36,8 @@ class Tier1Config:
     no_trade_band: float = 0.02
     cost_ladder_bps: tuple[float, ...] = (1.0, 5.0, 10.0, 20.0)
     primary_cost_bps: float = 10.0
+    discovery_end_date: str | None = None
+    holdout_start_date: str | None = None
 
     def __post_init__(self):
         if self.rebalance_frequency not in {"weekly", "monthly"}:
@@ -45,6 +47,10 @@ class Tier1Config:
         if not self.momentum_lookbacks_days or min(self.momentum_lookbacks_days) < 2:
             raise ValueError("momentum lookbacks must contain positive multi-day windows")
         resolve_universe(self.universe_name)
+        if bool(self.discovery_end_date) != bool(self.holdout_start_date):
+            raise ValueError("discovery_end_date and holdout_start_date must be set together")
+        if self.discovery_end_date and self.discovery_end_date >= self.holdout_start_date:
+            raise ValueError("discovery_end_date must precede holdout_start_date")
 
 
 def config_from_job(job: dict) -> Tier1Config:
@@ -155,6 +161,17 @@ def _metrics(daily: list[dict], initial: float) -> dict:
     return {"total_return": total, "cagr": cagr, "annualized_volatility": volatility, "sharpe": sharpe, "max_drawdown": dd, "calmar": cagr / abs(dd) if cagr is not None and dd else None}
 
 
+def _period_metrics(daily: list[dict], initial: float, start: str | None, end: str | None) -> dict:
+    selected = [row for row in daily if (not start or row["date"] >= start) and (not end or row["date"] <= end)]
+    if not selected:
+        return {"total_return": None, "cagr": None, "annualized_volatility": None,
+                "sharpe": None, "max_drawdown": None, "calmar": None,
+                "session_count": 0}
+    first_index = daily.index(selected[0])
+    starting_equity = daily[first_index - 1]["equity"] if first_index else initial
+    return {**_metrics(selected, starting_equity), "session_count": len(selected)}
+
+
 def _simulate(name: str, dates: list[str], bars: dict, config: Tier1Config, cost_bps: float) -> tuple[list[dict], list[dict]]:
     symbols = resolve_universe(config.universe_name); histories = {s: [] for s in symbols}
     cash = config.initial_cash; shares: dict[str, float] = {}; pending = None; daily=[]; trades=[]; previous_day=None
@@ -190,24 +207,37 @@ def run_tier1_job(job: dict, bars_path: Path, archive_path: Path, source_sha256:
     config=config_from_job(job); symbols=set(resolve_universe(config.universe_name))
     dates,bars=load_daily_bars(bars_path,symbols)
     if len(dates) <= max(config.momentum_lookbacks_days): raise ValueError("insufficient daily history for Tier 1 lookbacks")
-    all_daily=[]; all_trades=[]; scorecards=[]
+    all_daily=[]; all_trades=[]; scorecards=[]; period_scorecards=[]
     tasks=[(s,c) for c in config.cost_ladder_bps for s in STRATEGIES]
     for index,(strategy,cost) in enumerate(tasks,1):
         daily,trades=_simulate(strategy,dates,bars,config,float(cost)); metrics=_metrics(daily,config.initial_cash)
         all_daily.extend(daily); all_trades.extend(trades)
         scorecards.append({"strategy":strategy,"cost_bps":float(cost),**metrics,"turnover":sum(abs(r["notional"]) for r in trades)/config.initial_cash,"trade_count":len(trades)})
+        periods = [("full", None, None)]
+        if config.discovery_end_date:
+            periods.extend([
+                ("discovery", None, config.discovery_end_date),
+                ("holdout", config.holdout_start_date, None),
+            ])
+        for period, start, end in periods:
+            period_scorecards.append({
+                "strategy": strategy, "cost_bps": float(cost), "period": period,
+                "period_start": start, "period_end": end,
+                **_period_metrics(daily, config.initial_cash, start, end),
+            })
         if progress_callback: progress_callback({"stage":"tier1_strategy_tournament","stage_completed_rows":index,"stage_total_rows":len(tasks),"stage_percent_complete":round(index/len(tasks)*100,2)})
-    primary={r["strategy"]:r for r in scorecards if r["cost_bps"]==config.primary_cost_bps}; benchmark=primary["SPY_BUY_HOLD"]
+    promotion_period = "holdout" if config.holdout_start_date else "full"
+    primary={r["strategy"]:r for r in period_scorecards if r["cost_bps"]==config.primary_cost_bps and r["period"]==promotion_period}; benchmark=primary["SPY_BUY_HOLD"]
     promotions=[]
     for strategy,row in sorted(primary.items()):
         if strategy=="SPY_BUY_HOLD": continue
         beats=row["total_return"]>benchmark["total_return"]
         risk_improves=row["max_drawdown"]>benchmark["max_drawdown"] or row["sharpe"]>benchmark["sharpe"]
-        promotions.append({"strategy":strategy,"benchmark":"SPY_BUY_HOLD","net_excess_return":row["total_return"]-benchmark["total_return"],"return_gate":beats,"risk_gate":risk_improves,"eligible_for_further_validation":beats and risk_improves,"paper_trading_approved":False})
+        promotions.append({"strategy":strategy,"benchmark":"SPY_BUY_HOLD","evaluation_period":promotion_period,"net_excess_return":row["total_return"]-benchmark["total_return"],"return_gate":beats,"risk_gate":risk_improves,"eligible_for_further_validation":beats and risk_improves,"paper_trading_approved":False})
     declaration=validate_experiment_declaration(job.get("experiment"))
     manifest={"created_at":datetime.now(UTC).isoformat(),"engine":"tier1_etf_daily","source_path":str(bars_path),"source_sha256":source_sha256,"config":asdict(config),"universe":universe_metadata(config.universe_name,tuple(sorted(symbols))),"hypothesis_registry":registry_snapshot(),"experiment":declaration,"execution_semantics":"signal_at_close_fill_at_next_available_open","strategies":list(STRATEGIES),"promotion_policy":"diagnostic gate only; shadow approval requires untouched holdout and stability tests"}
     archive_path.parent.mkdir(parents=True,exist_ok=True)
     with zipfile.ZipFile(archive_path,"w",zipfile.ZIP_DEFLATED,compresslevel=1) as bundle:
-        _write_csv(bundle,"tier1_daily.csv",all_daily); _write_csv(bundle,"tier1_trades.csv",all_trades); _write_csv(bundle,"tier1_cost_ladder_scorecard.csv",scorecards); _write_csv(bundle,"tier1_promotion_gates.csv",promotions)
-        bundle.writestr("tier1_manifest.json",json.dumps(manifest,indent=2,default=list)); bundle.writestr("tier1_summary.json",json.dumps({"primary_cost_bps":config.primary_cost_bps,"scorecards":list(primary.values()),"promotion_gates":promotions},indent=2))
+        _write_csv(bundle,"tier1_daily.csv",all_daily); _write_csv(bundle,"tier1_trades.csv",all_trades); _write_csv(bundle,"tier1_cost_ladder_scorecard.csv",scorecards); _write_csv(bundle,"tier1_period_scorecard.csv",period_scorecards); _write_csv(bundle,"tier1_promotion_gates.csv",promotions)
+        bundle.writestr("tier1_manifest.json",json.dumps(manifest,indent=2,default=list)); bundle.writestr("tier1_summary.json",json.dumps({"primary_cost_bps":config.primary_cost_bps,"promotion_period":promotion_period,"scorecards":list(primary.values()),"promotion_gates":promotions},indent=2))
     return archive_path

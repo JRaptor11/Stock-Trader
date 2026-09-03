@@ -18,6 +18,8 @@
     "sector_holdings": 3,
     "no_trade_band": 0.02,
     "cost_ladder_bps": [1.0, 5.0, 10.0, 20.0],
-    "primary_cost_bps": 10.0
+    "primary_cost_bps": 10.0,
+    "discovery_end_date": "2024-09-02",
+    "holdout_start_date": "2024-09-03"
   }
 }

@@ -1,0 +1,62 @@
+{
+  "generation": "tier1-generation-002",
+  "declared_before_results": true,
+  "dataset": "tier1_etf_daily_2016_2026-09-02_iex.csv",
+  "discovery_end_date": "2024-09-02",
+  "holdout_start_date": "2024-09-03",
+  "primary_cost_bps": 10.0,
+  "common": {
+    "engine": "tier1_etf_daily",
+    "universe_name": "ETF_TIER1_RESEARCH",
+    "initial_cash": 100000.0,
+    "cost_ladder_bps": [1.0, 5.0, 10.0, 20.0],
+    "no_trade_band": 0.02
+  },
+  "variants": [
+    {
+      "id": "g2-baseline",
+      "change": "Generation 1 reference with frozen holdout",
+      "rebalance_frequency": "monthly",
+      "volatility_lookback_days": 60,
+      "volatility_target_annualized": 0.12,
+      "trend_lookback_days": 200,
+      "momentum_lookbacks_days": [21, 63, 126, 252],
+      "sector_holdings": 3
+    },
+    {
+      "id": "g2-vol-lookback-20",
+      "change": "Volatility lookback 60 to 20 days",
+      "volatility_lookback_days": 20
+    },
+    {
+      "id": "g2-vol-target-10",
+      "change": "Annualized volatility target 12% to 10%",
+      "volatility_target_annualized": 0.10
+    },
+    {
+      "id": "g2-vol-target-15",
+      "change": "Annualized volatility target 12% to 15%",
+      "volatility_target_annualized": 0.15
+    },
+    {
+      "id": "g2-weekly",
+      "change": "Rebalance monthly to weekly",
+      "rebalance_frequency": "weekly"
+    },
+    {
+      "id": "g2-trend-126",
+      "change": "Absolute trend window 200 to 126 days",
+      "trend_lookback_days": 126
+    },
+    {
+      "id": "g2-momentum-no-1m",
+      "change": "Remove the 21-day momentum component",
+      "momentum_lookbacks_days": [63, 126, 252]
+    },
+    {
+      "id": "g2-sector-top-1",
+      "change": "Sector holdings 3 to 1",
+      "sector_holdings": 1
+    }
+  ]
+}
