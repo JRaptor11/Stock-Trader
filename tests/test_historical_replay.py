@@ -47,6 +47,10 @@ class HistoricalReplayTests(unittest.TestCase):
             base_85["shadow_min_abs_weight_drift"],
             drift_85["shadow_min_abs_weight_drift"],
         )
+        combined_90 = STRATEGIES["SPY_CORE_90_FLOOR_10BP_DRIFT_75BP"]
+        self.assertEqual(0.0010, combined_90["minimum_retained_target_weight"])
+        self.assertEqual(0.0075, combined_90["shadow_min_abs_weight_drift"])
+        self.assertTrue(combined_90["historical_only"])
 
     def test_overlay_smoothing_retains_sleeve_scaled_targets(self):
         target = _smooth_target(
