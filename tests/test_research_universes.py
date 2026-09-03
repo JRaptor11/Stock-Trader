@@ -29,6 +29,15 @@ class ResearchUniverseTests(unittest.TestCase):
         config = ReplayConfig(universe_name="DIVERSIFIED_30")
         self.assertEqual(80.0, config.minimum_eligible_coverage_pct)
 
+    def test_tier1_etf_universe_is_stable_and_classified(self):
+        symbols = resolve_universe("ETF_TIER1_RESEARCH")
+        self.assertEqual(15, len(symbols))
+        self.assertEqual(len(symbols), len(set(symbols)))
+        metadata = universe_metadata("ETF_TIER1_RESEARCH", symbols)
+        self.assertFalse(metadata["survivorship_bias_controlled"])
+        self.assertTrue(metadata["constituent_survivorship_avoided"])
+        self.assertNotIn("unclassified", metadata["sector_counts"])
+
     def test_selection_diagnostics_group_by_strategy_symbol_and_sector(self):
         rows = _universe_selection_diagnostics([
             {"strategy_name": "S", "symbol": "AAPL", "selected": True, "raw_target_weight": 0.2},

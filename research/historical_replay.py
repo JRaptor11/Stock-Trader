@@ -35,6 +35,7 @@ from layers.layer_research_strategy import (
 )
 from research.walk_forward import build_walk_forward_folds
 from research.universes import SECTORS, resolve_universe, universe_metadata
+from research.strategy_registry import registry_snapshot
 from utils.numeric import safe_float
 
 
@@ -2187,6 +2188,7 @@ def _replay_manifest(
     result: dict, *, source_path: str | Path | None,
     source_sha256: str | None, experiment: dict | None,
 ) -> dict:
+    hypothesis_registry = registry_snapshot()
     return {
         "created_at": datetime.now(UTC).isoformat(), "source_path": str(source_path) if source_path else None,
         "source_sha256": source_sha256 or (
@@ -2200,6 +2202,7 @@ def _replay_manifest(
         "strategy_registry_sha256": hashlib.sha256(
             json.dumps(STRATEGIES, sort_keys=True).encode("utf-8")
         ).hexdigest(),
+        "hypothesis_registry": hypothesis_registry,
         "strategy_count": len(result.get("strategy_names") or STRATEGIES),
         "selected_strategy_names": list(result.get("strategy_names") or STRATEGIES),
         "research_shortlist": list(RESEARCH_SHORTLIST),

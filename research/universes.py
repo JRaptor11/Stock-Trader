@@ -24,6 +24,29 @@ UNIVERSES = {
     "BASELINE_10": BASELINE_10,
     "DIVERSIFIED_20": DIVERSIFIED_20,
     "DIVERSIFIED_30": DIVERSIFIED_30,
+    # Stable, liquid ETF universes for the first low-cost research wave. ETF
+    # membership is declared before each experiment and avoids reconstructing
+    # historical index constituents before the point-in-time equity dataset is
+    # ready.
+    "ETF_MARKET_CORE": ("SPY", "QQQ", "IWM", "SHY"),
+    "ETF_SECTOR_SPDR": (
+        "XLC", "XLY", "XLP", "XLE", "XLF", "XLV",
+        "XLI", "XLB", "XLRE", "XLK", "XLU",
+    ),
+    "ETF_TIER1_RESEARCH": (
+        "SPY", "QQQ", "IWM", "SHY",
+        "XLC", "XLY", "XLP", "XLE", "XLF", "XLV",
+        "XLI", "XLB", "XLRE", "XLK", "XLU",
+    ),
+}
+
+ETF_METADATA = {
+    "SPY": "broad_market", "QQQ": "large_cap_growth", "IWM": "small_cap",
+    "SHY": "short_treasury", "XLC": "communication_services",
+    "XLY": "consumer_discretionary", "XLP": "consumer_staples",
+    "XLE": "energy", "XLF": "financials", "XLV": "healthcare",
+    "XLI": "industrials", "XLB": "materials", "XLRE": "real_estate",
+    "XLK": "technology", "XLU": "utilities",
 }
 
 SECTORS = {
@@ -52,7 +75,7 @@ def resolve_universe(name: str) -> tuple[str, ...]:
 def universe_metadata(name: str, symbols: list[str] | tuple[str, ...]) -> dict:
     sector_counts = {}
     for symbol in symbols:
-        sector = SECTORS.get(symbol, "unclassified")
+        sector = SECTORS.get(symbol, ETF_METADATA.get(symbol, "unclassified"))
         sector_counts[sector] = sector_counts.get(sector, 0) + 1
     count = len(symbols)
     return {
@@ -64,9 +87,19 @@ def universe_metadata(name: str, symbols: list[str] | tuple[str, ...]) -> dict:
         "largest_sector_pct": round(
             max(sector_counts.values(), default=0) / count * 100.0, 4
         ) if count else 0.0,
-        "selection_policy": "fixed_predeclared_liquid_large_cap_research_roster",
+        "selection_policy": (
+            "fixed_predeclared_liquid_etf_research_roster"
+            if all(symbol in ETF_METADATA for symbol in symbols)
+            else "fixed_predeclared_liquid_large_cap_research_roster"
+        ),
         "survivorship_bias_controlled": False,
+        "constituent_survivorship_avoided": bool(
+            symbols and all(symbol in ETF_METADATA for symbol in symbols)
+        ),
         "limitation": (
+            "ETF membership is fixed before the experiment, but fund inception, closure, "
+            "benchmark changes, and asset-class availability still require date-aware checks."
+            if symbols and all(symbol in ETF_METADATA for symbol in symbols) else
             "Fixed present-day membership can introduce survivorship bias in historical tests; "
             "results require confirmation with point-in-time membership data."
         ),

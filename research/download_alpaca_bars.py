@@ -24,6 +24,7 @@ def _env_file(path: Path) -> dict[str, str]:
 
 
 def download(*, symbols: list[str], start: str, end: str, feed: str,
+             timeframe: str = "5Min",
              api_key: str, secret_key: str, output: Path) -> tuple[int, int]:
     headers = {"APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": secret_key}
     rows: list[dict] = []
@@ -31,7 +32,7 @@ def download(*, symbols: list[str], start: str, end: str, feed: str,
     pages = 0
     while True:
         params = {
-            "symbols": ",".join(symbols), "timeframe": "5Min", "start": start,
+            "symbols": ",".join(symbols), "timeframe": timeframe, "start": start,
             "end": end, "adjustment": "all", "feed": feed, "limit": "10000",
             "sort": "asc",
         }
@@ -69,12 +70,13 @@ def main() -> None:
     parser.add_argument("--start", required=True)
     parser.add_argument("--end", required=True)
     parser.add_argument("--feed", default="iex")
+    parser.add_argument("--timeframe", default="5Min", choices=("5Min", "1Day"))
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     env = _env_file(args.env_file)
     rows, pages = download(
         symbols=[item.strip().upper() for item in args.symbols.split(",") if item.strip()],
-        start=args.start, end=args.end, feed=args.feed,
+        start=args.start, end=args.end, feed=args.feed, timeframe=args.timeframe,
         api_key=env["API_KEY"], secret_key=env["SECRET_KEY"], output=args.output,
     )
     print(json.dumps({"rows": rows, "pages": pages, "output": str(args.output)}))

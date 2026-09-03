@@ -29,6 +29,8 @@ from research.historical_replay import (
     run_replay, write_replay_archive,
 )
 from research.universes import resolve_universe
+from research.strategy_registry import validate_experiment_declaration
+from research.tier1_etf_replay import run_tier1_job
 
 
 UTC = timezone.utc
@@ -319,6 +321,37 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
             })
             _write_json_atomic(status_path, latest_status)
 
+        engine = str(job.get("engine") or "intraday_replay").strip().lower()
+        if engine == "tier1_etf_daily":
+            update_progress({"stage": "loading_tier1_daily_data"})
+            run_tier1_job(
+                job, bars_path, staging, source_sha256,
+                progress_callback=update_progress,
+            )
+            update_progress({
+                "stage": "result_archive_ready",
+                "archive_bytes_written": staging.stat().st_size,
+                "archive_percent_complete": 100.0,
+            })
+            staging.replace(final_archive)
+            completed_status = {
+                **latest_status, "job_id": job_id, "status": "complete",
+                "started_at": started_at,
+                "completed_at": datetime.now(UTC).isoformat(),
+                "archive": str(final_archive), "percent_complete": 100.0,
+                "research_engine": engine,
+            }
+            for stale_key in (
+                "error", "error_type", "traceback", "failed_at",
+                "failure_class", "retryable", "retries_exhausted",
+                "retries_remaining", "next_retry_at",
+            ):
+                completed_status.pop(stale_key, None)
+            _write_json_atomic(status_path, completed_status)
+            return final_archive
+        if engine != "intraday_replay":
+            raise ValueError(f"unknown research engine: {engine}")
+
         replay_config = _config_from_job(job)
         store = artifact_store_from_env()
         checkpoint_key = f"checkpoints/{job_id}.zip"
@@ -461,7 +494,12 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
         write_replay_archive(
             result, staging, source_path=bars_path,
             source_sha256=source_sha256,
-            experiment={"job_id": job_id, "job": job, "job_path": str(job_path)},
+            experiment={
+                "job_id": job_id,
+                "declaration": validate_experiment_declaration(job.get("experiment")),
+                "job": job,
+                "job_path": str(job_path),
+            },
             release_spills=True,
             progress_callback=update_archive_progress,
         )

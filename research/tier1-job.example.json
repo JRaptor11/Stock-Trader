@@ -1,0 +1,23 @@
+{
+  "job_id": "tier1-etf-daily-example",
+  "engine": "tier1_etf_daily",
+  "bars_csv": "tier1_etf_daily_2016_present_iex.csv",
+  "experiment": {
+    "hypothesis_id": "ETF_DUAL_MOMENTUM",
+    "trial_id": "tier1-generation-001",
+    "holdout_policy": "freeze before execution"
+  },
+  "tier1_config": {
+    "initial_cash": 100000.0,
+    "universe_name": "ETF_TIER1_RESEARCH",
+    "rebalance_frequency": "monthly",
+    "volatility_lookback_days": 60,
+    "volatility_target_annualized": 0.12,
+    "trend_lookback_days": 200,
+    "momentum_lookbacks_days": [21, 63, 126, 252],
+    "sector_holdings": 3,
+    "no_trade_band": 0.02,
+    "cost_ladder_bps": [1.0, 5.0, 10.0, 20.0],
+    "primary_cost_bps": 10.0
+  }
+}
