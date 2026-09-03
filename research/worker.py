@@ -412,16 +412,23 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
             _write_json_atomic(status_path, latest_status)
 
         checkpoint_upload_count = 0
+        checkpoint_egress_bytes = int(latest_status.get("checkpoint_egress_bytes") or 0)
+        checkpoint_egress_budget = max(
+            0, int(os.getenv("RESEARCH_CHECKPOINT_EGRESS_BUDGET_BYTES", str(1024**3)))
+        )
 
         def persist_durable_checkpoint(checkpoint_payload: dict, spill_payload: dict) -> None:
-            nonlocal checkpoint_upload_count
+            nonlocal checkpoint_upload_count, checkpoint_egress_bytes
             _write_checkpoint_bundle(
                 checkpoint_bundle, identity=identity,
                 checkpoint=checkpoint_payload, spills=spill_payload,
             )
-            if store.durable:
+            checkpoint_size = checkpoint_bundle.stat().st_size
+            upload_allowed = checkpoint_egress_bytes + checkpoint_size <= checkpoint_egress_budget
+            if store.durable and upload_allowed:
                 durable_uri = store.upload_file(checkpoint_bundle, checkpoint_key)
                 _drop_file_cache(checkpoint_bundle)
+                checkpoint_egress_bytes += checkpoint_size
             else:
                 durable_uri = None
             checkpoint_upload_count += 1
@@ -434,6 +441,11 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
                     checkpoint_payload.get("completed_timestamps") or 0
                 ),
                 "checkpoint_upload_count": checkpoint_upload_count,
+                "checkpoint_egress_bytes": checkpoint_egress_bytes,
+                "checkpoint_egress_budget_bytes": checkpoint_egress_budget,
+                "checkpoint_upload_skipped_egress_budget": bool(
+                    store.durable and not upload_allowed
+                ),
                 "checkpoint_durable_uri": durable_uri,
             })
             _write_json_atomic(status_path, latest_status)
@@ -476,7 +488,7 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
             initial_spills=resumed_spills,
             checkpoint_callback=persist_durable_checkpoint,
             checkpoint_every_sessions=max(
-                1, int(os.getenv("RESEARCH_CHECKPOINT_EVERY_SESSIONS", "10"))
+                1, int(os.getenv("RESEARCH_CHECKPOINT_EVERY_SESSIONS", "100"))
             ),
             release_source_rows=True,
         )

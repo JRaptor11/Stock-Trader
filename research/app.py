@@ -19,10 +19,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 
 from config.service_mode import ServiceMode, validate_service_startup
-from research.artifact_store import artifact_store_from_env
+from research.artifact_store import EgressBudgetExceeded, artifact_store_from_env
 from research.historical_replay import _drop_file_cache
 from research.job_queue import (
     classify_failure, progress_aware_restart_state, queued_in_fifo_order,
@@ -195,7 +195,18 @@ def health() -> dict:
         "queued_jobs": _queued_job_count(),
         "durable_storage_configured": bool(runtime.store and runtime.store.durable),
         "storage_budget_bytes": runtime.storage_budget_bytes,
+        "r2_egress": _health_egress_usage(),
     }
+
+
+def _health_egress_usage() -> dict | None:
+    if not runtime.store:
+        return None
+    try:
+        return runtime.store.egress_usage()
+    except Exception:
+        logging.warning("Could not read the R2 egress ledger", exc_info=True)
+        return {"status": "temporarily_unavailable"}
 
 
 @app.put("/api/datasets/{filename}", dependencies=[Depends(require_token)])
@@ -230,7 +241,9 @@ async def upload_dataset(filename: str, request: Request) -> dict:
         runtime.ensure_storage_capacity(destination)
     except RuntimeError as exc:
         raise HTTPException(status_code=507, detail=str(exc)) from exc
-    durable_uri = runtime.store.upload_file(destination, f"datasets/{digest.hexdigest()}-{filename}")
+    durable_uri = runtime.store.upload_file_if_missing(
+        destination, f"datasets/{digest.hexdigest()}-{filename}"
+    )
     runtime.record_storage_write(destination.stat().st_size)
     return {"filename": filename, "bytes": size, "sha256": digest.hexdigest(), "durable_uri": durable_uri}
 
@@ -278,7 +291,9 @@ def _run_job(job_id: str, job_path: Path) -> None:
             archive_base = runtime.results_root / f"{job_id}-results"
             archive = Path(shutil.make_archive(str(archive_base), "zip", root_dir=output))
         runtime.ensure_storage_capacity(archive)
-        result_uri = runtime.store.upload_file(archive, f"results/{archive.name}")
+        result_uri = runtime.store.upload_file_if_missing(
+            archive, f"results/{archive.name}"
+        )
         _drop_file_cache(archive)
         runtime.record_storage_write(archive.stat().st_size)
         status_payload = _status(job_id)
@@ -353,7 +368,10 @@ def _run_job(job_id: str, job_path: Path) -> None:
 def _classify_failure(exc: Exception, status_payload: dict) -> tuple[bool, str]:
     error_type = str(status_payload.get("error_type") or type(exc).__name__)
     return classify_failure(
-        error_type, storage_budget_exceeded=isinstance(exc, StorageBudgetExceeded),
+        error_type,
+        storage_budget_exceeded=isinstance(
+            exc, (StorageBudgetExceeded, EgressBudgetExceeded)
+        ),
     )
 
 
@@ -694,6 +712,10 @@ def job_status(job_id: str) -> dict:
 def download_results(job_id: str):
     job_id = _safe_name(job_id)
     archive = runtime.results_root / f"{job_id}-results.zip"
+    if runtime.store.durable:
+        signed_url = runtime.store.download_url(f"results/{archive.name}")
+        if signed_url:
+            return RedirectResponse(signed_url, status_code=307)
     if not archive.is_file() and runtime.store.durable:
         runtime.store.download_file(f"results/{archive.name}", archive)
     if not archive.is_file():

@@ -3,10 +3,14 @@ import sys
 import tempfile
 import types
 import unittest
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 
-from research.artifact_store import LocalOnlyArtifactStore, S3ArtifactStore, artifact_store_from_env
+from research.artifact_store import (
+    EgressBudgetExceeded, LocalOnlyArtifactStore, S3ArtifactStore,
+    artifact_store_from_env,
+)
 
 
 class _FakeS3Client:
@@ -14,9 +18,32 @@ class _FakeS3Client:
         self.uploads = []
         self.downloads = []
         self.deletes = []
+        self.objects = {}
 
     def upload_file(self, path, bucket, key):
         self.uploads.append((path, bucket, key))
+
+    def get_object(self, **kwargs):
+        key = kwargs["Key"]
+        if key not in self.objects:
+            error = RuntimeError("missing")
+            error.response = {"Error": {"Code": "NoSuchKey"}}
+            raise error
+        return {"Body": BytesIO(self.objects[key])}
+
+    def put_object(self, **kwargs):
+        self.objects[kwargs["Key"]] = kwargs["Body"]
+
+    def head_object(self, **kwargs):
+        key = kwargs["Key"]
+        if key not in self.objects:
+            error = RuntimeError("missing")
+            error.response = {"Error": {"Code": "NoSuchKey"}}
+            raise error
+        return {"ContentLength": len(self.objects[key])}
+
+    def generate_presigned_url(self, operation, Params, ExpiresIn):
+        return f"https://r2.example/{Params['Key']}?expires={ExpiresIn}"
 
     def download_file(self, bucket, key, path):
         self.downloads.append((bucket, key, path))
@@ -57,8 +84,43 @@ class ArtifactStoreTests(unittest.TestCase):
             path.write_bytes(b"test")
             with patch.dict(sys.modules, {"boto3": fake_boto3}):
                 uri = store.upload_file(path, "completed/result.zip")
+                egress_used = store.egress_usage()["used_bytes"]
         self.assertEqual(uri, "s3://results/research/runs/completed/result.zip")
         self.assertEqual(client.uploads[0][1:], ("results", "research/runs/completed/result.zip"))
+        self.assertEqual(egress_used, 4)
+
+    def test_s3_store_blocks_upload_before_monthly_egress_budget_is_exceeded(self):
+        client = _FakeS3Client()
+        fake_boto3 = types.SimpleNamespace(client=lambda *args, **kwargs: client)
+        store = S3ArtifactStore(
+            bucket="results", prefix="research/runs", endpoint_url=None,
+            region="us-east-1", access_key="key", secret_key="secret",
+            monthly_egress_budget_bytes=6,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "result.zip"
+            path.write_bytes(b"test")
+            with patch.dict(sys.modules, {"boto3": fake_boto3}):
+                store.upload_file(path, "first.zip")
+                with self.assertRaises(EgressBudgetExceeded):
+                    store.upload_file(path, "second.zip")
+        self.assertEqual(1, len(client.uploads))
+
+    def test_immutable_upload_reuses_existing_object_without_egress(self):
+        client = _FakeS3Client()
+        client.objects["research/runs/results/result.zip"] = b"test"
+        fake_boto3 = types.SimpleNamespace(client=lambda *args, **kwargs: client)
+        store = S3ArtifactStore(
+            bucket="results", prefix="research/runs", endpoint_url=None,
+            region="us-east-1", access_key="key", secret_key="secret",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "result.zip"
+            path.write_bytes(b"test")
+            with patch.dict(sys.modules, {"boto3": fake_boto3}):
+                uri = store.upload_file_if_missing(path, "results/result.zip")
+        self.assertEqual("s3://results/research/runs/results/result.zip", uri)
+        self.assertEqual([], client.uploads)
 
     def test_s3_store_lists_and_downloads_prefixed_keys(self):
         client = _FakeS3Client()
@@ -73,11 +135,13 @@ class ArtifactStoreTests(unittest.TestCase):
                 keys = store.list_keys("status/")
                 restored = store.download_file(keys[0], destination)
                 total_bytes = store.total_bytes()
+                download_url = store.download_url("results/job.zip")
                 store.delete_file("checkpoints/job.zip")
             self.assertTrue(restored)
             self.assertEqual(destination.read_bytes(), b"restored")
         self.assertEqual(keys, ["status/job.status.json"])
         self.assertEqual(total_bytes, 123)
+        self.assertIn("research/runs/results/job.zip", download_url)
         self.assertEqual(client.deletes, [{
             "Bucket": "results", "Key": "research/runs/checkpoints/job.zip",
         }])

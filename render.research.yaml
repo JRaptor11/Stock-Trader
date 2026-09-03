@@ -32,3 +32,9 @@ services:
         value: "300"
       - key: RESEARCH_R2_STORAGE_BUDGET_BYTES
         value: "8589934592"
+      - key: RESEARCH_CHECKPOINT_EVERY_SESSIONS
+        value: "100"
+      - key: RESEARCH_CHECKPOINT_EGRESS_BUDGET_BYTES
+        value: "1073741824"
+      - key: RESEARCH_R2_MONTHLY_EGRESS_BUDGET_BYTES
+        value: "5368709120"
