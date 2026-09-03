@@ -355,6 +355,8 @@ def _run_job(job_id: str, job_path: Path) -> None:
             # The final result archive and complete status are now durable, so
             # the rolling recovery bundle is no longer needed or billable.
             runtime.store.delete_file(f"checkpoints/{job_id}.zip")
+            runtime.store.delete_file(f"checkpoints/{job_id}/manifest.json")
+            runtime.store.delete_prefix(f"checkpoints/{job_id}/parts/")
         if runtime.store.durable and runtime.cleanup_local_artifacts:
             _cleanup_local_job_artifacts(job_id, job_path)
         with runtime.queue_lock:

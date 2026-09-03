@@ -9,8 +9,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from research.worker import (
-    _resolved_child, _restore_checkpoint_bundle, _write_checkpoint_bundle,
-    execute_job,
+    _resolved_child, _restore_checkpoint_bundle,
+    _restore_incremental_checkpoint, _write_checkpoint_bundle,
+    _write_incremental_checkpoint_part, _write_json_atomic, execute_job,
 )
 
 
@@ -168,6 +169,93 @@ class ResearchWorkerTests(unittest.TestCase):
             )
             self.assertIsNone(rejected)
             self.assertEqual({}, rejected_spills)
+
+    def test_incremental_checkpoint_restores_concatenated_gzip_segments(self):
+        class MemoryStore:
+            def __init__(self):
+                self.objects = {}
+            def upload_file(self, path, key):
+                self.objects[key] = Path(path).read_bytes()
+            def download_file(self, key, path):
+                if key not in self.objects:
+                    return False
+                Path(path).parent.mkdir(parents=True, exist_ok=True)
+                Path(path).write_bytes(self.objects[key])
+                return True
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            spill = root / "cycles.jsonl.gz"
+            import gzip
+            with gzip.open(spill, "wt", encoding="utf-8") as handle:
+                handle.write('{"cycle":1}\n')
+            identity = {"job_id": "job", "source_sha256": "abc", "engine_schema": 2}
+            part_path = root / "part.zip"
+            part0, offsets = _write_incremental_checkpoint_part(
+                part_path, identity=identity,
+                checkpoint={"completed_timestamps": 10},
+                spills={"cycles": {"path": str(spill), "count": 1}},
+                previous_offsets={}, sequence=0,
+            )
+            store = MemoryStore()
+            store.upload_file(part_path, part0["key"])
+            with gzip.open(spill, "at", encoding="utf-8") as handle:
+                handle.write('{"cycle":2}\n')
+            part1, offsets = _write_incremental_checkpoint_part(
+                part_path, identity=identity,
+                checkpoint={"completed_timestamps": 20},
+                spills={"cycles": {"path": str(spill), "count": 2}},
+                previous_offsets=offsets, sequence=1,
+            )
+            store.upload_file(part_path, part1["key"])
+            chain = {
+                "format_version": 2, "identity": identity,
+                "parts": [part0, part1],
+            }
+            manifest = root / "manifest.json"
+            _write_json_atomic(manifest, chain)
+            store.upload_file(manifest, "checkpoints/job/manifest.json")
+            checkpoint, spills, restored_chain, restored_offsets = (
+                _restore_incremental_checkpoint(
+                    store=store, job_id="job", expected_identity=identity,
+                    results_root=root, spill_root=root / "restored",
+                )
+            )
+            self.assertEqual(20, checkpoint["completed_timestamps"])
+            self.assertEqual(2, spills["cycles"]["count"])
+            self.assertEqual(2, len(restored_chain["parts"]))
+            self.assertEqual(spill.stat().st_size, restored_offsets["cycles"])
+            with gzip.open(spills["cycles"]["path"], "rt", encoding="utf-8") as handle:
+                self.assertEqual([{"cycle": 1}, {"cycle": 2}], [json.loads(x) for x in handle])
+
+    def test_incremental_checkpoint_rejects_missing_part(self):
+        class MissingStore:
+            def __init__(self, manifest):
+                self.manifest = manifest
+            def download_file(self, key, path):
+                if key.endswith("manifest.json"):
+                    Path(path).write_text(json.dumps(self.manifest), encoding="utf-8")
+                    return True
+                return False
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            identity = {"job_id": "job", "source_sha256": "abc"}
+            chain = {
+                "format_version": 2, "identity": identity,
+                "parts": [{
+                    "sequence": 0, "key": "checkpoints/job/parts/000000.zip",
+                    "sha256": "missing", "bytes": 1,
+                }],
+            }
+            checkpoint, spills, restored_chain, offsets = _restore_incremental_checkpoint(
+                store=MissingStore(chain), job_id="job", expected_identity=identity,
+                results_root=root, spill_root=root / "restored",
+            )
+            self.assertIsNone(checkpoint)
+            self.assertEqual({}, spills)
+            self.assertIsNone(restored_chain)
+            self.assertEqual({}, offsets)
 
     def test_known_compatible_engine_fingerprint_can_resume(self):
         from research.worker import _checkpoint_identity_matches

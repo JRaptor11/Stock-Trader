@@ -244,6 +244,132 @@ def _restore_checkpoint_bundle(
         return None, {}
 
 
+def _copy_file_range(source: Path, output, start: int, end: int) -> None:
+    remaining = max(0, end - start)
+    with source.open("rb") as handle:
+        handle.seek(start)
+        while remaining:
+            chunk = handle.read(min(1024 * 1024, remaining))
+            if not chunk:
+                raise EOFError(f"checkpoint spill ended before byte {end}: {source}")
+            output.write(chunk)
+            remaining -= len(chunk)
+
+
+def _write_incremental_checkpoint_part(
+    destination: Path, *, identity: dict, checkpoint: dict, spills: dict,
+    previous_offsets: dict[str, int], sequence: int,
+) -> tuple[dict, dict[str, int]]:
+    """Write only gzip members appended since the prior durable checkpoint."""
+    temporary = destination.with_suffix(destination.suffix + ".tmp")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    next_offsets = {}
+    manifest_spills = {}
+    with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_STORED) as bundle:
+        for name, state in spills.items():
+            source = Path(state["path"])
+            start = max(0, int(previous_offsets.get(name, 0)))
+            end = source.stat().st_size
+            if start > end:
+                raise ValueError(f"checkpoint spill shrank unexpectedly: {name}")
+            archive_name = f"spills/{name}.jsonl.gz.part"
+            if end > start:
+                with bundle.open(archive_name, "w") as output:
+                    _copy_file_range(source, output, start, end)
+            _drop_file_cache(source)
+            next_offsets[name] = end
+            manifest_spills[name] = {
+                "archive_name": archive_name if end > start else None,
+                "count": int(state["count"]), "start": start, "end": end,
+            }
+        with bundle.open("checkpoint.json", "w") as raw_handle:
+            with io.TextIOWrapper(raw_handle, encoding="utf-8") as text_handle:
+                json.dump({
+                    "format_version": 2, "sequence": sequence,
+                    "identity": identity, "checkpoint": checkpoint,
+                    "spills": manifest_spills,
+                }, text_handle, separators=(",", ":"), default=str)
+    temporary.replace(destination)
+    return {
+        "sequence": sequence,
+        "key": f"checkpoints/{identity['job_id']}/parts/{sequence:06d}.zip",
+        "sha256": _sha256_file(destination),
+        "bytes": destination.stat().st_size,
+    }, next_offsets
+
+
+def _restore_incremental_checkpoint(
+    *, store, job_id: str, expected_identity: dict, results_root: Path,
+    spill_root: Path,
+) -> tuple[dict | None, dict, dict | None, dict[str, int]]:
+    pointer_key = f"checkpoints/{job_id}/manifest.json"
+    pointer_path = results_root / f".{job_id}.checkpoint-manifest.json"
+    if not store.download_file(pointer_key, pointer_path):
+        return None, {}, None, {}
+    try:
+        chain = json.loads(pointer_path.read_text(encoding="utf-8"))
+        if int(chain.get("format_version") or 0) != 2:
+            raise ValueError("unsupported incremental checkpoint format")
+        if not _checkpoint_identity_matches(
+            dict(chain.get("identity") or {}), expected_identity
+        ):
+            return None, {}, None, {}
+        parts = list(chain.get("parts") or [])
+        if not parts:
+            raise ValueError("incremental checkpoint has no parts")
+        latest_checkpoint = None
+        latest_counts = {}
+        offsets = {}
+        spill_root.mkdir(parents=True, exist_ok=True)
+        for expected_sequence, part in enumerate(parts):
+            if int(part.get("sequence", -1)) != expected_sequence:
+                raise ValueError("incremental checkpoint sequence is not contiguous")
+            local_part = results_root / f".{job_id}.checkpoint-{expected_sequence:06d}.zip"
+            if not store.download_file(str(part["key"]), local_part):
+                raise FileNotFoundError(f"missing checkpoint part: {part['key']}")
+            if _sha256_file(local_part) != str(part["sha256"]):
+                raise ValueError(f"checkpoint part checksum mismatch: {part['key']}")
+            with zipfile.ZipFile(local_part) as bundle:
+                payload = json.loads(bundle.read("checkpoint.json"))
+                if int(payload.get("sequence", -1)) != expected_sequence:
+                    raise ValueError("checkpoint part payload sequence mismatch")
+                if not _checkpoint_identity_matches(
+                    dict(payload.get("identity") or {}), expected_identity
+                ):
+                    raise ValueError("checkpoint part identity mismatch")
+                for name, state in dict(payload.get("spills") or {}).items():
+                    start, end = int(state["start"]), int(state["end"])
+                    if start != int(offsets.get(name, 0)) or end < start:
+                        raise ValueError(f"checkpoint spill range is not contiguous: {name}")
+                    destination = spill_root / f"{name}.restored.jsonl.gz"
+                    archive_name = state.get("archive_name")
+                    if archive_name:
+                        with bundle.open(archive_name) as source, destination.open("ab") as output:
+                            shutil.copyfileobj(source, output)
+                    elif end != start:
+                        raise ValueError(f"checkpoint spill segment is missing: {name}")
+                    offsets[name] = end
+                    latest_counts[name] = int(state["count"])
+                latest_checkpoint = dict(payload["checkpoint"])
+            local_part.unlink(missing_ok=True)
+        restored = {
+            name: {
+                "path": str(spill_root / f"{name}.restored.jsonl.gz"),
+                "count": count,
+            }
+            for name, count in latest_counts.items()
+        }
+        return latest_checkpoint, restored, chain, offsets
+    except (OSError, KeyError, TypeError, ValueError, zipfile.BadZipFile, json.JSONDecodeError):
+        logging.warning("Ignoring invalid incremental checkpoint for %s", job_id, exc_info=True)
+        shutil.rmtree(spill_root, ignore_errors=True)
+        for path in results_root.glob(f".{job_id}.checkpoint-*.zip"):
+            path.unlink(missing_ok=True)
+        return None, {}, None, {}
+    finally:
+        pointer_path.unlink(missing_ok=True)
+
+
 def _config_from_job(job: dict) -> ReplayConfig:
     supplied = dict(job.get("replay_config") or {})
     allowed = {item.name for item in fields(ReplayConfig)}
@@ -356,12 +482,26 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
         store = artifact_store_from_env()
         checkpoint_key = f"checkpoints/{job_id}.zip"
         checkpoint_bundle = results_root / f".{job_id}.checkpoint.zip"
+        checkpoint_manifest_path = results_root / f".{job_id}.checkpoint-manifest.json"
         identity = _checkpoint_identity(job, source_sha256, replay_config)
-        if store.durable and not checkpoint_bundle.is_file():
-            store.download_file(checkpoint_key, checkpoint_bundle)
-        resumed_checkpoint, resumed_spills = _restore_checkpoint_bundle(
-            checkpoint_bundle, expected_identity=identity, spill_root=spill,
-        )
+        checkpoint_chain = None
+        checkpoint_offsets = {}
+        resumed_checkpoint = None
+        resumed_spills = {}
+        if store.durable:
+            (
+                resumed_checkpoint, resumed_spills,
+                checkpoint_chain, checkpoint_offsets,
+            ) = _restore_incremental_checkpoint(
+                store=store, job_id=job_id, expected_identity=identity,
+                results_root=results_root, spill_root=spill,
+            )
+        if not resumed_checkpoint:
+            if store.durable and not checkpoint_bundle.is_file():
+                store.download_file(checkpoint_key, checkpoint_bundle)
+            resumed_checkpoint, resumed_spills = _restore_checkpoint_bundle(
+                checkpoint_bundle, expected_identity=identity, spill_root=spill,
+            )
         if store.durable:
             # The durable copy is authoritative. Keeping the downloaded bundle
             # beside its extracted spills needlessly duplicates hundreds of
@@ -411,24 +551,53 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
             })
             _write_json_atomic(status_path, latest_status)
 
-        checkpoint_upload_count = 0
+        checkpoint_chain = checkpoint_chain or {
+            "format_version": 2, "identity": identity, "parts": [],
+        }
+        checkpoint_upload_count = int(latest_status.get("checkpoint_upload_count") or 0)
         checkpoint_egress_bytes = int(latest_status.get("checkpoint_egress_bytes") or 0)
+        checkpoint_egress_avoided_bytes = int(
+            latest_status.get("checkpoint_egress_avoided_bytes") or 0
+        )
         checkpoint_egress_budget = max(
             0, int(os.getenv("RESEARCH_CHECKPOINT_EGRESS_BUDGET_BYTES", str(1024**3)))
         )
 
         def persist_durable_checkpoint(checkpoint_payload: dict, spill_payload: dict) -> None:
             nonlocal checkpoint_upload_count, checkpoint_egress_bytes
-            _write_checkpoint_bundle(
-                checkpoint_bundle, identity=identity,
-                checkpoint=checkpoint_payload, spills=spill_payload,
+            nonlocal checkpoint_egress_avoided_bytes
+            nonlocal checkpoint_chain, checkpoint_offsets
+            sequence = len(checkpoint_chain["parts"])
+            part, next_offsets = _write_incremental_checkpoint_part(
+                checkpoint_bundle, identity=identity, checkpoint=checkpoint_payload,
+                spills=spill_payload, previous_offsets=checkpoint_offsets,
+                sequence=sequence,
             )
             checkpoint_size = checkpoint_bundle.stat().st_size
-            upload_allowed = checkpoint_egress_bytes + checkpoint_size <= checkpoint_egress_budget
+            logical_spill_bytes = sum(
+                Path(state["path"]).stat().st_size for state in spill_payload.values()
+            )
+            checkpoint_egress_avoided_bytes += max(
+                0, logical_spill_bytes - checkpoint_size
+            )
+            next_chain = {**checkpoint_chain, "parts": [*checkpoint_chain["parts"], part]}
+            _write_json_atomic(checkpoint_manifest_path, next_chain)
+            transfer_size = checkpoint_size + checkpoint_manifest_path.stat().st_size
+            upload_allowed = checkpoint_egress_bytes + transfer_size <= checkpoint_egress_budget
             if store.durable and upload_allowed:
-                durable_uri = store.upload_file(checkpoint_bundle, checkpoint_key)
+                durable_uri = store.upload_file(checkpoint_bundle, part["key"])
                 _drop_file_cache(checkpoint_bundle)
-                checkpoint_egress_bytes += checkpoint_size
+                try:
+                    store.upload_file(
+                        checkpoint_manifest_path,
+                        f"checkpoints/{job_id}/manifest.json",
+                    )
+                except Exception:
+                    store.delete_file(part["key"])
+                    raise
+                checkpoint_egress_bytes += transfer_size
+                checkpoint_chain = next_chain
+                checkpoint_offsets = next_offsets
             else:
                 durable_uri = None
             checkpoint_upload_count += 1
@@ -443,14 +612,20 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
                 "checkpoint_upload_count": checkpoint_upload_count,
                 "checkpoint_egress_bytes": checkpoint_egress_bytes,
                 "checkpoint_egress_budget_bytes": checkpoint_egress_budget,
+                "checkpoint_incremental_part_bytes": checkpoint_size,
+                "checkpoint_logical_spill_bytes": logical_spill_bytes,
+                "checkpoint_egress_avoided_bytes": checkpoint_egress_avoided_bytes,
                 "checkpoint_upload_skipped_egress_budget": bool(
                     store.durable and not upload_allowed
                 ),
                 "checkpoint_durable_uri": durable_uri,
+                "checkpoint_format_version": 2,
+                "checkpoint_part_count": len(checkpoint_chain["parts"]),
             })
             _write_json_atomic(status_path, latest_status)
             if store.durable:
                 checkpoint_bundle.unlink(missing_ok=True)
+                checkpoint_manifest_path.unlink(missing_ok=True)
 
         included_symbols = (
             set(resolve_universe(replay_config.universe_name) or replay_config.candidate_symbols)
@@ -488,7 +663,7 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
             initial_spills=resumed_spills,
             checkpoint_callback=persist_durable_checkpoint,
             checkpoint_every_sessions=max(
-                1, int(os.getenv("RESEARCH_CHECKPOINT_EVERY_SESSIONS", "100"))
+                1, int(os.getenv("RESEARCH_CHECKPOINT_EVERY_SESSIONS", "10"))
             ),
             release_source_rows=True,
         )

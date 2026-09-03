@@ -31,6 +31,10 @@ class ArtifactStore:
     def delete_file(self, key: str) -> None:
         return None
 
+    def delete_prefix(self, prefix: str) -> None:
+        for key in self.list_keys(prefix):
+            self.delete_file(key)
+
     def total_bytes(self) -> int:
         return 0
 
@@ -197,6 +201,11 @@ class S3ArtifactStore(ArtifactStore):
 
     def delete_file(self, key: str) -> None:
         self._client().delete_object(Bucket=self.bucket, Key=self._normalized_key(key))
+
+    def delete_prefix(self, prefix: str) -> None:
+        client = self._client()
+        for key in self.list_keys(prefix):
+            client.delete_object(Bucket=self.bucket, Key=self._normalized_key(key))
 
     def total_bytes(self) -> int:
         base = self.prefix.strip("/")
