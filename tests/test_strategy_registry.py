@@ -7,6 +7,7 @@ from research.strategy_registry import (
 
 class StrategyRegistryTests(unittest.TestCase):
     def test_registry_includes_all_research_waves(self):
+        self.assertIn("TIER1_ETF_TOURNAMENT", HYPOTHESES)
         self.assertIn("VOL_MANAGED_SPY", HYPOTHESES)
         self.assertIn("SECTOR_ETF_ROTATION", HYPOTHESES)
         self.assertIn("ML_META_ALLOCATOR", HYPOTHESES)

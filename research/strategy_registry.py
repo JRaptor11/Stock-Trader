@@ -15,6 +15,12 @@ UTC = timezone.utc
 REGISTRY_SCHEMA_VERSION = 1
 
 HYPOTHESES = {
+    "TIER1_ETF_TOURNAMENT": {
+        "tier": 1, "status": "active_research",
+        "mechanism": "compare independent volatility, trend, and sector-rotation hypotheses under identical execution assumptions",
+        "data_frequency": "1d", "turnover_expectation": "low_to_medium",
+        "point_in_time_equities_required": False,
+    },
     "CURRENT_INTRADAY_FAMILY": {
         "tier": "legacy_challenger", "status": "active_challenger",
         "mechanism": "intraday cross-sectional price ranking and target rotation",

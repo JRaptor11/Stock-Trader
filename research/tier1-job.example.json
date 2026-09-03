@@ -3,7 +3,7 @@
   "engine": "tier1_etf_daily",
   "bars_csv": "tier1_etf_daily_2016_present_iex.csv",
   "experiment": {
-    "hypothesis_id": "ETF_DUAL_MOMENTUM",
+    "hypothesis_id": "TIER1_ETF_TOURNAMENT",
     "trial_id": "tier1-generation-001",
     "holdout_policy": "freeze before execution"
   },
