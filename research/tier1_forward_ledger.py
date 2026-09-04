@@ -14,9 +14,42 @@ from pathlib import Path
 
 UTC = timezone.utc
 
+FROZEN_STRATEGY_FIELDS = (
+    "initial_cash", "universe_name", "benchmark_symbol", "cash_proxy_symbol",
+    "rebalance_frequency", "volatility_lookback_days",
+    "volatility_target_annualized", "trend_lookback_days",
+    "momentum_lookbacks_days", "sector_holdings", "no_trade_band",
+    "cost_ladder_bps", "primary_cost_bps", "discovery_end_date",
+    "holdout_start_date",
+)
+
 
 def _canonical(value: dict) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _frozen_projection(config: dict) -> dict:
+    return {key: config[key] for key in FROZEN_STRATEGY_FIELDS if key in config}
+
+
+def _validate_schema_compatible_config(
+    *, current: dict, current_hash: str, existing: list[dict], ledger: Path
+) -> str:
+    """Keep a ledger stable across additive manifest-schema expansions."""
+    if not existing or existing[0]["config_sha256"] == current_hash:
+        return current_hash
+    reference_name = existing[0].get("source_archive")
+    reference_path = ledger.parent / reference_name if reference_name else None
+    if not reference_path or not reference_path.is_file():
+        raise ValueError("fixed forward configuration changed")
+    with zipfile.ZipFile(reference_path) as bundle:
+        reference = json.loads(bundle.read("tier1_manifest.json"))["config"]
+    reference_hash = hashlib.sha256(_canonical(reference)).hexdigest()
+    if reference_hash != existing[0]["config_sha256"]:
+        raise ValueError("fixed forward reference archive does not match ledger")
+    if _frozen_projection(reference) != _frozen_projection(current):
+        raise ValueError("fixed forward configuration changed")
+    return reference_hash
 
 
 def append_observation(archive: Path, ledger: Path, forward_start: str,
@@ -33,8 +66,9 @@ def append_observation(archive: Path, ledger: Path, forward_start: str,
     existing = []
     if ledger.is_file():
         existing = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines() if line.strip()]
-    if existing and existing[0]["config_sha256"] != config_hash:
-        raise ValueError("fixed forward configuration changed")
+    config_hash = _validate_schema_compatible_config(
+        current=config, current_hash=config_hash, existing=existing, ledger=ledger
+    )
     latest_date = rows[-1]["date"]
     if existing and latest_date <= existing[-1]["as_of_date"]:
         return {"status": "unchanged", "as_of_date": latest_date, "chain_sha256": existing[-1]["chain_sha256"]}
