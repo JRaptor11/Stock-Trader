@@ -38,6 +38,14 @@ class ResearchUniverseTests(unittest.TestCase):
         self.assertTrue(metadata["constituent_survivorship_avoided"])
         self.assertNotIn("unclassified", metadata["sector_counts"])
 
+    def test_generation_3_adds_predeclared_cross_asset_etfs(self):
+        original = set(resolve_universe("ETF_TIER1_RESEARCH"))
+        expanded = set(resolve_universe("ETF_GENERATION_3"))
+        self.assertTrue(original < expanded)
+        self.assertEqual({"IEF", "TLT", "GLD", "DBC", "EFA", "EEM", "VNQ"}, expanded - original)
+        metadata = universe_metadata("ETF_GENERATION_3", tuple(sorted(expanded)))
+        self.assertNotIn("unclassified", metadata["sector_counts"])
+
     def test_selection_diagnostics_group_by_strategy_symbol_and_sector(self):
         rows = _universe_selection_diagnostics([
             {"strategy_name": "S", "symbol": "AAPL", "selected": True, "raw_target_weight": 0.2},

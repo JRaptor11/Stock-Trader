@@ -45,6 +45,24 @@ HYPOTHESES = {
         "data_frequency": "1d", "turnover_expectation": "medium",
         "point_in_time_equities_required": False,
     },
+    "CROSS_ASSET_DUAL_MOMENTUM": {
+        "tier": 1, "status": "active_research",
+        "mechanism": "combine absolute trend and relative momentum across independently behaving liquid asset classes",
+        "data_frequency": "1d", "turnover_expectation": "low_to_medium",
+        "point_in_time_equities_required": False,
+    },
+    "DIVERSIFIED_TREND": {
+        "tier": 1, "status": "active_research",
+        "mechanism": "equal-weight liquid asset classes with positive long-run trends",
+        "data_frequency": "1d", "turnover_expectation": "low",
+        "point_in_time_equities_required": False,
+    },
+    "REGIME_BALANCED": {
+        "tier": 1, "status": "active_research",
+        "mechanism": "use an equity trend regime to switch between diversified risk and defensive assets",
+        "data_frequency": "1d", "turnover_expectation": "low_to_medium",
+        "point_in_time_equities_required": False,
+    },
     "EQUITY_MOMENTUM_QUALITY": {
         "tier": 2, "status": "blocked_on_data",
         "mechanism": "blend medium-term momentum with point-in-time quality measures",

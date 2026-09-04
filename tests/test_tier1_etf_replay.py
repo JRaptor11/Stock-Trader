@@ -7,7 +7,8 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from research.tier1_etf_replay import (
-    STRATEGIES, Tier1Config, config_from_job, load_daily_bars, run_tier1_job,
+    LEGACY_STRATEGIES, STRATEGIES, Tier1Config, _targets, config_from_job, load_daily_bars,
+    run_tier1_job,
 )
 from research.universes import resolve_universe
 
@@ -29,9 +30,39 @@ def write_bars(path: Path, sessions: int = 280):
 
 
 class Tier1ETFReplayTests(unittest.TestCase):
+    def test_generation_3_strategies_produce_long_only_normalized_targets(self):
+        symbols = resolve_universe("ETF_GENERATION_3")
+        histories = {
+            symbol: [100 + index * (0.03 + offset * 0.001) for index in range(260)]
+            for offset, symbol in enumerate(symbols)
+        }
+        config = Tier1Config(
+            universe_name="ETF_GENERATION_3",
+            momentum_lookbacks_days=(63, 126, 252),
+        )
+        for strategy in (
+            "CROSS_ASSET_DUAL_MOMENTUM", "DIVERSIFIED_TREND", "REGIME_BALANCED"
+        ):
+            targets = _targets(strategy, histories, config)
+            self.assertAlmostEqual(1.0, sum(targets.values()))
+            self.assertTrue(all(weight >= 0 for weight in targets.values()))
+            self.assertTrue(set(targets) <= set(symbols))
+
     def test_config_rejects_unknown_fields(self):
         with self.assertRaisesRegex(ValueError, "unknown tier1_config"):
             config_from_job({"tier1_config": {"future_leak": True}})
+
+    def test_default_roster_preserves_frozen_forward_tournament(self):
+        self.assertEqual(LEGACY_STRATEGIES, Tier1Config().strategy_names)
+        self.assertNotIn("CROSS_ASSET_DUAL_MOMENTUM", Tier1Config().strategy_names)
+
+    def test_config_rejects_invalid_strategy_roster(self):
+        with self.assertRaisesRegex(ValueError, "must not be empty"):
+            Tier1Config(strategy_names=())
+        with self.assertRaisesRegex(ValueError, "unknown Tier 1 strategies"):
+            Tier1Config(strategy_names=("NOT_A_STRATEGY",))
+        with self.assertRaisesRegex(ValueError, "duplicates"):
+            Tier1Config(strategy_names=("SPY_BUY_HOLD", "SPY_BUY_HOLD"))
 
     def test_config_requires_complete_nonoverlapping_holdout(self):
         with self.assertRaisesRegex(ValueError, "must be set together"):
@@ -56,7 +87,7 @@ class Tier1ETFReplayTests(unittest.TestCase):
                 self.assertIn("tier1_cost_ladder_scorecard.csv",names); self.assertIn("tier1_promotion_gates.csv",names)
                 self.assertIn("tier1_period_scorecard.csv",names)
                 self.assertEqual("signal_at_close_fill_at_next_available_open",manifest["execution_semantics"])
-                self.assertEqual(set(STRATEGIES),{row["strategy"] for row in summary["scorecards"]})
+                self.assertEqual(set(LEGACY_STRATEGIES),{row["strategy"] for row in summary["scorecards"]})
                 self.assertEqual("holdout",summary["promotion_period"])
                 self.assertTrue(all(not row["paper_trading_approved"] for row in summary["promotion_gates"]))
 

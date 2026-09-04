@@ -38,6 +38,11 @@ UNIVERSES = {
         "XLC", "XLY", "XLP", "XLE", "XLF", "XLV",
         "XLI", "XLB", "XLRE", "XLK", "XLU",
     ),
+    "ETF_GENERATION_3": (
+        "SPY", "QQQ", "IWM", "SHY", "IEF", "TLT", "GLD", "DBC",
+        "EFA", "EEM", "VNQ", "XLC", "XLY", "XLP", "XLE", "XLF",
+        "XLV", "XLI", "XLB", "XLRE", "XLK", "XLU",
+    ),
 }
 
 ETF_METADATA = {
@@ -47,6 +52,10 @@ ETF_METADATA = {
     "XLE": "energy", "XLF": "financials", "XLV": "healthcare",
     "XLI": "industrials", "XLB": "materials", "XLRE": "real_estate",
     "XLK": "technology", "XLU": "utilities",
+    "IEF": "intermediate_treasury", "TLT": "long_treasury",
+    "GLD": "gold", "DBC": "broad_commodities",
+    "EFA": "developed_ex_us_equity", "EEM": "emerging_market_equity",
+    "VNQ": "real_estate_broad",
 }
 
 SECTORS = {

@@ -18,7 +18,15 @@ from research.universes import resolve_universe, universe_metadata
 
 UTC = timezone.utc
 SECTOR_ETFS = ("XLC", "XLY", "XLP", "XLE", "XLF", "XLV", "XLI", "XLB", "XLRE", "XLK", "XLU")
-STRATEGIES = ("SPY_BUY_HOLD", "VOL_MANAGED_SPY", "ETF_DUAL_MOMENTUM", "SECTOR_ETF_ROTATION")
+LEGACY_STRATEGIES = (
+    "SPY_BUY_HOLD", "VOL_MANAGED_SPY", "ETF_DUAL_MOMENTUM",
+    "SECTOR_ETF_ROTATION",
+)
+STRATEGIES = LEGACY_STRATEGIES + (
+    "CROSS_ASSET_DUAL_MOMENTUM",
+    "DIVERSIFIED_TREND", "REGIME_BALANCED",
+)
+CROSS_ASSET_RISK = ("SPY", "QQQ", "IWM", "TLT", "IEF", "GLD", "DBC", "EFA", "EEM", "VNQ")
 
 
 @dataclass(frozen=True)
@@ -33,17 +41,19 @@ class Tier1Config:
     trend_lookback_days: int = 200
     momentum_lookbacks_days: tuple[int, ...] = (21, 63, 126, 252)
     sector_holdings: int = 3
+    cross_asset_holdings: int = 3
     no_trade_band: float = 0.02
     cost_ladder_bps: tuple[float, ...] = (1.0, 5.0, 10.0, 20.0)
     primary_cost_bps: float = 10.0
     discovery_end_date: str | None = None
     holdout_start_date: str | None = None
+    strategy_names: tuple[str, ...] = LEGACY_STRATEGIES
 
     def __post_init__(self):
         if self.rebalance_frequency not in {"weekly", "monthly"}:
             raise ValueError("rebalance_frequency must be weekly or monthly")
-        if self.initial_cash <= 0 or self.sector_holdings < 1:
-            raise ValueError("initial_cash and sector_holdings must be positive")
+        if self.initial_cash <= 0 or self.sector_holdings < 1 or self.cross_asset_holdings < 1:
+            raise ValueError("initial_cash and holding counts must be positive")
         if not self.momentum_lookbacks_days or min(self.momentum_lookbacks_days) < 2:
             raise ValueError("momentum lookbacks must contain positive multi-day windows")
         resolve_universe(self.universe_name)
@@ -51,6 +61,13 @@ class Tier1Config:
             raise ValueError("discovery_end_date and holdout_start_date must be set together")
         if self.discovery_end_date and self.discovery_end_date >= self.holdout_start_date:
             raise ValueError("discovery_end_date must precede holdout_start_date")
+        if not self.strategy_names:
+            raise ValueError("strategy_names must not be empty")
+        unknown_strategies = set(self.strategy_names) - set(STRATEGIES)
+        if unknown_strategies:
+            raise ValueError(f"unknown Tier 1 strategies: {sorted(unknown_strategies)}")
+        if len(set(self.strategy_names)) != len(self.strategy_names):
+            raise ValueError("strategy_names must not contain duplicates")
 
 
 def config_from_job(job: dict) -> Tier1Config:
@@ -59,7 +76,7 @@ def config_from_job(job: dict) -> Tier1Config:
     unknown = set(supplied) - allowed
     if unknown:
         raise ValueError(f"unknown tier1_config fields: {sorted(unknown)}")
-    for key in ("momentum_lookbacks_days", "cost_ladder_bps"):
+    for key in ("momentum_lookbacks_days", "cost_ladder_bps", "strategy_names"):
         if key in supplied:
             supplied[key] = tuple(supplied[key])
     return Tier1Config(**supplied)
@@ -136,6 +153,38 @@ def _targets(name: str, histories: dict[str, list[float]], config: Tier1Config) 
         eligible = [(score, symbol) for symbol, score in scores.items() if score > 0 and _trend_positive(histories[symbol], config.trend_lookback_days)]
         if not eligible: return {config.cash_proxy_symbol: 1.0}
         symbol = max(eligible)[1]; return {symbol: 1.0}
+    if name in {"CROSS_ASSET_DUAL_MOMENTUM", "DIVERSIFIED_TREND"}:
+        eligible = [
+            (scores[s], s) for s in CROSS_ASSET_RISK
+            if s in scores and scores[s] > 0
+            and _trend_positive(histories[s], config.trend_lookback_days)
+        ]
+        selected = [s for _, s in sorted(eligible, reverse=True)[:config.cross_asset_holdings]]
+        if not selected:
+            return {config.cash_proxy_symbol: 1.0}
+        if name == "CROSS_ASSET_DUAL_MOMENTUM":
+            return {s: 1.0 / len(selected) for s in selected}
+        # Trend breadth deliberately ignores score magnitude after eligibility,
+        # reducing concentration in a single recent winner.
+        trend_eligible = [
+            s for s in CROSS_ASSET_RISK if s in histories
+            and _trend_positive(histories[s], config.trend_lookback_days)
+        ]
+        return {s: 1.0 / len(trend_eligible) for s in trend_eligible} if trend_eligible else {config.cash_proxy_symbol: 1.0}
+    if name == "REGIME_BALANCED":
+        risk_on = _trend_positive(spy, config.trend_lookback_days)
+        if not risk_on:
+            defensive = [s for s in ("IEF", "TLT", "GLD") if s in scores and scores[s] > 0]
+            return ({s: 1.0 / len(defensive) for s in defensive}
+                    if defensive else {config.cash_proxy_symbol: 1.0})
+        eligible = [
+            (scores[s], s) for s in ("SPY", "QQQ", "IWM", "EFA", "EEM", "VNQ")
+            if s in scores and scores[s] > 0
+            and _trend_positive(histories[s], config.trend_lookback_days)
+        ]
+        selected = [s for _, s in sorted(eligible, reverse=True)[:config.cross_asset_holdings]]
+        return ({s: 0.8 / len(selected) for s in selected} | {config.cash_proxy_symbol: 0.2}
+                if selected else {config.cash_proxy_symbol: 1.0})
     eligible = [(scores[s], s) for s in SECTOR_ETFS if s in scores and scores[s] > 0 and _trend_positive(histories[s], config.trend_lookback_days)]
     selected = [symbol for _, symbol in sorted(eligible, reverse=True)[:config.sector_holdings]]
     if not selected: return {config.cash_proxy_symbol: 1.0}
@@ -208,7 +257,7 @@ def run_tier1_job(job: dict, bars_path: Path, archive_path: Path, source_sha256:
     dates,bars=load_daily_bars(bars_path,symbols)
     if len(dates) <= max(config.momentum_lookbacks_days): raise ValueError("insufficient daily history for Tier 1 lookbacks")
     all_daily=[]; all_trades=[]; scorecards=[]; period_scorecards=[]
-    tasks=[(s,c) for c in config.cost_ladder_bps for s in STRATEGIES]
+    tasks=[(s,c) for c in config.cost_ladder_bps for s in config.strategy_names]
     for index,(strategy,cost) in enumerate(tasks,1):
         daily,trades=_simulate(strategy,dates,bars,config,float(cost)); metrics=_metrics(daily,config.initial_cash)
         all_daily.extend(daily); all_trades.extend(trades)
@@ -235,7 +284,7 @@ def run_tier1_job(job: dict, bars_path: Path, archive_path: Path, source_sha256:
         risk_improves=row["max_drawdown"]>benchmark["max_drawdown"] or row["sharpe"]>benchmark["sharpe"]
         promotions.append({"strategy":strategy,"benchmark":"SPY_BUY_HOLD","evaluation_period":promotion_period,"net_excess_return":row["total_return"]-benchmark["total_return"],"return_gate":beats,"risk_gate":risk_improves,"eligible_for_further_validation":beats and risk_improves,"paper_trading_approved":False})
     declaration=validate_experiment_declaration(job.get("experiment"))
-    manifest={"created_at":datetime.now(UTC).isoformat(),"engine":"tier1_etf_daily","source_path":str(bars_path),"source_sha256":source_sha256,"config":asdict(config),"universe":universe_metadata(config.universe_name,tuple(sorted(symbols))),"hypothesis_registry":registry_snapshot(),"experiment":declaration,"execution_semantics":"signal_at_close_fill_at_next_available_open","strategies":list(STRATEGIES),"promotion_policy":"diagnostic gate only; shadow approval requires untouched holdout and stability tests"}
+    manifest={"created_at":datetime.now(UTC).isoformat(),"engine":"tier1_etf_daily","source_path":str(bars_path),"source_sha256":source_sha256,"config":asdict(config),"universe":universe_metadata(config.universe_name,tuple(sorted(symbols))),"hypothesis_registry":registry_snapshot(),"experiment":declaration,"execution_semantics":"signal_at_close_fill_at_next_available_open","strategies":list(config.strategy_names),"promotion_policy":"diagnostic gate only; shadow approval requires untouched holdout and stability tests"}
     archive_path.parent.mkdir(parents=True,exist_ok=True)
     with zipfile.ZipFile(archive_path,"w",zipfile.ZIP_DEFLATED,compresslevel=1) as bundle:
         _write_csv(bundle,"tier1_daily.csv",all_daily); _write_csv(bundle,"tier1_trades.csv",all_trades); _write_csv(bundle,"tier1_cost_ladder_scorecard.csv",scorecards); _write_csv(bundle,"tier1_period_scorecard.csv",period_scorecards); _write_csv(bundle,"tier1_promotion_gates.csv",promotions)

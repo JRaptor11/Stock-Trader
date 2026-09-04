@@ -1,0 +1,35 @@
+{
+  "generation": "tier1-generation-003",
+  "declared_before_results": true,
+  "dataset": "tier1_etf_generation3_2007_present_iex.csv",
+  "discovery_end_date": "2024-09-02",
+  "holdout_start_date": "2024-09-03",
+  "primary_cost_bps": 10.0,
+  "hypothesis_id": "TIER1_ETF_TOURNAMENT",
+  "trial_id": "tier1-generation-003-cross-asset",
+  "config": {
+    "engine": "tier1_etf_daily",
+    "universe_name": "ETF_GENERATION_3",
+    "initial_cash": 100000.0,
+    "rebalance_frequency": "monthly",
+    "volatility_lookback_days": 60,
+    "volatility_target_annualized": 0.12,
+    "trend_lookback_days": 200,
+    "momentum_lookbacks_days": [63, 126, 252],
+    "sector_holdings": 3,
+    "cross_asset_holdings": 3,
+    "no_trade_band": 0.02,
+    "strategy_names": [
+      "SPY_BUY_HOLD",
+      "VOL_MANAGED_SPY",
+      "ETF_DUAL_MOMENTUM",
+      "SECTOR_ETF_ROTATION",
+      "CROSS_ASSET_DUAL_MOMENTUM",
+      "DIVERSIFIED_TREND",
+      "REGIME_BALANCED"
+    ],
+    "cost_ladder_bps": [1.0, 5.0, 10.0, 20.0],
+    "primary_cost_bps": 10.0
+  },
+  "promotion_policy": "No automatic promotion; compare discovery and untouched holdout, costs, drawdown, stability, and SPY."
+}

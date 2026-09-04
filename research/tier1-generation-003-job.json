@@ -1,0 +1,35 @@
+{
+  "job_id": "tier1-generation-003-cross-asset-2026-09-03",
+  "engine": "tier1_etf_daily",
+  "bars_csv": "tier1_etf_generation3_2007_2026-09-03_iex.csv",
+  "experiment": {
+    "hypothesis_id": "TIER1_ETF_TOURNAMENT",
+    "trial_id": "tier1-generation-003-cross-asset",
+    "holdout_policy": "frozen before execution"
+  },
+  "tier1_config": {
+    "initial_cash": 100000.0,
+    "universe_name": "ETF_GENERATION_3",
+    "rebalance_frequency": "monthly",
+    "volatility_lookback_days": 60,
+    "volatility_target_annualized": 0.12,
+    "trend_lookback_days": 200,
+    "momentum_lookbacks_days": [63, 126, 252],
+    "sector_holdings": 3,
+    "cross_asset_holdings": 3,
+    "no_trade_band": 0.02,
+    "cost_ladder_bps": [1.0, 5.0, 10.0, 20.0],
+    "primary_cost_bps": 10.0,
+    "discovery_end_date": "2024-09-02",
+    "holdout_start_date": "2024-09-03",
+    "strategy_names": [
+      "SPY_BUY_HOLD",
+      "VOL_MANAGED_SPY",
+      "ETF_DUAL_MOMENTUM",
+      "SECTOR_ETF_ROTATION",
+      "CROSS_ASSET_DUAL_MOMENTUM",
+      "DIVERSIFIED_TREND",
+      "REGIME_BALANCED"
+    ]
+  }
+}
