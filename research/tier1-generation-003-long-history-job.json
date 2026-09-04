@@ -3,6 +3,7 @@
   "engine": "tier1_etf_daily",
   "bars_csv": "tier1_etf_generation3_2007_2026-09-03_yahoo.csv",
   "data_source": "Yahoo adjusted daily chart endpoint; validation only",
+  "hosted_execution": "superseded_by_tier1-generation-003-long-history-shards.json",
   "experiment": {
     "hypothesis_id": "TIER1_ETF_TOURNAMENT",
     "trial_id": "tier1-generation-003-long-history-cross-asset",

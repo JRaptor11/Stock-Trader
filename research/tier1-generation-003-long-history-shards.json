@@ -1,0 +1,38 @@
+{
+  "cohort": "tier1-generation-003-long-history",
+  "reason": "Hosted shards cap peak memory while preserving benchmark-relative calculations.",
+  "jobs": [
+    {"job_id": "tier1-g3-long-cross-asset-2026-09-03", "candidate": "CROSS_ASSET_DUAL_MOMENTUM"},
+    {"job_id": "tier1-g3-long-diversified-trend-2026-09-03", "candidate": "DIVERSIFIED_TREND"},
+    {"job_id": "tier1-g3-long-regime-balanced-2026-09-03", "candidate": "REGIME_BALANCED"},
+    {"job_id": "tier1-g3-long-vol-managed-2026-09-03", "candidate": "VOL_MANAGED_SPY"}
+  ],
+  "shared_job": {
+    "engine": "tier1_etf_daily",
+    "bars_csv": "tier1_etf_generation3_2007_2026-09-03_yahoo.csv",
+    "data_source": "Yahoo adjusted daily chart endpoint; validation only",
+    "tier1_config": {
+      "initial_cash": 100000.0,
+      "universe_name": "ETF_CROSS_ASSET_LONG_HISTORY",
+      "rebalance_frequency": "monthly",
+      "volatility_lookback_days": 60,
+      "volatility_target_annualized": 0.12,
+      "trend_lookback_days": 200,
+      "momentum_lookbacks_days": [63, 126, 252],
+      "sector_holdings": 3,
+      "cross_asset_holdings": 3,
+      "no_trade_band": 0.02,
+      "cost_ladder_bps": [1.0, 5.0, 10.0, 20.0],
+      "primary_cost_bps": 10.0,
+      "discovery_end_date": "2024-09-02",
+      "holdout_start_date": "2024-09-03",
+      "required_common_start_date": "2007-01-03",
+      "minimum_common_coverage_pct": 99.0,
+      "minimum_scored_sessions": 4000,
+      "rolling_window_sessions": 756,
+      "walk_forward_train_sessions": 1260,
+      "walk_forward_test_sessions": 252,
+      "walk_forward_step_sessions": 252
+    }
+  }
+}
