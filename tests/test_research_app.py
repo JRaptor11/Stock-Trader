@@ -115,7 +115,10 @@ class ResearchAppTests(unittest.TestCase):
                     },
                 })
                 self.assertEqual(submitted.status_code, 202, submitted.text)
-                deadline = time.monotonic() + 10
+                # Windows CI and instrumented replay builds can spend more than
+                # ten seconds finalizing diagnostics. Never tear down the test
+                # directory while the subprocess still owns spill files.
+                deadline = time.monotonic() + 60
                 payload = {}
                 while time.monotonic() < deadline:
                     response = client.get("/api/jobs/api-smoke", headers=headers)
@@ -128,6 +131,10 @@ class ResearchAppTests(unittest.TestCase):
                 downloaded = client.get("/api/jobs/api-smoke/download", headers=headers)
                 self.assertEqual(downloaded.status_code, 200)
                 self.assertTrue(downloaded.content.startswith(b"PK"))
+                coordinator_deadline=time.monotonic()+10
+                while runtime.active_job_id is not None and time.monotonic()<coordinator_deadline:
+                    time.sleep(.05)
+                self.assertIsNone(runtime.active_job_id,"coordinator did not finish final status handling")
             runtime.active_job_id = None
 
     def test_research_app_refuses_execution_enabled(self):

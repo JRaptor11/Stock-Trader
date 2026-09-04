@@ -31,6 +31,7 @@ from research.historical_replay import (
 from research.universes import resolve_universe
 from research.strategy_registry import validate_experiment_declaration
 from research.tier1_etf_replay import run_tier1_job
+from research.intraday_strategy_replay import run_tournament as run_intraday_tournament
 
 
 UTC = timezone.utc
@@ -142,9 +143,18 @@ def _sha256_file(path: Path) -> str:
 
 def _write_json_atomic(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    temporary.replace(path)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        for attempt in range(50):
+            try:
+                temporary.replace(path)
+                break
+            except PermissionError:
+                if attempt==49: raise
+                time.sleep(min(.01*(attempt+1),.1))
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _checkpoint_identity(job: dict, source_sha256: str, replay_config: ReplayConfig) -> dict:
@@ -384,6 +394,26 @@ def _config_from_job(job: dict) -> ReplayConfig:
     return ReplayConfig(**supplied)
 
 
+def _intraday_checkpoint_identity(job: dict, dataset_hashes: dict) -> dict:
+    repository_root=Path(__file__).resolve().parents[1]; digest=hashlib.sha256()
+    for relative in ("research/intraday_strategy_replay.py","research/intraday_validation.py","research/execution_model.py","research/portfolio_accounting.py","research/market_events.py","research/point_in_time_fundamentals.py"):
+        digest.update(relative.encode("utf-8")); digest.update((repository_root/relative).read_bytes())
+    public_job={key:value for key,value in job.items() if not str(key).startswith("_")}
+    return {"format_version":1,"job_id":str(job["job_id"]),"dataset_hashes":dataset_hashes,"job_sha256":hashlib.sha256(json.dumps(public_job,sort_keys=True,default=list).encode("utf-8")).hexdigest(),"engine_sha256":digest.hexdigest()}
+
+
+def _load_intraday_checkpoint(path: Path, expected_identity: dict) -> dict | None:
+    if not path.is_file(): return None
+    try:
+        payload=json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("identity")!=expected_identity: return None
+        checkpoint=dict(payload["checkpoint"])
+        if checkpoint.get("format_version")!=1 or not isinstance(checkpoint.get("stability_rows"),list): return None
+        return checkpoint
+    except (OSError,KeyError,TypeError,ValueError,json.JSONDecodeError):
+        logging.warning("Ignoring invalid intraday checkpoint %s",path,exc_info=True); return None
+
+
 def execute_job(job_path: str | Path, data_root: str | Path, results_root: str | Path) -> Path:
     validate_service_startup(ServiceMode.HISTORICAL_RESEARCH)
     job_path = Path(job_path).resolve()
@@ -405,6 +435,7 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
     started_at = datetime.now(UTC).isoformat()
     status_path = results_root / f"{job_id}.status.json"
     staging = results_root / f".{job_id}.{uuid.uuid4().hex}.results.zip.tmp"
+    intraday_spill = results_root / f".{staging.name.lstrip('.')}.intraday-spill"
     spill = results_root / f".{job_id}.spill"
     if spill.exists():
         shutil.rmtree(spill)
@@ -474,6 +505,48 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
             ):
                 completed_status.pop(stale_key, None)
             _write_json_atomic(status_path, completed_status)
+            return final_archive
+        if engine == "intraday_strategy_isolation":
+            update_progress({"stage": "intraday_strategy_isolation"})
+            intraday_job=dict(job)
+            dataset_hashes={"bars":source_sha256}
+            if job.get("security_master_csv"):
+                master_path=_resolved_child(Path(data_root),job["security_master_csv"])
+                if not master_path.is_file(): raise FileNotFoundError(f"security master file does not exist: {master_path}")
+                intraday_job["_security_master_path"]=str(master_path)
+                dataset_hashes["security_master"]=_sha256_file(master_path)
+            if job.get("market_events_csv"):
+                events_path=_resolved_child(Path(data_root),job["market_events_csv"])
+                if not events_path.is_file(): raise FileNotFoundError(f"market events file does not exist: {events_path}")
+                intraday_job["_market_events_path"]=str(events_path)
+                dataset_hashes["market_events"]=_sha256_file(events_path)
+            if job.get("fundamentals_csv"):
+                fundamentals_path=_resolved_child(Path(data_root),job["fundamentals_csv"])
+                if not fundamentals_path.is_file(): raise FileNotFoundError(f"fundamentals file does not exist: {fundamentals_path}")
+                intraday_job["_fundamentals_path"]=str(fundamentals_path)
+                dataset_hashes["fundamentals"]=_sha256_file(fundamentals_path)
+            store=artifact_store_from_env(); checkpoint_key=f"checkpoints/{job_id}-intraday.json"; checkpoint_path=results_root/f".{job_id}.intraday-checkpoint.json"; identity=_intraday_checkpoint_identity(job,dataset_hashes)
+            if store.durable and not checkpoint_path.is_file(): store.download_file(checkpoint_key,checkpoint_path)
+            initial_checkpoint=_load_intraday_checkpoint(checkpoint_path,identity)
+            if initial_checkpoint: update_progress({"resumed_from_durable_checkpoint":True,"checkpoint_completed_variants":int(initial_checkpoint.get("completed_variants") or 0)})
+            def persist_intraday_checkpoint(checkpoint):
+                _write_json_atomic(checkpoint_path,{"identity":identity,"checkpoint":checkpoint})
+                durable_uri=None
+                if store.durable:
+                    try: durable_uri=store.upload_file(checkpoint_path,checkpoint_key)
+                    except Exception: logging.exception("Could not persist intraday checkpoint for %s",job_id)
+                update_progress({"checkpoint_at":datetime.now(UTC).isoformat(),"checkpoint_completed_variants":int(checkpoint.get("completed_variants") or 0),"checkpoint_total_variants":int(checkpoint.get("total_variants") or 0),"checkpoint_bytes":checkpoint_path.stat().st_size,"checkpoint_durable_uri":durable_uri})
+            run_intraday_tournament(intraday_job,bars_path,staging,source_sha256,progress_callback=update_progress,initial_checkpoint=initial_checkpoint,checkpoint_callback=persist_intraday_checkpoint)
+            staging.replace(final_archive)
+            completed_status = {
+                **latest_status, "job_id": job_id, "status": "complete",
+                "started_at": started_at, "completed_at": datetime.now(UTC).isoformat(),
+                "archive": str(final_archive), "percent_complete": 100.0,
+                "research_engine": engine,
+            }
+            _write_json_atomic(status_path, completed_status)
+            if store.durable: store.delete_file(checkpoint_key)
+            checkpoint_path.unlink(missing_ok=True)
             return final_archive
         if engine != "intraday_replay":
             raise ValueError(f"unknown research engine: {engine}")
@@ -717,6 +790,8 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
         # durably verified; until then it remains a restart recovery point.
         return final_archive
     except Exception as exc:
+        if intraday_spill.exists():
+            shutil.rmtree(intraday_spill,ignore_errors=True)
         if spill.exists():
             shutil.rmtree(spill)
         if staging.exists():

@@ -4,6 +4,7 @@ import os
 import tempfile
 import unittest
 import zipfile
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -12,10 +13,33 @@ from research.worker import (
     _resolved_child, _restore_checkpoint_bundle,
     _restore_incremental_checkpoint, _write_checkpoint_bundle,
     _write_incremental_checkpoint_part, _write_json_atomic, execute_job,
+    _load_intraday_checkpoint,
 )
 
 
 class ResearchWorkerTests(unittest.TestCase):
+    def test_atomic_json_writes_do_not_share_temporary_filename(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/"status.json"; barrier=threading.Barrier(3); errors=[]
+            def write(value):
+                try: barrier.wait(); _write_json_atomic(path,{"value":value})
+                except Exception as exc: errors.append(exc)
+            threads=[threading.Thread(target=write,args=(value,)) for value in (1,2)]
+            for thread in threads: thread.start()
+            barrier.wait()
+            for thread in threads: thread.join()
+            self.assertEqual([],errors)
+            self.assertIn(json.loads(path.read_text(encoding="utf-8"))["value"],(1,2))
+            self.assertEqual([],list(Path(directory).glob("*.tmp")))
+
+    def test_intraday_checkpoint_requires_exact_identity_and_valid_payload(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/"checkpoint.json"; identity={"job_id":"job","engine_sha256":"abc"}
+            path.write_text(json.dumps({"identity":identity,"checkpoint":{"format_version":1,"stability_rows":[],"completed_variants":0}}),encoding="utf-8")
+            self.assertIsNotNone(_load_intraday_checkpoint(path,identity))
+            self.assertIsNone(_load_intraday_checkpoint(path,{"job_id":"other"}))
+            path.write_text("not-json",encoding="utf-8")
+            self.assertIsNone(_load_intraday_checkpoint(path,identity))
     def _write_bars(self, path: Path) -> None:
         fields = ["timestamp", "symbol", "open", "high", "low", "close", "volume", "trade_count", "vwap"]
         start = datetime(2026, 1, 5, 14, 30, tzinfo=timezone.utc)

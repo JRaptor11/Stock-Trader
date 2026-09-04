@@ -129,6 +129,12 @@ HYPOTHESES = {
         "data_frequency": "intraday", "turnover_expectation": "very_high",
         "point_in_time_equities_required": False,
     },
+    "INTRADAY_STRATEGY_ISOLATION": {
+        "tier": 2, "status": "active_research",
+        "mechanism": "compare opening-range breakout, relative-volume continuation, and VWAP mean reversion independently",
+        "data_frequency": "5m", "turnover_expectation": "medium_to_high",
+        "point_in_time_equities_required": True,
+    },
     "ML_META_ALLOCATOR": {
         "tier": 3, "status": "blocked_on_validated_inputs",
         "mechanism": "combine independently validated strategy sleeves out of sample",

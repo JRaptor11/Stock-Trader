@@ -142,7 +142,13 @@ def _status(job_id: str) -> dict:
     path = runtime.results_root / f"{job_id}.status.json"
     if not path.is_file():
         raise HTTPException(status_code=404, detail="job not found")
-    return json.loads(path.read_text(encoding="utf-8"))
+    for attempt in range(50):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (PermissionError,json.JSONDecodeError):
+            if attempt==49: raise
+            time.sleep(min(.01*(attempt+1),.1))
+    raise RuntimeError("unreachable status read state")
 
 
 def _sha256_file(path: Path) -> str:
@@ -357,6 +363,7 @@ def _run_job(job_id: str, job_path: Path) -> None:
             runtime.store.delete_file(f"checkpoints/{job_id}.zip")
             runtime.store.delete_file(f"checkpoints/{job_id}/manifest.json")
             runtime.store.delete_prefix(f"checkpoints/{job_id}/parts/")
+            runtime.store.delete_file(f"checkpoints/{job_id}-intraday.json")
         if runtime.store.durable and runtime.cleanup_local_artifacts:
             _cleanup_local_job_artifacts(job_id, job_path)
         with runtime.queue_lock:
@@ -402,9 +409,9 @@ def _cleanup_local_job_artifacts(job_id: str, job_path: Path) -> None:
     """Keep Render's ephemeral filesystem as a cache; R2 remains authoritative."""
     try:
         job = json.loads(job_path.read_text(encoding="utf-8")) if job_path.is_file() else {}
-        bars_csv = str(job.get("bars_csv") or "")
-        if bars_csv:
-            dataset = runtime.data_root / Path(bars_csv).name
+        for dataset_name in (str(job.get("bars_csv") or ""),str(job.get("security_master_csv") or ""),str(job.get("market_events_csv") or ""),str(job.get("fundamentals_csv") or "")):
+            if not dataset_name: continue
+            dataset = runtime.data_root / Path(dataset_name).name
             if dataset.is_file():
                 dataset.unlink()
         output = runtime.results_root / job_id
@@ -441,6 +448,12 @@ def _queued_job_count() -> int:
 def _launch_job(job_id: str, job_path: Path) -> bool:
     job = json.loads(job_path.read_text(encoding="utf-8"))
     if not _restore_dataset(str(job.get("bars_csv") or "")):
+        return False
+    if job.get("security_master_csv") and not _restore_dataset(str(job["security_master_csv"])):
+        return False
+    if job.get("market_events_csv") and not _restore_dataset(str(job["market_events_csv"])):
+        return False
+    if job.get("fundamentals_csv") and not _restore_dataset(str(job["fundamentals_csv"])):
         return False
     continuation_of = str(job.get("continuation_of") or "").strip()
     if continuation_of:
@@ -571,9 +584,21 @@ def _recover_interrupted_job() -> None:
 async def submit_job(job: dict) -> dict:
     job_id = _safe_name(str(job.get("job_id") or ""))
     bars_csv = _safe_name(str(job.get("bars_csv") or ""), ".csv")
+    security_master_csv=_safe_name(str(job["security_master_csv"]),".csv") if job.get("security_master_csv") else None
+    market_events_csv=_safe_name(str(job["market_events_csv"]),".csv") if job.get("market_events_csv") else None
+    fundamentals_csv=_safe_name(str(job["fundamentals_csv"]),".csv") if job.get("fundamentals_csv") else None
     job = {**job, "job_id": job_id, "bars_csv": bars_csv}
+    if security_master_csv: job["security_master_csv"]=security_master_csv
+    if market_events_csv: job["market_events_csv"]=market_events_csv
+    if fundamentals_csv: job["fundamentals_csv"]=fundamentals_csv
     if not _restore_dataset(bars_csv):
         raise HTTPException(status_code=400, detail="dataset has not been uploaded")
+    if security_master_csv and not _restore_dataset(security_master_csv):
+        raise HTTPException(status_code=400, detail="security master dataset has not been uploaded")
+    if market_events_csv and not _restore_dataset(market_events_csv):
+        raise HTTPException(status_code=400, detail="market events dataset has not been uploaded")
+    if fundamentals_csv and not _restore_dataset(fundamentals_csv):
+        raise HTTPException(status_code=400, detail="fundamentals dataset has not been uploaded")
     async with runtime.lock:
         if _queued_job_count() >= runtime.maximum_queued_jobs:
             raise HTTPException(status_code=429, detail="research queue is full")
@@ -586,7 +611,9 @@ async def submit_job(job: dict) -> dict:
         status_path = runtime.results_root / f"{job_id}.status.json"
         _write_json_atomic(status_path, {
             "job_id": job_id, "status": "queued", "queued_at": queued_at,
-            "bars_csv": bars_csv,
+            "bars_csv": bars_csv, "security_master_csv": security_master_csv,
+            "market_events_csv": market_events_csv,
+            "fundamentals_csv": fundamentals_csv,
         })
         runtime.store.upload_file(status_path, f"status/{status_path.name}")
         _start_next_job()

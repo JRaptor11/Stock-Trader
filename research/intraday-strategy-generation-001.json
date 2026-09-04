@@ -1,0 +1,31 @@
+{
+  "generation": "intraday-strategy-generation-001",
+  "declared_before_results": true,
+  "status": "research_only",
+  "hypothesis_id": "INTRADAY_STRATEGY_ISOLATION",
+  "strategies": ["OPENING_RANGE_BREAKOUT", "RELATIVE_VOLUME_BREAKOUT", "VWAP_MEAN_REVERSION"],
+  "policy": {
+    "strategies_combined": false,
+    "completed_bar_signals_only": true,
+    "entry": "next bar open",
+    "same_bar_stop_target": "stop first",
+    "minimum_baseline_sessions": 10,
+    "primary_cost_bps_per_side": 10,
+    "assumed_spread_bps": 10,
+    "maximum_bar_participation": 0.01,
+    "matched_control": "same session and entry bar, nearest entry price, non-signal symbol",
+    "walk_forward": "252-session expanding train, 63-session test, 63-session step",
+    "selection_policy": "no strategy selection or parameter tuning inside this generation",
+    "paper_trading_approved": false
+  },
+  "data_gates": {
+    "security_master_schema": "research/security-master-schema.md",
+    "market_events_schema": "research/market-events-schema.md",
+    "point_in_time_fundamentals_schema": "research/point-in-time-fundamentals-schema.md",
+    "complete_observed_security_master_coverage_required": true,
+    "complete_halt_luld_corporate_action_and_delisting_coverage_required": true,
+    "point_in_time_market_cap_and_float_required_for_promotion": true,
+    "survivorship_safe_universe_required_for_promotion": true,
+    "halt_and_luld_data_required_for_live_candidate": true
+  }
+}
