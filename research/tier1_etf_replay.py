@@ -14,6 +14,7 @@ from pathlib import Path
 
 from research.strategy_registry import registry_snapshot, validate_experiment_declaration
 from research.universes import resolve_universe, universe_metadata
+from research.walk_forward import build_walk_forward_folds
 
 
 UTC = timezone.utc
@@ -48,6 +49,13 @@ class Tier1Config:
     discovery_end_date: str | None = None
     holdout_start_date: str | None = None
     strategy_names: tuple[str, ...] = LEGACY_STRATEGIES
+    required_common_start_date: str | None = None
+    minimum_common_coverage_pct: float = 99.0
+    minimum_scored_sessions: int = 1
+    rolling_window_sessions: int = 756
+    walk_forward_train_sessions: int = 504
+    walk_forward_test_sessions: int = 252
+    walk_forward_step_sessions: int = 252
 
     def __post_init__(self):
         if self.rebalance_frequency not in {"weekly", "monthly"}:
@@ -68,6 +76,13 @@ class Tier1Config:
             raise ValueError(f"unknown Tier 1 strategies: {sorted(unknown_strategies)}")
         if len(set(self.strategy_names)) != len(self.strategy_names):
             raise ValueError("strategy_names must not contain duplicates")
+        if not 0 < self.minimum_common_coverage_pct <= 100:
+            raise ValueError("minimum_common_coverage_pct must be above zero and at most 100")
+        for name in ("minimum_scored_sessions", "rolling_window_sessions",
+                     "walk_forward_train_sessions", "walk_forward_test_sessions",
+                     "walk_forward_step_sessions"):
+            if getattr(self, name) < 1:
+                raise ValueError(f"{name} must be positive")
 
 
 def config_from_job(job: dict) -> Tier1Config:
@@ -117,6 +132,62 @@ def load_daily_bars(path: str | Path, symbols: set[str]) -> tuple[list[str], dic
     for (day, symbol), values in aggregated.items():
         data[day][symbol] = {key: values[key] for key in ("open", "high", "low", "close")}
     return sorted(data), dict(data)
+
+
+def _validated_calendar(dates: list[str], bars: dict, symbols: tuple[str, ...],
+                        config: Tier1Config) -> tuple[list[str], dict]:
+    """Build a continuous common calendar and reject misleading coverage."""
+    coverage = []
+    for symbol in symbols:
+        available = [day for day in dates if symbol in bars[day]]
+        if not available:
+            raise ValueError(f"historical dataset has no bars for {symbol}")
+        coverage.append({"symbol": symbol, "first": available[0],
+                         "last": available[-1], "rows": len(available)})
+    common_start = max(row["first"] for row in coverage)
+    common_end = min(row["last"] for row in coverage)
+    if common_start > common_end:
+        raise ValueError("historical symbols have no overlapping date range")
+    if config.required_common_start_date and common_start > config.required_common_start_date:
+        raise ValueError(
+            "historical common coverage begins later than required: "
+            f"{common_start} > {config.required_common_start_date}"
+        )
+    benchmark_dates = [
+        day for day in dates if common_start <= day <= common_end
+        and config.benchmark_symbol in bars[day]
+    ]
+    common_dates = [day for day in benchmark_dates if all(symbol in bars[day] for symbol in symbols)]
+    common_pct = len(common_dates) / len(benchmark_dates) * 100 if benchmark_dates else 0.0
+    if common_pct < config.minimum_common_coverage_pct:
+        raise ValueError(
+            "historical common-session coverage is below the configured minimum: "
+            f"{common_pct:.4f}% < {config.minimum_common_coverage_pct:.4f}%"
+        )
+    warmup = max(
+        max(config.momentum_lookbacks_days) + 1,
+        config.trend_lookback_days,
+        config.volatility_lookback_days + 1,
+    )
+    if len(common_dates) <= warmup:
+        raise ValueError("insufficient common daily history after warm-up")
+    scored_dates = common_dates[warmup:]
+    if len(scored_dates) < config.minimum_scored_sessions:
+        raise ValueError(
+            f"only {len(scored_dates)} scored sessions remain after the {warmup}-session warm-up; "
+            f"minimum is {config.minimum_scored_sessions}"
+        )
+    report = {
+        "raw_start": dates[0], "raw_end": dates[-1],
+        "common_start": common_start, "common_end": common_end,
+        "common_session_count": len(common_dates),
+        "benchmark_session_count": len(benchmark_dates),
+        "common_coverage_pct": round(common_pct, 4),
+        "warmup_sessions": warmup, "scored_start": scored_dates[0],
+        "scored_end": scored_dates[-1], "scored_sessions": len(scored_dates),
+        "symbols": coverage,
+    }
+    return common_dates, report
 
 
 def _return(closes: list[float], days: int) -> float | None:
@@ -221,10 +292,11 @@ def _period_metrics(daily: list[dict], initial: float, start: str | None, end: s
     return {**_metrics(selected, starting_equity), "session_count": len(selected)}
 
 
-def _simulate(name: str, dates: list[str], bars: dict, config: Tier1Config, cost_bps: float) -> tuple[list[dict], list[dict]]:
+def _simulate(name: str, dates: list[str], bars: dict, config: Tier1Config,
+              cost_bps: float, scored_start: str) -> tuple[list[dict], list[dict]]:
     symbols = resolve_universe(config.universe_name); histories = {s: [] for s in symbols}
     cash = config.initial_cash; shares: dict[str, float] = {}; pending = None; daily=[]; trades=[]; previous_day=None
-    for day in dates:
+    for index, day in enumerate(dates):
         today=bars[day]
         if pending:
             equity_open = cash + sum(shares.get(s,0)*today.get(s,{"open":0})["open"] for s in shares)
@@ -240,10 +312,89 @@ def _simulate(name: str, dates: list[str], bars: dict, config: Tier1Config, cost
         for symbol in symbols:
             if symbol in today: histories[symbol].append(today[symbol]["close"])
         equity=cash+sum(quantity*today.get(symbol,{"close":0})["close"] for symbol,quantity in shares.items())
-        daily.append({"date":day,"strategy":name,"cost_bps":cost_bps,"equity":equity,"cash":cash,"positions":len(shares)})
-        if _rebalance_day(day,previous_day,config.rebalance_frequency): pending=_targets(name,histories,config)
-        previous_day=day
+        if day >= scored_start:
+            daily.append({"date":day,"strategy":name,"cost_bps":cost_bps,"equity":equity,"cash":cash,"positions":len(shares)})
+            if _rebalance_day(day,previous_day,config.rebalance_frequency):
+                pending=_targets(name,histories,config)
+            previous_day=day
+        elif index + 1 < len(dates) and dates[index + 1] == scored_start:
+            # Compute the first target after the final warm-up close so the
+            # first scored session receives the same next-open semantics.
+            pending=_targets(name,histories,config)
     return daily,trades
+
+
+def _rolling_scorecards(daily: list[dict], config: Tier1Config) -> list[dict]:
+    selected = [row for row in daily if row["cost_bps"] == config.primary_cost_bps]
+    by_strategy = {name: [r for r in selected if r["strategy"] == name]
+                   for name in config.strategy_names}
+    benchmark = by_strategy["SPY_BUY_HOLD"]
+    dates = [row["date"] for row in benchmark]
+    rows = []
+    window, step = config.rolling_window_sessions, 63
+    for end in range(window, len(dates) + 1, step):
+        start_day, end_day = dates[end-window], dates[end-1]
+        benchmark_metrics = _period_metrics(
+            benchmark, config.initial_cash, start_day, end_day
+        )
+        for strategy, values in by_strategy.items():
+            metrics = _period_metrics(values, config.initial_cash, start_day, end_day)
+            rows.append({
+                "strategy": strategy, "cost_bps": config.primary_cost_bps,
+                "window_sessions": window, "start": start_day, "end": end_day,
+                **metrics,
+                "benchmark_return": benchmark_metrics["total_return"],
+                "excess_return": metrics["total_return"] - benchmark_metrics["total_return"],
+                "beat_benchmark": metrics["total_return"] > benchmark_metrics["total_return"],
+            })
+    return rows
+
+
+def _walk_forward_scorecards(daily: list[dict], config: Tier1Config) -> list[dict]:
+    selected = [row for row in daily if row["cost_bps"] == config.primary_cost_bps]
+    by_strategy = {name: [r for r in selected if r["strategy"] == name]
+                   for name in config.strategy_names}
+    benchmark = by_strategy["SPY_BUY_HOLD"]
+    dates = [row["date"] for row in benchmark]
+    folds = build_walk_forward_folds(
+        dates, min_train_sessions=config.walk_forward_train_sessions,
+        test_sessions=config.walk_forward_test_sessions,
+        step_sessions=config.walk_forward_step_sessions, expanding=True,
+    )
+    rows = []
+    for fold in folds:
+        train_metrics = {}
+        for strategy, values in by_strategy.items():
+            train_metrics[strategy] = _period_metrics(
+                values, config.initial_cash, fold.train_start, fold.train_end
+            )
+        ranked = sorted(
+            config.strategy_names,
+            key=lambda strategy: (
+                train_metrics[strategy]["sharpe"],
+                train_metrics[strategy]["total_return"],
+            ), reverse=True,
+        )
+        benchmark_test = _period_metrics(
+            benchmark, config.initial_cash, fold.test_start, fold.test_end
+        )
+        for strategy, values in by_strategy.items():
+            test = _period_metrics(values, config.initial_cash, fold.test_start, fold.test_end)
+            train = train_metrics[strategy]
+            rows.append({
+                "fold": fold.fold, "strategy": strategy,
+                "train_start": fold.train_start, "train_end": fold.train_end,
+                "test_start": fold.test_start, "test_end": fold.test_end,
+                "train_rank": ranked.index(strategy) + 1,
+                "selected_on_train": strategy == ranked[0],
+                "train_return": train["total_return"], "train_sharpe": train["sharpe"],
+                "test_return": test["total_return"], "test_sharpe": test["sharpe"],
+                "test_max_drawdown": test["max_drawdown"],
+                "benchmark_test_return": benchmark_test["total_return"],
+                "test_excess_return": test["total_return"] - benchmark_test["total_return"],
+                "beat_benchmark_in_test": test["total_return"] > benchmark_test["total_return"],
+            })
+    return rows
 
 
 def _write_csv(bundle, name: str, rows: list[dict]):
@@ -253,13 +404,14 @@ def _write_csv(bundle, name: str, rows: list[dict]):
 
 
 def run_tier1_job(job: dict, bars_path: Path, archive_path: Path, source_sha256: str, progress_callback=None) -> Path:
-    config=config_from_job(job); symbols=set(resolve_universe(config.universe_name))
-    dates,bars=load_daily_bars(bars_path,symbols)
-    if len(dates) <= max(config.momentum_lookbacks_days): raise ValueError("insufficient daily history for Tier 1 lookbacks")
+    config=config_from_job(job); universe=resolve_universe(config.universe_name); symbols=set(universe)
+    raw_dates,bars=load_daily_bars(bars_path,symbols)
+    dates,coverage=_validated_calendar(raw_dates,bars,universe,config)
+    scored_start=coverage["scored_start"]
     all_daily=[]; all_trades=[]; scorecards=[]; period_scorecards=[]
     tasks=[(s,c) for c in config.cost_ladder_bps for s in config.strategy_names]
     for index,(strategy,cost) in enumerate(tasks,1):
-        daily,trades=_simulate(strategy,dates,bars,config,float(cost)); metrics=_metrics(daily,config.initial_cash)
+        daily,trades=_simulate(strategy,dates,bars,config,float(cost),scored_start); metrics=_metrics(daily,config.initial_cash)
         all_daily.extend(daily); all_trades.extend(trades)
         scorecards.append({"strategy":strategy,"cost_bps":float(cost),**metrics,"turnover":sum(abs(r["notional"]) for r in trades)/config.initial_cash,"trade_count":len(trades)})
         periods = [("full", None, None)]
@@ -283,10 +435,12 @@ def run_tier1_job(job: dict, bars_path: Path, archive_path: Path, source_sha256:
         beats=row["total_return"]>benchmark["total_return"]
         risk_improves=row["max_drawdown"]>benchmark["max_drawdown"] or row["sharpe"]>benchmark["sharpe"]
         promotions.append({"strategy":strategy,"benchmark":"SPY_BUY_HOLD","evaluation_period":promotion_period,"net_excess_return":row["total_return"]-benchmark["total_return"],"return_gate":beats,"risk_gate":risk_improves,"eligible_for_further_validation":beats and risk_improves,"paper_trading_approved":False})
+    rolling_scorecards=_rolling_scorecards(all_daily,config)
+    walk_forward_scorecards=_walk_forward_scorecards(all_daily,config)
     declaration=validate_experiment_declaration(job.get("experiment"))
-    manifest={"created_at":datetime.now(UTC).isoformat(),"engine":"tier1_etf_daily","source_path":str(bars_path),"source_sha256":source_sha256,"config":asdict(config),"universe":universe_metadata(config.universe_name,tuple(sorted(symbols))),"hypothesis_registry":registry_snapshot(),"experiment":declaration,"execution_semantics":"signal_at_close_fill_at_next_available_open","strategies":list(config.strategy_names),"promotion_policy":"diagnostic gate only; shadow approval requires untouched holdout and stability tests"}
+    manifest={"created_at":datetime.now(UTC).isoformat(),"engine":"tier1_etf_daily","source_path":str(bars_path),"source_sha256":source_sha256,"config":asdict(config),"coverage":coverage,"universe":universe_metadata(config.universe_name,tuple(sorted(symbols))),"hypothesis_registry":registry_snapshot(),"experiment":declaration,"execution_semantics":"warm-up excluded; signal at close and fill at next available open on validated common sessions","strategies":list(config.strategy_names),"promotion_policy":"diagnostic gate only; shadow approval requires untouched holdout and stability tests"}
     archive_path.parent.mkdir(parents=True,exist_ok=True)
     with zipfile.ZipFile(archive_path,"w",zipfile.ZIP_DEFLATED,compresslevel=1) as bundle:
-        _write_csv(bundle,"tier1_daily.csv",all_daily); _write_csv(bundle,"tier1_trades.csv",all_trades); _write_csv(bundle,"tier1_cost_ladder_scorecard.csv",scorecards); _write_csv(bundle,"tier1_period_scorecard.csv",period_scorecards); _write_csv(bundle,"tier1_promotion_gates.csv",promotions)
+        _write_csv(bundle,"tier1_daily.csv",all_daily); _write_csv(bundle,"tier1_trades.csv",all_trades); _write_csv(bundle,"tier1_cost_ladder_scorecard.csv",scorecards); _write_csv(bundle,"tier1_period_scorecard.csv",period_scorecards); _write_csv(bundle,"tier1_promotion_gates.csv",promotions); _write_csv(bundle,"tier1_rolling_3y_scorecard.csv",rolling_scorecards); _write_csv(bundle,"tier1_walk_forward_scorecard.csv",walk_forward_scorecards)
         bundle.writestr("tier1_manifest.json",json.dumps(manifest,indent=2,default=list)); bundle.writestr("tier1_summary.json",json.dumps({"primary_cost_bps":config.primary_cost_bps,"promotion_period":promotion_period,"scorecards":list(primary.values()),"promotion_gates":promotions},indent=2))
     return archive_path

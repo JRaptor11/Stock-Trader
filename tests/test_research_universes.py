@@ -46,6 +46,15 @@ class ResearchUniverseTests(unittest.TestCase):
         metadata = universe_metadata("ETF_GENERATION_3", tuple(sorted(expanded)))
         self.assertNotIn("unclassified", metadata["sector_counts"])
 
+    def test_cross_asset_long_history_excludes_late_inception_sector_funds(self):
+        universe = set(resolve_universe("ETF_CROSS_ASSET_LONG_HISTORY"))
+        self.assertEqual(
+            {"SPY", "QQQ", "IWM", "SHY", "IEF", "TLT", "GLD", "DBC",
+             "EFA", "EEM", "VNQ"},
+            universe,
+        )
+        self.assertNotIn("XLC", universe)
+
     def test_selection_diagnostics_group_by_strategy_symbol_and_sector(self):
         rows = _universe_selection_diagnostics([
             {"strategy_name": "S", "symbol": "AAPL", "selected": True, "raw_target_weight": 0.2},

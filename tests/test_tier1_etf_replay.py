@@ -7,7 +7,8 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from research.tier1_etf_replay import (
-    LEGACY_STRATEGIES, STRATEGIES, Tier1Config, _targets, config_from_job, load_daily_bars,
+    LEGACY_STRATEGIES, STRATEGIES, Tier1Config, _targets, _validated_calendar,
+    config_from_job, load_daily_bars,
     run_tier1_job,
 )
 from research.universes import resolve_universe
@@ -70,6 +71,27 @@ class Tier1ETFReplayTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must precede"):
             Tier1Config(discovery_end_date="2024-09-03", holdout_start_date="2024-09-03")
 
+    def test_coverage_rejects_late_common_start(self):
+        config = Tier1Config(required_common_start_date="2024-01-01")
+        symbols = resolve_universe(config.universe_name)
+        dates = ["2024-02-01", "2024-02-02"]
+        bars = {day: {symbol: {"close": 100} for symbol in symbols} for day in dates}
+        with self.assertRaisesRegex(ValueError, "begins later than required"):
+            _validated_calendar(dates, bars, symbols, config)
+
+    def test_coverage_reports_true_common_start_and_warmup(self):
+        config = Tier1Config(momentum_lookbacks_days=(2,), trend_lookback_days=2,
+                             volatility_lookback_days=2)
+        symbols = resolve_universe(config.universe_name)
+        dates = [f"2024-01-{day:02d}" for day in range(1, 7)]
+        bars = {day: {symbol: {"close": 100} for symbol in symbols} for day in dates}
+        bars[dates[0]].pop(symbols[-1])
+        common, report = _validated_calendar(dates, bars, symbols, config)
+        self.assertEqual("2024-01-02", report["common_start"])
+        self.assertEqual(3, report["warmup_sessions"])
+        self.assertEqual("2024-01-05", report["scored_start"])
+        self.assertEqual(dates[1:], common)
+
     def test_daily_loader_aggregates_intraday_rows(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/"bars.csv"
@@ -86,7 +108,10 @@ class Tier1ETFReplayTests(unittest.TestCase):
                 names=set(bundle.namelist()); manifest=json.loads(bundle.read("tier1_manifest.json")); summary=json.loads(bundle.read("tier1_summary.json"))
                 self.assertIn("tier1_cost_ladder_scorecard.csv",names); self.assertIn("tier1_promotion_gates.csv",names)
                 self.assertIn("tier1_period_scorecard.csv",names)
-                self.assertEqual("signal_at_close_fill_at_next_available_open",manifest["execution_semantics"])
+                self.assertIn("tier1_rolling_3y_scorecard.csv",names)
+                self.assertIn("tier1_walk_forward_scorecard.csv",names)
+                self.assertIn("warm-up excluded",manifest["execution_semantics"])
+                self.assertEqual(253,manifest["coverage"]["warmup_sessions"])
                 self.assertEqual(set(LEGACY_STRATEGIES),{row["strategy"] for row in summary["scorecards"]})
                 self.assertEqual("holdout",summary["promotion_period"])
                 self.assertTrue(all(not row["paper_trading_approved"] for row in summary["promotion_gates"]))

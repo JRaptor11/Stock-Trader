@@ -43,6 +43,10 @@ UNIVERSES = {
         "EFA", "EEM", "VNQ", "XLC", "XLY", "XLP", "XLE", "XLF",
         "XLV", "XLI", "XLB", "XLRE", "XLK", "XLU",
     ),
+    "ETF_CROSS_ASSET_LONG_HISTORY": (
+        "SPY", "QQQ", "IWM", "SHY", "IEF", "TLT", "GLD", "DBC",
+        "EFA", "EEM", "VNQ",
+    ),
 }
 
 ETF_METADATA = {
