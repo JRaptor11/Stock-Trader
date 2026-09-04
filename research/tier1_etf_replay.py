@@ -26,8 +26,15 @@ LEGACY_STRATEGIES = (
 STRATEGIES = LEGACY_STRATEGIES + (
     "CROSS_ASSET_DUAL_MOMENTUM",
     "DIVERSIFIED_TREND", "REGIME_BALANCED",
+    "SECTOR_ROTATION_CONCENTRATED", "SECTOR_ROTATION_INV_VOL",
+    "REGIME_ROUTED_SECTOR",
+    "FACTOR_ETF_MOMENTUM", "INDUSTRY_ETF_MOMENTUM",
+    "STATIC_MULTI_SLEEVE", "REGIME_MULTI_SLEEVE",
 )
 CROSS_ASSET_RISK = ("SPY", "QQQ", "IWM", "TLT", "IEF", "GLD", "DBC", "EFA", "EEM", "VNQ")
+FACTOR_ETFS = ("MTUM", "QUAL", "VLUE", "USMV", "IWF", "IWD")
+INDUSTRY_ETFS = ("XBI", "XRT", "XHB", "XME", "XOP", "KRE", "SMH", "IYT")
+DEFENSIVE_ETFS = ("BIL", "IEF", "GLD")
 
 
 @dataclass(frozen=True)
@@ -39,10 +46,13 @@ class Tier1Config:
     rebalance_frequency: str = "monthly"
     volatility_lookback_days: int = 60
     volatility_target_annualized: float = 0.12
+    regime_high_volatility_annualized: float = 0.18
     trend_lookback_days: int = 200
     momentum_lookbacks_days: tuple[int, ...] = (21, 63, 126, 252)
     sector_holdings: int = 3
     cross_asset_holdings: int = 3
+    factor_holdings: int = 2
+    industry_holdings: int = 3
     no_trade_band: float = 0.02
     cost_ladder_bps: tuple[float, ...] = (1.0, 5.0, 10.0, 20.0)
     primary_cost_bps: float = 10.0
@@ -60,10 +70,14 @@ class Tier1Config:
     def __post_init__(self):
         if self.rebalance_frequency not in {"weekly", "monthly"}:
             raise ValueError("rebalance_frequency must be weekly or monthly")
-        if self.initial_cash <= 0 or self.sector_holdings < 1 or self.cross_asset_holdings < 1:
+        if (self.initial_cash <= 0 or self.sector_holdings < 1 or
+                self.cross_asset_holdings < 1 or self.factor_holdings < 1 or
+                self.industry_holdings < 1):
             raise ValueError("initial_cash and holding counts must be positive")
         if not self.momentum_lookbacks_days or min(self.momentum_lookbacks_days) < 2:
             raise ValueError("momentum lookbacks must contain positive multi-day windows")
+        if self.regime_high_volatility_annualized <= 0:
+            raise ValueError("regime high-volatility threshold must be positive")
         resolve_universe(self.universe_name)
         if bool(self.discovery_end_date) != bool(self.holdout_start_date):
             raise ValueError("discovery_end_date and holdout_start_date must be set together")
@@ -256,9 +270,93 @@ def _targets(name: str, histories: dict[str, list[float]], config: Tier1Config) 
         selected = [s for _, s in sorted(eligible, reverse=True)[:config.cross_asset_holdings]]
         return ({s: 0.8 / len(selected) for s in selected} | {config.cash_proxy_symbol: 0.2}
                 if selected else {config.cash_proxy_symbol: 1.0})
+    def ranked_targets(roster, count):
+        ranked = [
+            (scores[symbol], symbol) for symbol in roster
+            if symbol in scores and scores[symbol] > 0
+            and _trend_positive(histories[symbol], config.trend_lookback_days)
+        ]
+        chosen = [symbol for _, symbol in sorted(ranked, reverse=True)[:count]]
+        return ({symbol: 1.0 / len(chosen) for symbol in chosen} if chosen else {})
+
+    if name == "FACTOR_ETF_MOMENTUM":
+        return ranked_targets(FACTOR_ETFS, config.factor_holdings)
+    if name == "INDUSTRY_ETF_MOMENTUM":
+        return ranked_targets(INDUSTRY_ETFS, config.industry_holdings)
+    if name in {"STATIC_MULTI_SLEEVE", "REGIME_MULTI_SLEEVE"}:
+        sleeves = [
+            ranked_targets(SECTOR_ETFS, config.sector_holdings),
+            ranked_targets(FACTOR_ETFS, config.factor_holdings),
+            ranked_targets(INDUSTRY_ETFS, config.industry_holdings),
+        ]
+        sleeves = [sleeve for sleeve in sleeves if sleeve]
+        risk = defaultdict(float)
+        for sleeve in sleeves:
+            for symbol, weight in sleeve.items():
+                risk[symbol] += weight / len(sleeves)
+        if name == "STATIC_MULTI_SLEEVE" or not risk:
+            return dict(risk)
+        recent = [
+            spy[index] / spy[index - 1] - 1.0
+            for index in range(max(1, len(spy) - config.volatility_lookback_days), len(spy))
+            if spy[index - 1]
+        ]
+        volatility = statistics.stdev(recent) * math.sqrt(252) if len(recent) > 1 else float("inf")
+        bull = _trend_positive(spy, config.trend_lookback_days)
+        high_volatility = volatility > config.regime_high_volatility_annualized
+        risk_weight = (1.0 if bull and not high_volatility else
+                       0.5 if bull else 0.25 if not high_volatility else 0.0)
+        defensive = ranked_targets(DEFENSIVE_ETFS, 1)
+        defensive_weight = 1.0 - risk_weight if defensive else 0.0
+        targets = {symbol: weight * risk_weight for symbol, weight in risk.items()}
+        for symbol, weight in defensive.items():
+            targets[symbol] = targets.get(symbol, 0.0) + weight * defensive_weight
+        return {symbol: weight for symbol, weight in targets.items() if weight > 0}
     eligible = [(scores[s], s) for s in SECTOR_ETFS if s in scores and scores[s] > 0 and _trend_positive(histories[s], config.trend_lookback_days)]
+    if name == "REGIME_ROUTED_SECTOR":
+        selected = [symbol for _, symbol in sorted(eligible, reverse=True)[:config.sector_holdings]]
+        if not selected:
+            return {config.cash_proxy_symbol: 1.0}
+        spy_returns = [
+            spy[index] / spy[index - 1] - 1.0
+            for index in range(max(1, len(spy) - config.volatility_lookback_days), len(spy))
+            if spy[index - 1]
+        ]
+        realized_volatility = (
+            statistics.stdev(spy_returns) * math.sqrt(252)
+            if len(spy_returns) > 1 else float("inf")
+        )
+        bull = _trend_positive(spy, config.trend_lookback_days)
+        high_volatility = realized_volatility > config.regime_high_volatility_annualized
+        if not bull and high_volatility:
+            return {config.cash_proxy_symbol: 1.0}
+        risk_weight = 1.0 if bull else 0.5
+        if high_volatility:
+            risk_weight *= min(1.0, config.volatility_target_annualized / realized_volatility)
+        targets = {symbol: risk_weight / len(selected) for symbol in selected}
+        if risk_weight < 1.0:
+            targets[config.cash_proxy_symbol] = 1.0 - risk_weight
+        return targets
+    if name == "SECTOR_ROTATION_CONCENTRATED":
+        selected = [symbol for _, symbol in sorted(eligible, reverse=True)[:1]]
+        return ({selected[0]: 1.0} if selected
+                else {config.cash_proxy_symbol: 1.0})
     selected = [symbol for _, symbol in sorted(eligible, reverse=True)[:config.sector_holdings]]
     if not selected: return {config.cash_proxy_symbol: 1.0}
+    if name == "SECTOR_ROTATION_INV_VOL":
+        inverse_volatility = {}
+        for symbol in selected:
+            closes = histories[symbol]
+            returns = [
+                closes[index] / closes[index - 1] - 1.0
+                for index in range(max(1, len(closes) - config.volatility_lookback_days), len(closes))
+                if closes[index - 1]
+            ]
+            volatility = statistics.stdev(returns) if len(returns) > 1 else 0.0
+            inverse_volatility[symbol] = 1.0 / volatility if volatility > 0 else 0.0
+        scale = sum(inverse_volatility.values())
+        if scale > 0:
+            return {symbol: value / scale for symbol, value in inverse_volatility.items()}
     return {symbol: 1.0 / len(selected) for symbol in selected}
 
 
@@ -298,7 +396,7 @@ def _simulate(name: str, dates: list[str], bars: dict, config: Tier1Config,
     cash = config.initial_cash; shares: dict[str, float] = {}; pending = None; daily=[]; trades=[]; previous_day=None
     for index, day in enumerate(dates):
         today=bars[day]
-        if pending:
+        if pending is not None:
             equity_open = cash + sum(shares.get(s,0)*today.get(s,{"open":0})["open"] for s in shares)
             desired = {s: equity_open*w for s,w in pending.items() if s in today}
             current = {s: shares.get(s,0)*today.get(s,{"open":0})["open"] for s in set(shares)|set(desired)}
@@ -397,6 +495,94 @@ def _walk_forward_scorecards(daily: list[dict], config: Tier1Config) -> list[dic
     return rows
 
 
+def _causal_market_regimes(dates: list[str], bars: dict, config: Tier1Config) -> dict[str, str]:
+    """Classify each session from information known at the preceding close."""
+    spy_closes = []
+    prior_state = None
+    regimes = {}
+    for day in dates:
+        if prior_state is not None:
+            regimes[day] = prior_state
+        close = float(bars[day][config.benchmark_symbol]["close"])
+        spy_closes.append(close)
+        bull = _trend_positive(spy_closes, config.trend_lookback_days)
+        recent = [
+            spy_closes[index] / spy_closes[index - 1] - 1.0
+            for index in range(max(1, len(spy_closes) - config.volatility_lookback_days), len(spy_closes))
+            if spy_closes[index - 1]
+        ]
+        volatility = statistics.stdev(recent) * math.sqrt(252) if len(recent) > 1 else float("inf")
+        prior_state = ("BULL" if bull else "BEAR") + ("_HIGH_VOL" if volatility > config.regime_high_volatility_annualized else "_LOW_VOL")
+    return regimes
+
+
+def _regime_scorecards(daily: list[dict], dates: list[str], bars: dict,
+                       config: Tier1Config) -> list[dict]:
+    selected = [row for row in daily if row["cost_bps"] == config.primary_cost_bps]
+    regimes = _causal_market_regimes(dates, bars, config)
+    rows = []
+    for strategy in config.strategy_names:
+        values = sorted((row for row in selected if row["strategy"] == strategy), key=lambda row: row["date"])
+        prior_equity = config.initial_cash
+        grouped = defaultdict(list)
+        for row in values:
+            state = regimes.get(row["date"])
+            if state:
+                grouped[state].append(row["equity"] / prior_equity - 1.0)
+            prior_equity = row["equity"]
+        for state, returns in sorted(grouped.items()):
+            total_return = math.prod(1.0 + value for value in returns) - 1.0
+            volatility = statistics.stdev(returns) * math.sqrt(252) if len(returns) > 1 else 0.0
+            sharpe = (statistics.fmean(returns) / statistics.stdev(returns) * math.sqrt(252)
+                      if len(returns) > 1 and statistics.stdev(returns) else 0.0)
+            rows.append({"strategy": strategy, "cost_bps": config.primary_cost_bps,
+                         "regime": state, "sessions": len(returns),
+                         "total_return": total_return,
+                         "annualized_volatility": volatility, "sharpe": sharpe})
+    return rows
+
+
+def _pairwise_summary(period_scorecards: list[dict], rolling_scorecards: list[dict],
+                      walk_forward_scorecards: list[dict], config: Tier1Config) -> list[dict]:
+    """Compare adaptive candidates with both SPY and any static multi-sleeve baseline."""
+    benchmarks = ["SPY_BUY_HOLD"]
+    if "STATIC_MULTI_SLEEVE" in config.strategy_names:
+        benchmarks.append("STATIC_MULTI_SLEEVE")
+    primary = {
+        row["strategy"]: row for row in period_scorecards
+        if row["cost_bps"] == config.primary_cost_bps
+        and row["period"] == ("holdout" if config.holdout_start_date else "full")
+    }
+    rolling = defaultdict(dict)
+    for row in rolling_scorecards:
+        rolling[(row["start"], row["end"])][row["strategy"]] = row["total_return"]
+    walk_forward = defaultdict(dict)
+    for row in walk_forward_scorecards:
+        walk_forward[row["fold"]][row["strategy"]] = row["test_return"]
+    result = []
+    for strategy in config.strategy_names:
+        for benchmark in benchmarks:
+            if strategy == benchmark or strategy not in primary or benchmark not in primary:
+                continue
+            rolling_excess = [values[strategy] - values[benchmark] for values in rolling.values()
+                              if strategy in values and benchmark in values]
+            walk_excess = [values[strategy] - values[benchmark] for values in walk_forward.values()
+                           if strategy in values and benchmark in values]
+            result.append({
+                "strategy": strategy, "benchmark": benchmark,
+                "cost_bps": config.primary_cost_bps,
+                "holdout_excess_return": primary[strategy]["total_return"] - primary[benchmark]["total_return"],
+                "rolling_windows": len(rolling_excess),
+                "rolling_win_rate": sum(value > 0 for value in rolling_excess) / max(1, len(rolling_excess)),
+                "rolling_average_excess_return": statistics.fmean(rolling_excess) if rolling_excess else None,
+                "rolling_median_excess_return": statistics.median(rolling_excess) if rolling_excess else None,
+                "walk_forward_folds": len(walk_excess),
+                "walk_forward_win_rate": sum(value > 0 for value in walk_excess) / max(1, len(walk_excess)),
+                "walk_forward_average_excess_return": statistics.fmean(walk_excess) if walk_excess else None,
+            })
+    return result
+
+
 def _write_csv(bundle, name: str, rows: list[dict]):
     if not rows: bundle.writestr(name, "") ; return
     import io
@@ -437,10 +623,12 @@ def run_tier1_job(job: dict, bars_path: Path, archive_path: Path, source_sha256:
         promotions.append({"strategy":strategy,"benchmark":"SPY_BUY_HOLD","evaluation_period":promotion_period,"net_excess_return":row["total_return"]-benchmark["total_return"],"return_gate":beats,"risk_gate":risk_improves,"eligible_for_further_validation":beats and risk_improves,"paper_trading_approved":False})
     rolling_scorecards=_rolling_scorecards(all_daily,config)
     walk_forward_scorecards=_walk_forward_scorecards(all_daily,config)
+    regime_scorecards=_regime_scorecards(all_daily,dates,bars,config)
+    pairwise_summary=_pairwise_summary(period_scorecards,rolling_scorecards,walk_forward_scorecards,config)
     declaration=validate_experiment_declaration(job.get("experiment"))
     manifest={"created_at":datetime.now(UTC).isoformat(),"engine":"tier1_etf_daily","source_path":str(bars_path),"source_sha256":source_sha256,"config":asdict(config),"coverage":coverage,"universe":universe_metadata(config.universe_name,tuple(sorted(symbols))),"hypothesis_registry":registry_snapshot(),"experiment":declaration,"execution_semantics":"warm-up excluded; signal at close and fill at next available open on validated common sessions","strategies":list(config.strategy_names),"promotion_policy":"diagnostic gate only; shadow approval requires untouched holdout and stability tests"}
     archive_path.parent.mkdir(parents=True,exist_ok=True)
     with zipfile.ZipFile(archive_path,"w",zipfile.ZIP_DEFLATED,compresslevel=1) as bundle:
-        _write_csv(bundle,"tier1_daily.csv",all_daily); _write_csv(bundle,"tier1_trades.csv",all_trades); _write_csv(bundle,"tier1_cost_ladder_scorecard.csv",scorecards); _write_csv(bundle,"tier1_period_scorecard.csv",period_scorecards); _write_csv(bundle,"tier1_promotion_gates.csv",promotions); _write_csv(bundle,"tier1_rolling_3y_scorecard.csv",rolling_scorecards); _write_csv(bundle,"tier1_walk_forward_scorecard.csv",walk_forward_scorecards)
+        _write_csv(bundle,"tier1_daily.csv",all_daily); _write_csv(bundle,"tier1_trades.csv",all_trades); _write_csv(bundle,"tier1_cost_ladder_scorecard.csv",scorecards); _write_csv(bundle,"tier1_period_scorecard.csv",period_scorecards); _write_csv(bundle,"tier1_promotion_gates.csv",promotions); _write_csv(bundle,"tier1_rolling_3y_scorecard.csv",rolling_scorecards); _write_csv(bundle,"tier1_walk_forward_scorecard.csv",walk_forward_scorecards); _write_csv(bundle,"tier1_regime_scorecard.csv",regime_scorecards); _write_csv(bundle,"tier1_pairwise_summary.csv",pairwise_summary)
         bundle.writestr("tier1_manifest.json",json.dumps(manifest,indent=2,default=list)); bundle.writestr("tier1_summary.json",json.dumps({"primary_cost_bps":config.primary_cost_bps,"promotion_period":promotion_period,"scorecards":list(primary.values()),"promotion_gates":promotions},indent=2))
     return archive_path

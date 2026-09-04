@@ -1,0 +1,30 @@
+{
+  "generation": "tier2-generation-002",
+  "declared_before_results": true,
+  "development_evidence_end_date": "2026-09-03",
+  "forward_confirmation_start_date": "2026-09-04",
+  "hypothesis_id": "TIER1_ETF_TOURNAMENT",
+  "trial_id": "tier2-multi-sleeve-001",
+  "benchmark": "SPY_BUY_HOLD",
+  "static_adaptive_benchmark": "STATIC_MULTI_SLEEVE",
+  "candidate_strategies": [
+    "FACTOR_ETF_MOMENTUM",
+    "INDUSTRY_ETF_MOMENTUM",
+    "STATIC_MULTI_SLEEVE",
+    "REGIME_MULTI_SLEEVE"
+  ],
+  "causal_regime_definition": {
+    "trend": "SPY close relative to trailing 200-session mean",
+    "volatility": "trailing 60-session SPY volatility relative to frozen 18% annualized boundary",
+    "decision_lag": "state after session t may first affect the next available open"
+  },
+  "promotion_policy": {
+    "adaptive_strategy_must_beat": ["SPY_BUY_HOLD", "STATIC_MULTI_SLEEVE"],
+    "primary_cost_bps": 10.0,
+    "must_have_positive_average_walk_forward_excess": true,
+    "must_have_positive_median_rolling_three_year_excess": true,
+    "minimum_forward_sessions": 126,
+    "automatic_trading_approval": false
+  },
+  "no_post_result_retuning": true
+}

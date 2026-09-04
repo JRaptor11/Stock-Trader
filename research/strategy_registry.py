@@ -45,6 +45,48 @@ HYPOTHESES = {
         "data_frequency": "1d", "turnover_expectation": "medium",
         "point_in_time_equities_required": False,
     },
+    "SECTOR_ROTATION_CONCENTRATED": {
+        "tier": 2, "status": "active_research",
+        "mechanism": "apply the frozen sector momentum signal to one sector to test whether concentration raises return enough to justify higher idiosyncratic risk",
+        "data_frequency": "1d", "turnover_expectation": "medium",
+        "point_in_time_equities_required": False,
+    },
+    "SECTOR_ROTATION_INV_VOL": {
+        "tier": 2, "status": "active_research",
+        "mechanism": "apply the frozen sector momentum selection and inverse-volatility weighting to reduce winner concentration without changing the signal",
+        "data_frequency": "1d", "turnover_expectation": "medium",
+        "point_in_time_equities_required": False,
+    },
+    "REGIME_ROUTED_SECTOR": {
+        "tier": 2, "status": "active_research",
+        "mechanism": "route a fixed sector-momentum sleeve using only lagged SPY trend and realized-volatility states",
+        "data_frequency": "1d", "turnover_expectation": "medium",
+        "point_in_time_equities_required": False,
+    },
+    "FACTOR_ETF_MOMENTUM": {
+        "tier": 2, "status": "active_research",
+        "mechanism": "rotate among liquid long-only factor ETFs using the frozen momentum and absolute-trend signal",
+        "data_frequency": "1d", "turnover_expectation": "medium",
+        "point_in_time_equities_required": False,
+    },
+    "INDUSTRY_ETF_MOMENTUM": {
+        "tier": 2, "status": "active_research",
+        "mechanism": "apply relative and absolute momentum to a fixed liquid industry ETF roster",
+        "data_frequency": "1d", "turnover_expectation": "medium",
+        "point_in_time_equities_required": False,
+    },
+    "STATIC_MULTI_SLEEVE": {
+        "tier": 2, "status": "active_research",
+        "mechanism": "combine sector, factor, and industry momentum sleeves at fixed equal sleeve weights",
+        "data_frequency": "1d", "turnover_expectation": "medium",
+        "point_in_time_equities_required": False,
+    },
+    "REGIME_MULTI_SLEEVE": {
+        "tier": 2, "status": "active_research",
+        "mechanism": "moderately shift a static multi-sleeve portfolio toward defensive assets using lagged trend and volatility",
+        "data_frequency": "1d", "turnover_expectation": "medium",
+        "point_in_time_equities_required": False,
+    },
     "CROSS_ASSET_DUAL_MOMENTUM": {
         "tier": 1, "status": "active_research",
         "mechanism": "combine absolute trend and relative momentum across independently behaving liquid asset classes",

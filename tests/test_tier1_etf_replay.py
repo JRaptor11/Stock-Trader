@@ -7,7 +7,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from research.tier1_etf_replay import (
-    LEGACY_STRATEGIES, STRATEGIES, Tier1Config, _targets, _validated_calendar,
+    LEGACY_STRATEGIES, STRATEGIES, Tier1Config, _causal_market_regimes, _targets, _validated_calendar,
     config_from_job, load_daily_bars,
     run_tier1_job,
 )
@@ -42,7 +42,78 @@ class Tier1ETFReplayTests(unittest.TestCase):
             momentum_lookbacks_days=(63, 126, 252),
         )
         for strategy in (
-            "CROSS_ASSET_DUAL_MOMENTUM", "DIVERSIFIED_TREND", "REGIME_BALANCED"
+            "CROSS_ASSET_DUAL_MOMENTUM", "DIVERSIFIED_TREND", "REGIME_BALANCED",
+            "SECTOR_ROTATION_CONCENTRATED", "SECTOR_ROTATION_INV_VOL",
+            "REGIME_ROUTED_SECTOR",
+        ):
+            targets = _targets(strategy, histories, config)
+            self.assertAlmostEqual(1.0, sum(targets.values()))
+            self.assertTrue(all(weight >= 0 for weight in targets.values()))
+            self.assertTrue(set(targets) <= set(symbols))
+
+    def test_concentrated_sector_strategy_holds_one_risk_asset(self):
+        symbols = resolve_universe("ETF_GENERATION_3")
+        histories = {
+            symbol: [100 + index * (0.03 + offset * 0.001) for index in range(260)]
+            for offset, symbol in enumerate(symbols)
+        }
+        config = Tier1Config(
+            universe_name="ETF_GENERATION_3",
+            momentum_lookbacks_days=(63, 126, 252),
+        )
+        targets = _targets("SECTOR_ROTATION_CONCENTRATED", histories, config)
+        self.assertEqual(1, len(targets))
+        self.assertAlmostEqual(1.0, sum(targets.values()))
+
+    def test_inverse_vol_sector_strategy_normalizes_positive_weights(self):
+        symbols = resolve_universe("ETF_GENERATION_3")
+        histories = {
+            symbol: [100 + index * (0.02 + offset * 0.001) + ((index % 5) * offset * .002)
+                     for index in range(260)]
+            for offset, symbol in enumerate(symbols)
+        }
+        config = Tier1Config(
+            universe_name="ETF_GENERATION_3",
+            momentum_lookbacks_days=(63, 126, 252),
+        )
+        targets = _targets("SECTOR_ROTATION_INV_VOL", histories, config)
+        self.assertLessEqual(len(targets), config.sector_holdings)
+        self.assertAlmostEqual(1.0, sum(targets.values()))
+        self.assertTrue(all(weight > 0 for weight in targets.values()))
+
+    def test_regime_router_moves_to_cash_in_bear_high_volatility(self):
+        symbols = resolve_universe("ETF_GENERATION_3")
+        histories = {symbol: [200.0 - index * .25 for index in range(260)] for symbol in symbols}
+        for index in range(200, 260):
+            histories["SPY"][index] += 8.0 if index % 2 else -8.0
+        config = Tier1Config(
+            universe_name="ETF_GENERATION_3",
+            momentum_lookbacks_days=(63, 126, 252),
+        )
+        self.assertEqual({"SHY": 1.0}, _targets("REGIME_ROUTED_SECTOR", histories, config))
+
+    def test_market_regime_for_day_uses_previous_close(self):
+        config = Tier1Config(trend_lookback_days=2, volatility_lookback_days=2,
+                             regime_high_volatility_annualized=1.0)
+        dates = ["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04"]
+        closes = [100.0, 101.0, 102.0, 80.0]
+        bars = {day: {"SPY": {"close": close}} for day, close in zip(dates, closes)}
+        regimes = _causal_market_regimes(dates, bars, config)
+        self.assertEqual("BULL_LOW_VOL", regimes["2026-01-04"])
+
+    def test_multi_sleeve_strategies_are_long_only_and_normalized(self):
+        symbols = resolve_universe("ETF_TIER2_MULTI_SLEEVE")
+        histories = {
+            symbol: [100 + index * (0.02 + offset * .0005) for index in range(260)]
+            for offset, symbol in enumerate(symbols)
+        }
+        config = Tier1Config(
+            universe_name="ETF_TIER2_MULTI_SLEEVE",
+            momentum_lookbacks_days=(63, 126, 252),
+        )
+        for strategy in (
+            "FACTOR_ETF_MOMENTUM", "INDUSTRY_ETF_MOMENTUM",
+            "STATIC_MULTI_SLEEVE", "REGIME_MULTI_SLEEVE",
         ):
             targets = _targets(strategy, histories, config)
             self.assertAlmostEqual(1.0, sum(targets.values()))
@@ -110,6 +181,8 @@ class Tier1ETFReplayTests(unittest.TestCase):
                 self.assertIn("tier1_period_scorecard.csv",names)
                 self.assertIn("tier1_rolling_3y_scorecard.csv",names)
                 self.assertIn("tier1_walk_forward_scorecard.csv",names)
+                self.assertIn("tier1_regime_scorecard.csv",names)
+                self.assertIn("tier1_pairwise_summary.csv",names)
                 self.assertIn("warm-up excluded",manifest["execution_semantics"])
                 self.assertEqual(253,manifest["coverage"]["warmup_sessions"])
                 self.assertEqual(set(LEGACY_STRATEGIES),{row["strategy"] for row in summary["scorecards"]})

@@ -76,6 +76,65 @@ def block_bootstrap(candidate: list[dict], benchmark: list[dict], start: str,
             "excess_return_ci_95":[quantile(.025),quantile(.975)]}
 
 
+def annual_comparison(candidate: list[dict], benchmark: list[dict], start: str) -> list[dict]:
+    """Calendar-year results expose whether excess return comes from one episode."""
+    cand = {row["date"]: row["return"] for row in candidate if row["date"] >= start}
+    bench = {row["date"]: row["return"] for row in benchmark if row["date"] >= start}
+    grouped = defaultdict(list)
+    for day in sorted(set(cand) & set(bench)):
+        grouped[day[:4]].append((cand[day], bench[day]))
+    rows = []
+    for year, pairs in sorted(grouped.items()):
+        candidate_return = _compound(pair[0] for pair in pairs)
+        benchmark_return = _compound(pair[1] for pair in pairs)
+        rows.append({
+            "year": year, "sessions": len(pairs),
+            "candidate_return": candidate_return,
+            "benchmark_return": benchmark_return,
+            "excess_return": candidate_return - benchmark_return,
+            "candidate_won": candidate_return > benchmark_return,
+        })
+    return rows
+
+
+def drawdown_profile(series: list[dict]) -> dict:
+    """Return maximum drawdown dates and recovery time, not only its magnitude."""
+    if not series:
+        return {"max_drawdown": None, "peak_date": None, "trough_date": None,
+                "recovery_date": None, "recovery_sessions": None}
+    peak_equity = series[0]["equity"]
+    peak_date = series[0]["date"]
+    worst = 0.0
+    worst_peak_date = peak_date
+    trough_date = peak_date
+    trough_index = 0
+    recovery_date = None
+    for index, row in enumerate(series):
+        if row["equity"] > peak_equity:
+            peak_equity = row["equity"]
+            peak_date = row["date"]
+        drawdown = row["equity"] / peak_equity - 1.0
+        if drawdown < worst:
+            worst = drawdown
+            worst_peak_date = peak_date
+            trough_date = row["date"]
+            trough_index = index
+    peak_value = next(row["equity"] for row in series if row["date"] == worst_peak_date)
+    for row in series[trough_index + 1:]:
+        if row["equity"] >= peak_value:
+            recovery_date = row["date"]
+            break
+    recovery_sessions = None
+    if recovery_date:
+        recovery_sessions = next(
+            index for index, row in enumerate(series[trough_index + 1:], 1)
+            if row["date"] == recovery_date
+        )
+    return {"max_drawdown": worst, "peak_date": worst_peak_date,
+            "trough_date": trough_date, "recovery_date": recovery_date,
+            "recovery_sessions": recovery_sessions}
+
+
 def regime_attribution(candidate: list[dict], benchmark: list[dict], bars: dict,
                        dates: list[str], discovery_end: str, holdout_start: str) -> tuple[list[dict], dict]:
     closes=[]; features={}
@@ -148,28 +207,35 @@ def _write_csv(path: Path, rows: list[dict]):
         writer=csv.DictWriter(handle,fieldnames=list(rows[0])); writer.writeheader(); writer.writerows(rows)
 
 
-def analyze(archive: Path, bars_path: Path, output: Path, strategy="SECTOR_ETF_ROTATION", cost_bps=10.0) -> Path:
+def analyze(archive: Path, bars_path: Path, output: Path, strategy="SECTOR_ETF_ROTATION",
+            cost_bps=10.0, benchmark_strategy="SPY_BUY_HOLD") -> Path:
     with zipfile.ZipFile(archive) as bundle:
         manifest=json.loads(bundle.read("tier1_manifest.json")); daily=_zip_rows(bundle,"tier1_daily.csv"); trades=_zip_rows(bundle,"tier1_trades.csv")
     config=manifest["config"]; holdout=config.get("holdout_start_date")
     if not holdout: raise ValueError("selected archive has no frozen holdout")
     symbols=set(config["universe_name"] and manifest["universe"]["symbols"]); dates,bars=load_daily_bars(bars_path,symbols)
-    candidate=_series(daily,strategy,cost_bps); benchmark=_series(daily,"SPY_BUY_HOLD",cost_bps)
+    candidate=_series(daily,strategy,cost_bps); benchmark=_series(daily,benchmark_strategy,cost_bps)
+    if not candidate or not benchmark:
+        raise ValueError(f"archive does not contain candidate {strategy} and benchmark {benchmark_strategy}")
     rolling=rolling_comparison(candidate,benchmark,holdout); bootstrap=block_bootstrap(candidate,benchmark,holdout)
+    annual=annual_comparison(candidate,benchmark,holdout)
     regimes,regime_definition=regime_attribution(candidate,benchmark,bars,dates,config["discovery_end_date"],holdout)
     attribution=holding_attribution(trades,bars,dates,strategy,cost_bps,holdout); comparators=simple_benchmarks(bars,dates,holdout,cost_bps)
-    summary={"selected_strategy":strategy,"source_archive":archive.name,"cost_bps":cost_bps,"holdout_start":holdout,
+    summary={"selected_strategy":strategy,"benchmark_strategy":benchmark_strategy,"source_archive":archive.name,"cost_bps":cost_bps,"holdout_start":holdout,
              "selection_status":"selected from preregistered Generation 2; no parameters changed in this analysis",
              "bootstrap":bootstrap,"rolling_win_rates":{str(w):sum(r["candidate_won"] for r in rolling if r["window_sessions"]==w)/max(1,sum(1 for r in rolling if r["window_sessions"]==w)) for w in (63,126,252)},
+             "calendar_year_win_rate":sum(row["candidate_won"] for row in annual)/max(1,len(annual)),
+             "candidate_drawdown":drawdown_profile([row for row in candidate if row["date"] >= holdout]),
+             "benchmark_drawdown":drawdown_profile([row for row in benchmark if row["date"] >= holdout]),
              "regime_definition":regime_definition,"post_hoc_benchmarks_are_not_candidates":True}
-    output.mkdir(parents=True,exist_ok=True); _write_csv(output/"rolling_windows.csv",rolling); _write_csv(output/"regime_attribution.csv",regimes); _write_csv(output/"holding_attribution.csv",attribution); _write_csv(output/"simple_benchmarks.csv",comparators)
+    output.mkdir(parents=True,exist_ok=True); _write_csv(output/"rolling_windows.csv",rolling); _write_csv(output/"calendar_years.csv",annual); _write_csv(output/"regime_attribution.csv",regimes); _write_csv(output/"holding_attribution.csv",attribution); _write_csv(output/"simple_benchmarks.csv",comparators)
     (output/"robustness_summary.json").write_text(json.dumps(summary,indent=2),encoding="utf-8")
     return output
 
 
 def main():
-    parser=argparse.ArgumentParser(); parser.add_argument("--archive",type=Path,required=True); parser.add_argument("--bars",type=Path,required=True); parser.add_argument("--output",type=Path,required=True); parser.add_argument("--strategy",default="SECTOR_ETF_ROTATION"); parser.add_argument("--cost-bps",type=float,default=10.0); args=parser.parse_args()
-    print(analyze(args.archive,args.bars,args.output,args.strategy,args.cost_bps))
+    parser=argparse.ArgumentParser(); parser.add_argument("--archive",type=Path,required=True); parser.add_argument("--bars",type=Path,required=True); parser.add_argument("--output",type=Path,required=True); parser.add_argument("--strategy",default="SECTOR_ETF_ROTATION"); parser.add_argument("--benchmark-strategy",default="SPY_BUY_HOLD"); parser.add_argument("--cost-bps",type=float,default=10.0); args=parser.parse_args()
+    print(analyze(args.archive,args.bars,args.output,args.strategy,args.cost_bps,args.benchmark_strategy))
 
 
 if __name__=="__main__": main()

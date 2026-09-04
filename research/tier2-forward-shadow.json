@@ -1,0 +1,17 @@
+{
+  "forward_start": "2026-09-04",
+  "cost_bps": 10.0,
+  "strategies": [
+    {"strategy": "SECTOR_ETF_ROTATION", "variant": "g2-momentum-no-1m", "role": "incumbent"},
+    {"strategy": "FACTOR_ETF_MOMENTUM", "variant": "tier2-factor-v1", "role": "finalist"},
+    {"strategy": "INDUSTRY_ETF_MOMENTUM", "variant": "tier2-industry-v1", "role": "higher-risk-finalist"},
+    {"strategy": "STATIC_MULTI_SLEEVE", "variant": "tier2-static-v1", "role": "primary-challenger"}
+  ],
+  "rules": {
+    "parameters_frozen_during_confirmation": true,
+    "minimum_sessions": 126,
+    "paper_trading_approved": false,
+    "promotion_requires_net_outperformance_vs_spy": true,
+    "adaptive_models_must_also_beat_static_multi_sleeve": true
+  }
+}

@@ -47,6 +47,12 @@ UNIVERSES = {
         "SPY", "QQQ", "IWM", "SHY", "IEF", "TLT", "GLD", "DBC",
         "EFA", "EEM", "VNQ",
     ),
+    "ETF_TIER2_MULTI_SLEEVE": (
+        "SPY", "SHY", "BIL", "IEF", "GLD",
+        "XLC", "XLY", "XLP", "XLE", "XLF", "XLV", "XLI", "XLB", "XLRE", "XLK", "XLU",
+        "MTUM", "QUAL", "VLUE", "USMV", "IWF", "IWD",
+        "XBI", "XRT", "XHB", "XME", "XOP", "KRE", "SMH", "IYT",
+    ),
 }
 
 ETF_METADATA = {
@@ -60,6 +66,14 @@ ETF_METADATA = {
     "GLD": "gold", "DBC": "broad_commodities",
     "EFA": "developed_ex_us_equity", "EEM": "emerging_market_equity",
     "VNQ": "real_estate_broad",
+    "BIL": "treasury_bills", "MTUM": "momentum_factor",
+    "QUAL": "quality_factor", "VLUE": "value_factor",
+    "USMV": "minimum_volatility_factor", "IWF": "growth_factor",
+    "IWD": "value_style", "XBI": "biotechnology_industry",
+    "XRT": "retail_industry", "XHB": "homebuilders_industry",
+    "XME": "metals_mining_industry", "XOP": "oil_gas_industry",
+    "KRE": "regional_banks_industry", "SMH": "semiconductors_industry",
+    "IYT": "transportation_industry",
 }
 
 SECTORS = {

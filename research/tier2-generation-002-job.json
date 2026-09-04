@@ -1,0 +1,44 @@
+{
+  "job_id": "tier2-generation-002-development",
+  "engine": "tier1_etf_daily",
+  "bars_csv": "tier2_multi_sleeve_yahoo_2013_2026-09-03.csv",
+  "data_source": "Yahoo adjusted daily chart endpoint; historical development only",
+  "experiment": {
+    "hypothesis_id": "TIER1_ETF_TOURNAMENT",
+    "trial_id": "tier2-multi-sleeve-001",
+    "holdout_policy": "Previously observed dates are development evidence; forward confirmation begins 2026-09-04"
+  },
+  "tier1_config": {
+    "initial_cash": 100000.0,
+    "universe_name": "ETF_TIER2_MULTI_SLEEVE",
+    "rebalance_frequency": "monthly",
+    "volatility_lookback_days": 60,
+    "volatility_target_annualized": 0.12,
+    "regime_high_volatility_annualized": 0.18,
+    "trend_lookback_days": 200,
+    "momentum_lookbacks_days": [63, 126, 252],
+    "sector_holdings": 3,
+    "factor_holdings": 2,
+    "industry_holdings": 3,
+    "no_trade_band": 0.02,
+    "cost_ladder_bps": [1.0, 5.0, 10.0, 20.0],
+    "primary_cost_bps": 10.0,
+    "discovery_end_date": "2024-09-02",
+    "holdout_start_date": "2024-09-03",
+    "required_common_start_date": "2018-06-19",
+    "minimum_common_coverage_pct": 99.0,
+    "minimum_scored_sessions": 1500,
+    "rolling_window_sessions": 756,
+    "walk_forward_train_sessions": 756,
+    "walk_forward_test_sessions": 252,
+    "walk_forward_step_sessions": 252,
+    "strategy_names": [
+      "SPY_BUY_HOLD",
+      "SECTOR_ETF_ROTATION",
+      "FACTOR_ETF_MOMENTUM",
+      "INDUSTRY_ETF_MOMENTUM",
+      "STATIC_MULTI_SLEEVE",
+      "REGIME_MULTI_SLEEVE"
+    ]
+  }
+}

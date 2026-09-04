@@ -1,0 +1,46 @@
+{
+  "generation": "tier2-generation-001",
+  "declared_before_results": true,
+  "development_evidence_end_date": "2026-09-03",
+  "forward_confirmation_start_date": "2026-09-04",
+  "hypothesis_id": "TIER1_ETF_TOURNAMENT",
+  "trial_id": "tier2-sector-expansion-001",
+  "incumbent": "SECTOR_ETF_ROTATION",
+  "candidate_strategies": [
+    "SECTOR_ROTATION_CONCENTRATED",
+    "SECTOR_ROTATION_INV_VOL",
+    "REGIME_ROUTED_SECTOR"
+  ],
+  "frozen_signal": {
+    "rebalance_frequency": "monthly",
+    "momentum_lookbacks_days": [63, 126, 252],
+    "trend_lookback_days": 200,
+    "sector_holdings": 3,
+    "volatility_lookback_days": 60,
+    "regime_high_volatility_annualized": 0.18,
+    "no_trade_band": 0.02,
+    "primary_cost_bps": 10.0
+  },
+  "research_roles": {
+    "SECTOR_ROTATION_CONCENTRATED": "higher-return challenger with explicitly accepted concentration risk",
+    "SECTOR_ROTATION_INV_VOL": "risk-adjusted challenger using the same selected sectors"
+    ,"REGIME_ROUTED_SECTOR": "fixed causal routing across bull/bear and high/low-volatility states"
+  },
+  "promotion_standard": {
+    "historical_development": [
+      "positive excess return versus SPY at 10 basis points",
+      "positive median rolling three-year excess return",
+      "positive average walk-forward excess return",
+      "no single calendar year supplies more than half of cumulative excess return",
+      "results remain directionally acceptable at 20 basis points"
+    ],
+    "forward_confirmation": [
+      "minimum 126 completed market sessions",
+      "positive net excess return versus SPY",
+      "no worse than 1.25 times SPY maximum drawdown",
+      "no strategy parameter changes during confirmation"
+    ],
+    "automatic_trading_approval": false
+  },
+  "interpretation": "Historical dates through 2026-09-03 are development evidence because their outcomes were already observed. Only dates from 2026-09-04 onward can provide untouched confirmation for these candidates."
+}

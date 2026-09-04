@@ -1,0 +1,39 @@
+{
+  "assessment_date": "2026-09-03",
+  "source_result": "tier2-generation-002-development-results.zip",
+  "data_end_date": "2026-09-03",
+  "cost_bps": 10.0,
+  "status": "development_evidence_only",
+  "holdout_results": {
+    "SPY_BUY_HOLD": {"return": 0.4043137711, "sharpe": 1.1067550888, "max_drawdown": -0.1876350849},
+    "SECTOR_ETF_ROTATION": {"return": 0.5118218807, "sharpe": 1.4341520018, "max_drawdown": -0.1607711448},
+    "FACTOR_ETF_MOMENTUM": {"return": 0.6153556070, "sharpe": 1.3398619870, "max_drawdown": -0.1948623277},
+    "INDUSTRY_ETF_MOMENTUM": {"return": 0.6867879166, "sharpe": 1.2836212611, "max_drawdown": -0.2153504215},
+    "STATIC_MULTI_SLEEVE": {"return": 0.6414776817, "sharpe": 1.4547074192, "max_drawdown": -0.1973292398},
+    "REGIME_MULTI_SLEEVE": {"return": 0.4787957710, "sharpe": 1.1621638284, "max_drawdown": -0.1667344165}
+  },
+  "consistency_results": {
+    "STATIC_MULTI_SLEEVE_vs_SPY": {
+      "rolling_win_rate": 0.5882352941,
+      "rolling_average_excess_return": 0.0323427344,
+      "rolling_median_excess_return": 0.0391662038,
+      "walk_forward_win_rate": 0.5,
+      "walk_forward_average_excess_return": 0.0556290970
+    },
+    "REGIME_MULTI_SLEEVE_vs_STATIC_MULTI_SLEEVE": {
+      "holdout_excess_return": -0.1626819107,
+      "rolling_win_rate": 0.0588235294,
+      "rolling_average_excess_return": -0.1283062790,
+      "walk_forward_win_rate": 0.25,
+      "walk_forward_average_excess_return": -0.0600651598
+    }
+  },
+  "decisions": {
+    "FACTOR_ETF_MOMENTUM": "advance to robustness and forward shadow evaluation",
+    "INDUSTRY_ETF_MOMENTUM": "advance to robustness and forward shadow evaluation with explicit concentration controls",
+    "STATIC_MULTI_SLEEVE": "advance as the primary Generation 2 challenger",
+    "REGIME_MULTI_SLEEVE": "do not advance; failed the predeclared static-combination benchmark"
+  },
+  "interpretation": "The strongest result came from diversifying independent momentum sleeves, not from aggressively switching exposure based on a market-state label.",
+  "no_post_result_retuning": true
+}

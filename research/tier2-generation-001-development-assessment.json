@@ -1,0 +1,55 @@
+{
+  "assessment_date": "2026-09-03",
+  "source_result": "tier2-generation-001-development-results.zip",
+  "data_end_date": "2026-09-02",
+  "cost_bps": 10.0,
+  "status": "development_evidence_only",
+  "results": {
+    "SPY_BUY_HOLD": {
+      "holdout_return": 0.3897598301,
+      "sharpe": 1.0771703455,
+      "max_drawdown": -0.1876350342
+    },
+    "SECTOR_ETF_ROTATION": {
+      "holdout_return": 0.5085309443,
+      "sharpe": 1.4284322462,
+      "max_drawdown": -0.1607711396,
+      "rolling_average_excess_return": 0.0348861810,
+      "walk_forward_average_excess_return": 0.0098133665
+    },
+    "SECTOR_ROTATION_CONCENTRATED": {
+      "holdout_return": 0.2493562764,
+      "sharpe": 0.5913835651,
+      "max_drawdown": -0.2494319236,
+      "rolling_average_excess_return": 0.0885412210,
+      "walk_forward_average_excess_return": -0.0036417591
+    },
+    "SECTOR_ROTATION_INV_VOL": {
+      "holdout_return": 0.5142998918,
+      "sharpe": 1.4567231724,
+      "max_drawdown": -0.1574282684,
+      "rolling_average_excess_return": -0.0332010594,
+      "walk_forward_average_excess_return": -0.0027650679
+    },
+    "REGIME_ROUTED_SECTOR": {
+      "holdout_return": 0.3957629710,
+      "sharpe": 1.3642281699,
+      "max_drawdown": -0.1160714116,
+      "rolling_average_excess_return": -0.2123,
+      "walk_forward_average_excess_return": -0.0464
+    }
+  },
+  "decisions": {
+    "SECTOR_ETF_ROTATION": "retain as incumbent forward shadow",
+    "SECTOR_ROTATION_CONCENTRATED": "do not advance",
+    "SECTOR_ROTATION_INV_VOL": "retain as a diagnostic challenger only",
+    "REGIME_ROUTED_SECTOR": "do not advance on the return-seeking track; retain as evidence for a separately evaluated defensive objective"
+  },
+  "next_generation": [
+    "factor ETF momentum with inception-aware cohorts",
+    "industry ETF momentum with inception-aware cohorts",
+    "joint sleeve allocation learned only within purged chronological training folds",
+    "point-in-time value and quality strategies only after their data gates are satisfied"
+  ],
+  "no_post_result_retuning": true
+}

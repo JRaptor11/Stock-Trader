@@ -19,12 +19,14 @@ def _canonical(value: dict) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
-def append_observation(archive: Path, ledger: Path, forward_start: str) -> dict:
+def append_observation(archive: Path, ledger: Path, forward_start: str,
+                       strategy: str = "SECTOR_ETF_ROTATION",
+                       variant: str = "g2-momentum-no-1m") -> dict:
     with zipfile.ZipFile(archive) as bundle:
         manifest = json.loads(bundle.read("tier1_manifest.json"))
         daily = list(csv.DictReader(io.TextIOWrapper(bundle.open("tier1_daily.csv"), encoding="utf-8")))
     config = dict(manifest["config"]); config_hash = hashlib.sha256(_canonical(config)).hexdigest()
-    rows = [r for r in daily if r["strategy"] == "SECTOR_ETF_ROTATION" and float(r["cost_bps"]) == float(config["primary_cost_bps"])]
+    rows = [r for r in daily if r["strategy"] == strategy and float(r["cost_bps"]) == float(config["primary_cost_bps"])]
     rows.sort(key=lambda r: r["date"])
     if not rows or rows[-1]["date"] < forward_start:
         raise ValueError("archive does not contain a forward observation")
@@ -39,7 +41,7 @@ def append_observation(archive: Path, ledger: Path, forward_start: str) -> dict:
     previous_equity = float(rows[-2]["equity"]) if len(rows) > 1 else float(config["initial_cash"])
     payload = {
         "as_of_date": latest_date, "recorded_at": datetime.now(UTC).isoformat(),
-        "strategy": "SECTOR_ETF_ROTATION", "variant": "g2-momentum-no-1m",
+        "strategy": strategy, "variant": variant,
         "equity": float(rows[-1]["equity"]),
         "daily_return": float(rows[-1]["equity"]) / previous_equity - 1.0,
         "cash": float(rows[-1]["cash"]), "positions": int(rows[-1]["positions"]),
@@ -57,8 +59,8 @@ def append_observation(archive: Path, ledger: Path, forward_start: str) -> dict:
 
 
 def main():
-    parser=argparse.ArgumentParser(); parser.add_argument("--archive",type=Path,required=True); parser.add_argument("--ledger",type=Path,required=True); parser.add_argument("--forward-start",default="2026-09-03"); args=parser.parse_args()
-    print(json.dumps(append_observation(args.archive,args.ledger,args.forward_start),indent=2))
+    parser=argparse.ArgumentParser(); parser.add_argument("--archive",type=Path,required=True); parser.add_argument("--ledger",type=Path,required=True); parser.add_argument("--forward-start",default="2026-09-03"); parser.add_argument("--strategy",default="SECTOR_ETF_ROTATION"); parser.add_argument("--variant",default="g2-momentum-no-1m"); args=parser.parse_args()
+    print(json.dumps(append_observation(args.archive,args.ledger,args.forward_start,args.strategy,args.variant),indent=2))
 
 
 if __name__ == "__main__": main()
