@@ -1,6 +1,6 @@
 """Shared data, experiment, and promotion contracts for research engines."""
 from __future__ import annotations
-import csv, hashlib, json
+import csv, hashlib, json, os, sqlite3, tempfile
 from dataclasses import asdict, dataclass
 from datetime import date
 from pathlib import Path
@@ -11,15 +11,24 @@ class DatasetAudit:
     duplicate_symbol_timestamps: int; missing_ohlcv_rows: int; feed: str; adjusted: bool
 
 def audit_bar_csv(path: Path, *, feed="unknown", adjusted=False) -> DatasetAudit:
-    digest=hashlib.sha256(); seen=set(); duplicates=missing=rows=0; symbols=set(); first=last=None
+    digest=hashlib.sha256(); duplicates=missing=rows=0; symbols=set(); first=last=None
     with path.open("rb") as raw:
         for chunk in iter(lambda:raw.read(1024*1024),b""): digest.update(chunk)
-    with path.open("r",newline="",encoding="utf-8-sig") as handle:
-        reader=csv.DictReader(handle); required={"timestamp","symbol","open","high","low","close","volume"}
-        if not required.issubset(reader.fieldnames or ()): raise ValueError(f"bar CSV missing columns: {sorted(required-set(reader.fieldnames or ())) }")
-        for row in reader:
-            rows+=1; key=(row["timestamp"],row["symbol"].upper()); duplicates+=key in seen; seen.add(key); symbols.add(key[1])
-            missing+=any(row.get(name) in (None,"") for name in ("open","high","low","close","volume")); first=min(first,row["timestamp"]) if first else row["timestamp"]; last=max(last,row["timestamp"]) if last else row["timestamp"]
+    descriptor,database_name=tempfile.mkstemp(prefix="bar-audit-",suffix=".sqlite",dir=path.parent)
+    os.close(descriptor); connection=sqlite3.connect(database_name)
+    try:
+        connection.execute("PRAGMA journal_mode=OFF"); connection.execute("PRAGMA synchronous=OFF")
+        connection.execute("CREATE TABLE observed (timestamp TEXT NOT NULL,symbol TEXT NOT NULL,PRIMARY KEY(timestamp,symbol)) WITHOUT ROWID")
+        with path.open("r",newline="",encoding="utf-8-sig") as handle:
+            reader=csv.DictReader(handle); required={"timestamp","symbol","open","high","low","close","volume"}
+            if not required.issubset(reader.fieldnames or ()): raise ValueError(f"bar CSV missing columns: {sorted(required-set(reader.fieldnames or ())) }")
+            for row in reader:
+                rows+=1; key=(row["timestamp"],row["symbol"].upper()); symbols.add(key[1]); before=connection.total_changes
+                connection.execute("INSERT OR IGNORE INTO observed(timestamp,symbol) VALUES (?,?)",key); duplicates+=connection.total_changes==before
+                missing+=any(row.get(name) in (None,"") for name in ("open","high","low","close","volume")); first=min(first,row["timestamp"]) if first else row["timestamp"]; last=max(last,row["timestamp"]) if last else row["timestamp"]
+        connection.commit()
+    finally:
+        connection.close(); Path(database_name).unlink(missing_ok=True)
     return DatasetAudit(digest.hexdigest(),rows,len(symbols),first,last,duplicates,missing,feed,adjusted)
 
 def _boolean(value, field):
@@ -52,7 +61,8 @@ def apply_security_master(sessions: dict, rows: list[dict]) -> tuple[dict,dict,l
     intervals={}
     for row in rows: intervals.setdefault(row["symbol"],[]).append(row)
     filtered={}; diagnostics=[]; observed=classified=eligible=0
-    for day,symbols in sorted(sessions.items()):
+    for day in sorted(sessions):
+        symbols=sessions[day]
         kept={}
         for symbol,bars in sorted(symbols.items()):
             observed+=1; matches=[row for row in intervals.get(symbol,()) if row["effective_from"]<=day and (not row["effective_to"] or day<=row["effective_to"])]

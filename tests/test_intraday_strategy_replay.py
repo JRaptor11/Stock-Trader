@@ -22,6 +22,25 @@ class IntradayStrategyReplayTests(unittest.TestCase):
             self.assertEqual(["2026-01-02T14:30:00+00:00","2026-07-02T13:30:00+00:00"],kept)
             self.assertTrue(all(isinstance(bar,IntradayBar) for symbols in sessions.values() for bars in symbols.values() for bar in bars))
 
+    def test_disk_session_store_matches_in_memory_sessions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); path=root/"bars.csv"; database=root/"sessions.sqlite"
+            path.write_text(
+                "timestamp,symbol,open,high,low,close,volume,vwap\n"
+                "2026-07-02T13:25:00+00:00,AAA,9,10,8,9,50,9\n"
+                "2026-07-02T13:30:00+00:00,BBB,19,20,18,19,75,19\n"
+                "2026-07-02T13:30:00+00:00,AAA,10,11,9,10,100,10\n",
+                encoding="utf-8",
+            )
+            expected=load_sessions(path); actual=load_sessions(path,storage_path=database)
+            try:
+                self.assertEqual(list(expected),list(actual))
+                self.assertEqual(set(expected["2026-07-02"]),set(actual["2026-07-02"]))
+                self.assertEqual(expected["2026-07-02"]["AAA"],actual["2026-07-02"]["AAA"])
+            finally:
+                actual.close()
+            self.assertFalse(database.exists())
+
     def test_rejects_unknown_strategy(self):
         with self.assertRaisesRegex(ValueError, "unknown intraday strategies"):
             IntradayConfig(strategy_names=("COMBINED_MAGIC",))
@@ -72,6 +91,7 @@ class IntradayStrategyReplayTests(unittest.TestCase):
             self.assertFalse(manifest["promotion_gate"]["checks"]["halt_luld_available"])
             self.assertFalse(manifest["promotion_gate"]["checks"]["point_in_time_market_cap"])
             self.assertEqual([],list(root.glob("*.intraday-spill")))
+            self.assertEqual([],list(root.glob("*.sessions.sqlite")))
 
 
 if __name__ == "__main__": unittest.main()

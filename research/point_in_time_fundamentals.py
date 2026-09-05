@@ -32,7 +32,8 @@ def snapshot_at(by_symbol, symbol, timestamp):
 
 def fundamentals_audit(sessions, by_symbol):
     diagnostics=[]; covered=market_cap=float_count=0; observed=0
-    for day,symbols in sorted(sessions.items()):
+    for day in sorted(sessions):
+        symbols=sessions[day]
         for symbol,bars in sorted(symbols.items()):
             observed+=1; row=snapshot_at(by_symbol,symbol,bars[0]["timestamp"]); covered+=row is not None
             if row: market_cap+=1; float_count+=1

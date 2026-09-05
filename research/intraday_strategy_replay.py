@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import csv, gc, hashlib, io, json, math, shutil, statistics, zipfile
+import csv, gc, hashlib, io, json, math, shutil, sqlite3, statistics, zipfile
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime, time, timezone
 from pathlib import Path
@@ -45,6 +46,51 @@ class IntradayBar:
 
     def __getitem__(self, key: str):
         return getattr(self, key)
+
+
+class DiskSessionStore(Mapping):
+    """SQLite-backed session mapping that materializes only one day at a time."""
+
+    def __init__(self, database_path: Path):
+        self.database_path=database_path; self.connection=sqlite3.connect(database_path)
+        self.connection.execute("PRAGMA journal_mode=OFF"); self.connection.execute("PRAGMA synchronous=OFF"); self.connection.execute("PRAGMA temp_store=FILE")
+
+    def build(self, source: Path, *, regular_session_only: bool) -> None:
+        self.connection.execute("DROP TABLE IF EXISTS bars")
+        self.connection.execute("CREATE TABLE bars (day TEXT NOT NULL,symbol TEXT NOT NULL,timestamp TEXT NOT NULL,open REAL NOT NULL,high REAL NOT NULL,low REAL NOT NULL,close REAL NOT NULL,volume REAL NOT NULL,vwap REAL NOT NULL)")
+        batch=[]
+        with source.open("r",newline="",encoding="utf-8-sig") as handle:
+            reader=csv.DictReader(handle); required={"timestamp","symbol","open","high","low","close","volume"}
+            if not required.issubset(reader.fieldnames or ()): raise ValueError(f"intraday CSV missing columns: {sorted(required-set(reader.fieldnames or ())) }")
+            for row in reader:
+                ts=datetime.fromisoformat(row["timestamp"].replace("Z","+00:00"))
+                if ts.tzinfo is None: raise ValueError("bar timestamps must include a timezone")
+                if regular_session_only:
+                    market_time=ts.astimezone(NEW_YORK).time().replace(tzinfo=None)
+                    if not REGULAR_SESSION_OPEN <= market_time < REGULAR_SESSION_CLOSE: continue
+                close=float(row["close"]); utc=ts.astimezone(timezone.utc)
+                batch.append((utc.date().isoformat(),row["symbol"].upper(),utc.isoformat(),float(row["open"]),float(row["high"]),float(row["low"]),close,float(row["volume"]),float(row.get("vwap") or close)))
+                if len(batch)>=2000:
+                    self.connection.executemany("INSERT INTO bars VALUES (?,?,?,?,?,?,?,?,?)",batch); batch.clear()
+            if batch: self.connection.executemany("INSERT INTO bars VALUES (?,?,?,?,?,?,?,?,?)",batch)
+        self.connection.execute("CREATE INDEX bars_day_symbol_timestamp ON bars(day,symbol,timestamp)"); self.connection.commit()
+
+    def __iter__(self):
+        return (row[0] for row in self.connection.execute("SELECT DISTINCT day FROM bars ORDER BY day"))
+
+    def __len__(self):
+        return int(self.connection.execute("SELECT COUNT(DISTINCT day) FROM bars").fetchone()[0])
+
+    def __getitem__(self, day):
+        rows=self.connection.execute("SELECT symbol,timestamp,open,high,low,close,volume,vwap FROM bars WHERE day=? ORDER BY symbol,timestamp",(day,))
+        symbols=defaultdict(list)
+        for symbol,timestamp,open_,high,low,close,volume,vwap in rows:
+            symbols[symbol].append(IntradayBar(timestamp,open_,high,low,close,volume,vwap))
+        if not symbols: raise KeyError(day)
+        return dict(symbols)
+
+    def close(self):
+        self.connection.close(); self.database_path.unlink(missing_ok=True)
 
 
 @dataclass(frozen=True)
@@ -117,7 +163,9 @@ def config_from_job(job: dict) -> IntradayConfig:
     return IntradayConfig(**supplied)
 
 
-def load_sessions(path: Path, *, regular_session_only: bool = True) -> dict:
+def load_sessions(path: Path, *, regular_session_only: bool = True, storage_path: Path | None = None) -> dict | DiskSessionStore:
+    if storage_path is not None:
+        store=DiskSessionStore(storage_path); store.build(path,regular_session_only=regular_session_only); return store
     sessions = defaultdict(lambda: defaultdict(list))
     with path.open("r", newline="", encoding="utf-8-sig") as handle:
         reader=csv.DictReader(handle); required={"timestamp","symbol","open","high","low","close","volume"}
@@ -261,7 +309,8 @@ def _stability_summary(rows):
 
 
 def run_tournament(job: dict, bars_path: Path, archive_path: Path, source_sha256: str, progress_callback=None, initial_checkpoint=None, checkpoint_callback=None) -> Path:
-    config=config_from_job(job); audit=audit_bar_csv(bars_path,feed=str(job.get("data_feed") or "unknown"),adjusted=bool(job.get("adjusted",False))); sessions=load_sessions(bars_path,regular_session_only=config.regular_session_only)
+    config=config_from_job(job); audit=audit_bar_csv(bars_path,feed=str(job.get("data_feed") or "unknown"),adjusted=bool(job.get("adjusted",False)))
+    sessions=load_sessions(bars_path,regular_session_only=config.regular_session_only,storage_path=archive_path.parent/f".{archive_path.name}.sessions.sqlite")
     master_path=Path(job["_security_master_path"]) if job.get("_security_master_path") else None
     master_rows=load_security_master(master_path) if master_path else []
     master_summary={"provided":False,"complete_observed_coverage":False,"classification_coverage":0.0}; master_diagnostics=[]
@@ -305,4 +354,5 @@ def run_tournament(job: dict, bars_path: Path, archive_path: Path, source_sha256
             _write_csv_member(bundle,name,rows)
         bundle.writestr("intraday_manifest.json",json.dumps(manifest,indent=2,default=list))
     signal_spill.close(); signal_spill.path.unlink(missing_ok=True); shutil.rmtree(signal_spill_root,ignore_errors=True)
+    sessions.close()
     return archive_path
