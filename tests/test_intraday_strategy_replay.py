@@ -2,10 +2,25 @@ import csv, hashlib, json, tempfile, unittest, zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from research.intraday_strategy_replay import IntradayConfig, _parameter_stability, run_tournament
+from research.intraday_strategy_replay import IntradayConfig, _parameter_stability, load_sessions, run_tournament
 
 
 class IntradayStrategyReplayTests(unittest.TestCase):
+    def test_regular_session_filter_handles_standard_and_daylight_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/"bars.csv"
+            with path.open("w",newline="",encoding="utf-8") as handle:
+                writer=csv.DictWriter(handle,fieldnames=["timestamp","symbol","open","high","low","close","volume"]); writer.writeheader()
+                for stamp in (
+                    "2026-01-02T14:25:00+00:00", "2026-01-02T14:30:00+00:00",
+                    "2026-01-02T21:00:00+00:00", "2026-07-02T13:25:00+00:00",
+                    "2026-07-02T13:30:00+00:00", "2026-07-02T20:00:00+00:00",
+                ):
+                    writer.writerow({"timestamp":stamp,"symbol":"TEST","open":10,"high":11,"low":9,"close":10,"volume":100})
+            sessions=load_sessions(path)
+            kept=[bar["timestamp"] for symbols in sessions.values() for bars in symbols.values() for bar in bars]
+            self.assertEqual(["2026-01-02T14:30:00+00:00","2026-07-02T13:30:00+00:00"],kept)
+
     def test_rejects_unknown_strategy(self):
         with self.assertRaisesRegex(ValueError, "unknown intraday strategies"):
             IntradayConfig(strategy_names=("COMBINED_MAGIC",))

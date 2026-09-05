@@ -5,8 +5,9 @@ from __future__ import annotations
 import csv, gc, hashlib, io, json, math, shutil, statistics, zipfile
 from collections import defaultdict
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from research.strategy_registry import registry_snapshot, validate_experiment_declaration
 from research.execution_model import ExecutionAssumptions, entry_fill, exit_fill, net_return
@@ -20,6 +21,9 @@ from research.point_in_time_fundamentals import fundamentals_audit, load_fundame
 from research.historical_replay import SpilledRows
 
 STRATEGIES = ("OPENING_RANGE_BREAKOUT", "RELATIVE_VOLUME_BREAKOUT", "VWAP_MEAN_REVERSION")
+NEW_YORK = ZoneInfo("America/New_York")
+REGULAR_SESSION_OPEN = time(9, 30)
+REGULAR_SESSION_CLOSE = time(16, 0)
 STABILITY_NEIGHBORHOODS = {
     "OPENING_RANGE_BREAKOUT": (("opening_range_bars", 2), ("opening_range_bars", 4)),
     "RELATIVE_VOLUME_BREAKOUT": (("breakout_lookback_bars", 15), ("breakout_lookback_bars", 25)),
@@ -68,6 +72,7 @@ class IntradayConfig:
     walk_forward_test_sessions: int = 63
     walk_forward_step_sessions: int = 63
     run_parameter_stability: bool = True
+    regular_session_only: bool = True
 
     def __post_init__(self):
         unknown = set(self.strategy_names) - set(STRATEGIES)
@@ -96,7 +101,7 @@ def config_from_job(job: dict) -> IntradayConfig:
     return IntradayConfig(**supplied)
 
 
-def load_sessions(path: Path) -> dict:
+def load_sessions(path: Path, *, regular_session_only: bool = True) -> dict:
     sessions = defaultdict(lambda: defaultdict(list))
     with path.open("r", newline="", encoding="utf-8-sig") as handle:
         reader=csv.DictReader(handle); required={"timestamp","symbol","open","high","low","close","volume"}
@@ -104,6 +109,10 @@ def load_sessions(path: Path) -> dict:
         for row in reader:
             ts=datetime.fromisoformat(row["timestamp"].replace("Z","+00:00"))
             if ts.tzinfo is None: raise ValueError("bar timestamps must include a timezone")
+            if regular_session_only:
+                market_time = ts.astimezone(NEW_YORK).time().replace(tzinfo=None)
+                if not REGULAR_SESSION_OPEN <= market_time < REGULAR_SESSION_CLOSE:
+                    continue
             close=float(row["close"]); symbol=row["symbol"].upper()
             sessions[ts.astimezone(timezone.utc).date().isoformat()][symbol].append({"timestamp":ts.astimezone(timezone.utc).isoformat(), **{k:float(row[k]) for k in ("open","high","low","close","volume")}, "vwap":float(row.get("vwap") or close)})
     for symbols in sessions.values():
@@ -228,7 +237,7 @@ def _stability_summary(rows):
 
 
 def run_tournament(job: dict, bars_path: Path, archive_path: Path, source_sha256: str, progress_callback=None, initial_checkpoint=None, checkpoint_callback=None) -> Path:
-    config=config_from_job(job); audit=audit_bar_csv(bars_path,feed=str(job.get("data_feed") or "unknown"),adjusted=bool(job.get("adjusted",False))); sessions=load_sessions(bars_path)
+    config=config_from_job(job); audit=audit_bar_csv(bars_path,feed=str(job.get("data_feed") or "unknown"),adjusted=bool(job.get("adjusted",False))); sessions=load_sessions(bars_path,regular_session_only=config.regular_session_only)
     master_path=Path(job["_security_master_path"]) if job.get("_security_master_path") else None
     master_rows=load_security_master(master_path) if master_path else []
     master_summary={"provided":False,"complete_observed_coverage":False,"classification_coverage":0.0}; master_diagnostics=[]
@@ -265,7 +274,7 @@ def run_tournament(job: dict, bars_path: Path, archive_path: Path, source_sha256
     evaluation=[row for row in scorecards if row["period"]==("holdout" if config.holdout_start_date else "full")]
     verified_master=bool(master_summary.get("complete_observed_coverage") and config.survivorship_safe_universe)
     gate=promotion_gate(audit=audit,security_master=verified_master,halt_luld=event_audit["halt_luld_complete"],corporate_actions=event_audit["corporate_actions_complete"],delistings=event_audit["delistings_complete"],point_in_time_cap=fundamentals_summary["market_cap_complete"],point_in_time_float=fundamentals_summary["float_complete"],minimum_trades_met=all(row["accepted_trades"]>=config.minimum_trades_for_promotion for row in evaluation))
-    manifest={"engine":"intraday_strategy_isolation","source_sha256":source_sha256,"dataset_audit":asdict(audit),"security_master":master_summary,"market_events":event_audit,"point_in_time_fundamentals":fundamentals_summary,"survivorship_safe_universe_declared":config.survivorship_safe_universe,"promotion_gate":gate,"config":asdict(config),"experiment":validate_experiment_declaration(job.get("experiment")),"hypothesis_registry":registry_snapshot(),"strategies_combined":False,"execution_semantics":"completed-bar signal; next-bar-open entry; pessimistic same-bar stop precedence; halt and LULD intervals block signals and entries","validation_semantics":"expanding chronological walk-forward folds plus same-session, same-entry-bar, nearest-price non-signal controls","limitations":["a security master classifies observed bars but only a source-universe guarantee controls omitted-delisted-symbol survivorship bias","fundamental eligibility uses only snapshots known by the intended entry timestamp","delisting returns are audited for universe integrity but are not applied because this engine closes positions intraday","matched controls reduce timing and price differences but do not establish causal treatment effects"]}
+    manifest={"engine":"intraday_strategy_isolation","source_sha256":source_sha256,"dataset_audit":asdict(audit),"security_master":master_summary,"market_events":event_audit,"point_in_time_fundamentals":fundamentals_summary,"survivorship_safe_universe_declared":config.survivorship_safe_universe,"promotion_gate":gate,"config":asdict(config),"experiment":validate_experiment_declaration(job.get("experiment")),"hypothesis_registry":registry_snapshot(),"strategies_combined":False,"session_filter":"09:30 inclusive to 16:00 exclusive America/New_York" if config.regular_session_only else "all observed bars","execution_semantics":"completed-bar signal; next-bar-open entry; pessimistic same-bar stop precedence; halt and LULD intervals block signals and entries","validation_semantics":"expanding chronological walk-forward folds plus same-session, same-entry-bar, nearest-price non-signal controls","limitations":["a security master classifies observed bars but only a source-universe guarantee controls omitted-delisted-symbol survivorship bias","fundamental eligibility uses only snapshots known by the intended entry timestamp","delisting returns are audited for universe integrity but are not applied because this engine closes positions intraday","matched controls reduce timing and price differences but do not establish causal treatment effects"]}
     archive_path.parent.mkdir(parents=True,exist_ok=True)
     with zipfile.ZipFile(archive_path,"w",zipfile.ZIP_DEFLATED,compresslevel=1) as bundle:
         for name,rows in (("intraday_signals.csv",signals),("intraday_trades.csv",portfolio_trades),("intraday_matched_controls.csv",controls),("intraday_walk_forward.csv",walk_forward),("intraday_parameter_stability.csv",stability),("intraday_parameter_stability_summary.csv",stability_summary),("intraday_portfolio_events.csv",portfolio_curve),("intraday_market_conditions.csv",list(conditions.values())),("security_master_diagnostics.csv",master_diagnostics),("point_in_time_fundamentals_diagnostics.csv",fundamentals_diagnostics),("intraday_scorecard.csv",scorecards)):
