@@ -2,7 +2,7 @@ import csv, hashlib, json, tempfile, unittest, zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from research.intraday_strategy_replay import IntradayConfig, _parameter_stability, load_sessions, run_tournament
+from research.intraday_strategy_replay import IntradayBar, IntradayConfig, _parameter_stability, load_sessions, run_tournament
 
 
 class IntradayStrategyReplayTests(unittest.TestCase):
@@ -20,6 +20,7 @@ class IntradayStrategyReplayTests(unittest.TestCase):
             sessions=load_sessions(path)
             kept=[bar["timestamp"] for symbols in sessions.values() for bars in symbols.values() for bar in bars]
             self.assertEqual(["2026-01-02T14:30:00+00:00","2026-07-02T13:30:00+00:00"],kept)
+            self.assertTrue(all(isinstance(bar,IntradayBar) for symbols in sessions.values() for bars in symbols.values() for bar in bars))
 
     def test_rejects_unknown_strategy(self):
         with self.assertRaisesRegex(ValueError, "unknown intraday strategies"):

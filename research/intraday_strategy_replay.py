@@ -31,6 +31,22 @@ STABILITY_NEIGHBORHOODS = {
 }
 
 
+@dataclass(frozen=True, slots=True)
+class IntradayBar:
+    """Compact immutable bar used to keep hosted replay memory bounded."""
+
+    timestamp: str
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+    vwap: float
+
+    def __getitem__(self, key: str):
+        return getattr(self, key)
+
+
 @dataclass(frozen=True)
 class IntradayConfig:
     initial_cash: float = 100_000.0
@@ -114,7 +130,15 @@ def load_sessions(path: Path, *, regular_session_only: bool = True) -> dict:
                 if not REGULAR_SESSION_OPEN <= market_time < REGULAR_SESSION_CLOSE:
                     continue
             close=float(row["close"]); symbol=row["symbol"].upper()
-            sessions[ts.astimezone(timezone.utc).date().isoformat()][symbol].append({"timestamp":ts.astimezone(timezone.utc).isoformat(), **{k:float(row[k]) for k in ("open","high","low","close","volume")}, "vwap":float(row.get("vwap") or close)})
+            sessions[ts.astimezone(timezone.utc).date().isoformat()][symbol].append(
+                IntradayBar(
+                    timestamp=ts.astimezone(timezone.utc).isoformat(),
+                    open=float(row["open"]), high=float(row["high"]),
+                    low=float(row["low"]), close=close,
+                    volume=float(row["volume"]),
+                    vwap=float(row.get("vwap") or close),
+                )
+            )
     for symbols in sessions.values():
         for bars in symbols.values(): bars.sort(key=lambda row:row["timestamp"])
     return dict(sessions)
