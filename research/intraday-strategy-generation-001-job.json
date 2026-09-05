@@ -1,12 +1,13 @@
 {
-  "job_id": "intraday-strategy-generation-001-baseline10-2024-2026",
+  "job_id": "intraday-strategy-generation-001-baseline10-2024-2026-v2",
   "engine": "intraday_strategy_isolation",
+  "implementation_commit": "8c02ff5",
   "bars_csv": "baseline_2024-01-01_2026-08-21_5m_iex.csv",
   "data_feed": "alpaca_iex",
   "adjusted": true,
   "experiment": {
     "hypothesis_id": "INTRADAY_STRATEGY_ISOLATION",
-    "trial_id": "intraday-generation-001-baseline10",
+    "trial_id": "intraday-generation-001-baseline10-bounded-replay",
     "holdout_policy": "Parameters declared before execution; 2026 sessions are an untouched chronological holdout"
   },
   "intraday_config": {
