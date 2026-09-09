@@ -72,7 +72,8 @@ def aggregate(archives: list[Path], output: Path) -> Path:
         for key in ("portfolio_status","portfolio_rejection_reason","allocated_notional","realized_pnl"): row.pop(key,None)
     trades,portfolio_curve=allocate_trades(raw_trades,initial_cash=float(config["initial_cash"]),target_notional=float(config["target_notional"]),maximum_positions=int(config["maximum_positions"]),maximum_symbol_pct=float(config["maximum_symbol_pct"]))
     trades=sorted(trades,key=lambda row:(row["entry_timestamp"],row["strategy"],row["symbol"]))
-    walk_forward=walk_forward_trade_scorecards(trades,int(config["walk_forward_train_sessions"]),int(config["walk_forward_test_sessions"]),int(config["walk_forward_step_sessions"]),float(config["initial_cash"]))
+    session_dates=sorted({_row_day(row) for row in tables["intraday_market_conditions.csv"] if _row_day(row)})
+    walk_forward=walk_forward_trade_scorecards(trades,int(config["walk_forward_train_sessions"]),int(config["walk_forward_test_sessions"]),int(config["walk_forward_step_sessions"]),float(config["initial_cash"]),session_dates=session_dates)
     stability=_aggregate_stability(stability_rows,float(config["initial_cash"])) if stability_rows else []
     stability_summary=_stability_summary(stability) if stability else []
     scorecards=[]

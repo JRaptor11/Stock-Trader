@@ -20,8 +20,9 @@ def matched_controls(trades, signals, sessions, assumptions, target_notional):
         rows.append({"date":day,"strategy":trade["strategy"],"signal_symbol":trade["symbol"],"control_symbol":symbol,"entry_timestamp":bars[index]["timestamp"],"signal_return":trade["net_return"],"control_return":control,"matched_excess_return":trade["net_return"]-control,"match":"same_session_same_bar_nearest_entry_price_non_signal"})
     return rows
 
-def walk_forward_trade_scorecards(trades, min_train_sessions=252, test_sessions=63, step_sessions=63, initial_cash=100_000.0):
-    accepted=[r for r in trades if r.get("portfolio_status")=="accepted"]; dates=sorted({r["date"] for r in accepted})
+def walk_forward_trade_scorecards(trades, min_train_sessions=252, test_sessions=63, step_sessions=63, initial_cash=100_000.0, session_dates=None):
+    accepted=[r for r in trades if r.get("portfolio_status")=="accepted"]
+    dates=sorted(set(session_dates)) if session_dates is not None else sorted({r["date"] for r in accepted})
     if len(dates)<min_train_sessions+test_sessions: return []
     folds=build_walk_forward_folds(dates,min_train_sessions=min_train_sessions,test_sessions=test_sessions,step_sessions=step_sessions,expanding=True); rows=[]
     for fold in folds:

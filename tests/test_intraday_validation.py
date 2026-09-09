@@ -3,6 +3,12 @@ from research.intraday_validation import matched_controls, walk_forward_trade_sc
 from research.execution_model import ExecutionAssumptions
 
 class IntradayValidationTests(unittest.TestCase):
+    def test_walk_forward_can_use_full_market_calendar(self):
+        trades=[{"date":"2026-01-04","strategy":"A","portfolio_status":"accepted","net_return":.01,"realized_pnl":100}]
+        rows=walk_forward_trade_scorecards(trades,min_train_sessions=2,test_sessions=1,step_sessions=1,session_dates=["2026-01-01","2026-01-02","2026-01-03","2026-01-04"])
+        self.assertEqual(2,len(rows))
+        self.assertEqual("2026-01-03",rows[0]["test_start"])
+
     def test_control_uses_non_signal_same_session_bar(self):
         bars=lambda symbol:[{"timestamp":f"2026-01-01T10:0{i}:00+00:00","open":10+i,"close":10+i+.1,"volume":10000} for i in range(3)]
         trade={"date":"2026-01-01","strategy":"S","symbol":"AAA","entry_timestamp":"x","entry_bar_index":1,"entry_price":11.,"holding_bars":1,"net_return":.02,"portfolio_status":"accepted"}
