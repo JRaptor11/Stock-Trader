@@ -135,6 +135,8 @@ class IntradayConfig:
     walk_forward_step_sessions: int = 63
     run_parameter_stability: bool = True
     regular_session_only: bool = True
+    evaluation_start_date: str | None = None
+    evaluation_end_date: str | None = None
 
     def __post_init__(self):
         unknown = set(self.strategy_names) - set(STRATEGIES)
@@ -149,6 +151,8 @@ class IntradayConfig:
             raise ValueError("portfolio limits must be positive and bounded")
         if bool(self.discovery_end_date) != bool(self.holdout_start_date) or (self.discovery_end_date and self.discovery_end_date >= self.holdout_start_date):
             raise ValueError("chronological discovery and holdout dates must be complete and nonoverlapping")
+        if self.evaluation_start_date and self.evaluation_end_date and self.evaluation_start_date > self.evaluation_end_date:
+            raise ValueError("evaluation date range is inverted")
         if self.family_trial_count < len(self.strategy_names): raise ValueError("family_trial_count cannot undercount tested strategies")
         if min(self.walk_forward_train_sessions,self.walk_forward_test_sessions,self.walk_forward_step_sessions)<1: raise ValueError("walk-forward session counts must be positive")
         for low,high in ((self.minimum_market_cap,self.maximum_market_cap),(self.minimum_float_shares,self.maximum_float_shares)):
@@ -220,6 +224,7 @@ def _simulate(config, sessions, conditions, market_events=(), fundamentals=None,
     assumptions=ExecutionAssumptions(config.cost_bps_per_side,config.assumed_spread_bps,config.maximum_bar_participation)
     session_days=sorted(sessions); progress_interval=max(1,len(session_days)//100)
     for day_number,day in enumerate(session_days,start=1):
+        evaluation_day=(not config.evaluation_start_date or day>=config.evaluation_start_date) and (not config.evaluation_end_date or day<=config.evaluation_end_date)
         for symbol,bars in sorted(sessions[day].items()):
             prior=profiles[symbol][-config.volume_baseline_sessions:]; dollars=daily_dollars[symbol][-config.volume_baseline_sessions:]
             average_dollars=statistics.fmean(dollars) if dollars else 0.; cumulative=0.; traded=set()
@@ -238,6 +243,7 @@ def _simulate(config, sessions, conditions, market_events=(), fundamentals=None,
                         fundamental_block=fundamental_block or (config.minimum_market_cap is not None and fundamental["market_cap"]<config.minimum_market_cap) or (config.maximum_market_cap is not None and fundamental["market_cap"]>config.maximum_market_cap) or (config.minimum_float_shares is not None and fundamental["float_shares"]<config.minimum_float_shares) or (config.maximum_float_shares is not None and fundamental["float_shares"]>config.maximum_float_shares)
                     eligible=not event_block and not fundamental_block and len(prior)>=config.minimum_baseline_sessions and config.minimum_price<=entry_bar["open"]<=config.maximum_price and average_dollars>=config.minimum_average_daily_dollar_volume and capacity>=config.target_notional
                     signal={"date":day,"symbol":symbol,"strategy":strategy,"signal_timestamp":bar["timestamp"],"entry_timestamp":entry_bar["timestamp"],"signal_bar_index":index,"entry_bar_index":index+1,"relative_volume":rvol,"average_daily_dollar_volume":average_dollars,"entry_bar_capacity":capacity,"eligible":eligible,"signal_reason":reason,"market_event_block":event_block,"fundamental_block":fundamental_block,"fundamental_known_at":fundamental["known_at"] if fundamental else None,"fundamental_effective_date":fundamental["effective_date"] if fundamental else None,"point_in_time_market_cap":fundamental["market_cap"] if fundamental else None,"point_in_time_float_shares":fundamental["float_shares"] if fundamental else None,"point_in_time_market_cap_available":fundamental is not None,"point_in_time_float_available":fundamental is not None,**{f"market_{k}":v for k,v in conditions.get(day,{}).items() if k!="date"}}
+                    if not evaluation_day: continue
                     if collect_signals: signals.append(signal)
                     if not eligible or strategy in traded: continue
                     entry,fill=entry_fill(entry_bar["open"],entry_bar["volume"],config.target_notional,assumptions)
@@ -251,14 +257,20 @@ def _simulate(config, sessions, conditions, market_events=(), fundamentals=None,
 
 
 def _write_csv_member(bundle, name, rows):
-    iterator=iter(rows)
-    try: first=next(iterator)
-    except StopIteration:
+    # Signal diagnostics gain causal market-regime columns only after enough
+    # history exists. Discover the union in a streaming first pass so later
+    # rows cannot break archive creation and disk-backed collections stay off
+    # the heap.
+    fieldnames=[]; seen=set()
+    for row in rows:
+        for key in row:
+            if key not in seen: seen.add(key); fieldnames.append(key)
+    if not fieldnames:
         bundle.writestr(name,""); return
     with bundle.open(name,"w") as raw:
         with io.TextIOWrapper(raw,encoding="utf-8",newline="") as text:
-            writer=csv.DictWriter(text,fieldnames=list(first)); writer.writeheader(); writer.writerow(first)
-            for row in iterator: writer.writerow(row)
+            writer=csv.DictWriter(text,fieldnames=fieldnames); writer.writeheader()
+            for row in rows: writer.writerow(row)
 
 
 def _parameter_stability(config, sessions, conditions, baseline_trades, market_events=(), fundamentals=None, initial_checkpoint=None, checkpoint_callback=None, progress_callback=None):
@@ -347,7 +359,7 @@ def run_tournament(job: dict, bars_path: Path, archive_path: Path, source_sha256
     evaluation=[row for row in scorecards if row["period"]==("holdout" if config.holdout_start_date else "full")]
     verified_master=bool(master_summary.get("complete_observed_coverage") and config.survivorship_safe_universe)
     gate=promotion_gate(audit=audit,security_master=verified_master,halt_luld=event_audit["halt_luld_complete"],corporate_actions=event_audit["corporate_actions_complete"],delistings=event_audit["delistings_complete"],point_in_time_cap=fundamentals_summary["market_cap_complete"],point_in_time_float=fundamentals_summary["float_complete"],minimum_trades_met=all(row["accepted_trades"]>=config.minimum_trades_for_promotion for row in evaluation))
-    manifest={"engine":"intraday_strategy_isolation","source_sha256":source_sha256,"dataset_audit":asdict(audit),"security_master":master_summary,"market_events":event_audit,"point_in_time_fundamentals":fundamentals_summary,"survivorship_safe_universe_declared":config.survivorship_safe_universe,"promotion_gate":gate,"config":asdict(config),"experiment":validate_experiment_declaration(job.get("experiment")),"hypothesis_registry":registry_snapshot(),"strategies_combined":False,"session_filter":"09:30 inclusive to 16:00 exclusive America/New_York" if config.regular_session_only else "all observed bars","execution_semantics":"completed-bar signal; next-bar-open entry; pessimistic same-bar stop precedence; halt and LULD intervals block signals and entries","validation_semantics":"expanding chronological walk-forward folds plus same-session, same-entry-bar, nearest-price non-signal controls","limitations":["a security master classifies observed bars but only a source-universe guarantee controls omitted-delisted-symbol survivorship bias","fundamental eligibility uses only snapshots known by the intended entry timestamp","delisting returns are audited for universe integrity but are not applied because this engine closes positions intraday","matched controls reduce timing and price differences but do not establish causal treatment effects"]}
+    manifest={"engine":"intraday_strategy_isolation","source_sha256":source_sha256,"dataset_audit":asdict(audit),"security_master":master_summary,"market_events":event_audit,"point_in_time_fundamentals":fundamentals_summary,"survivorship_safe_universe_declared":config.survivorship_safe_universe,"promotion_gate":gate,"config":asdict(config),"experiment":validate_experiment_declaration(job.get("experiment")),"hypothesis_registry":registry_snapshot(),"strategies_combined":False,"session_filter":"09:30 inclusive to 16:00 exclusive America/New_York" if config.regular_session_only else "all observed bars","evaluation_range":{"start":config.evaluation_start_date,"end":config.evaluation_end_date},"warmup_sessions_generate_trades":False,"execution_semantics":"completed-bar signal; next-bar-open entry; pessimistic same-bar stop precedence; halt and LULD intervals block signals and entries","validation_semantics":"expanding chronological walk-forward folds plus same-session, same-entry-bar, nearest-price non-signal controls","limitations":["a security master classifies observed bars but only a source-universe guarantee controls omitted-delisted-symbol survivorship bias","fundamental eligibility uses only snapshots known by the intended entry timestamp","delisting returns are audited for universe integrity but are not applied because this engine closes positions intraday","matched controls reduce timing and price differences but do not establish causal treatment effects"]}
     archive_path.parent.mkdir(parents=True,exist_ok=True)
     with zipfile.ZipFile(archive_path,"w",zipfile.ZIP_DEFLATED,compresslevel=1) as bundle:
         for name,rows in (("intraday_signals.csv",signals),("intraday_trades.csv",portfolio_trades),("intraday_matched_controls.csv",controls),("intraday_walk_forward.csv",walk_forward),("intraday_parameter_stability.csv",stability),("intraday_parameter_stability_summary.csv",stability_summary),("intraday_portfolio_events.csv",portfolio_curve),("intraday_market_conditions.csv",list(conditions.values())),("security_master_diagnostics.csv",master_diagnostics),("point_in_time_fundamentals_diagnostics.csv",fundamentals_diagnostics),("intraday_scorecard.csv",scorecards)):

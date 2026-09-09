@@ -1,0 +1,18 @@
+{
+  "generation": "intraday-strategy-generation-001",
+  "implementation": "disk-backed-sharded-v1",
+  "source": "baseline_2024-01-01_2026-08-21_5m_iex.csv",
+  "evaluation_sessions_per_shard": 126,
+  "warmup_sessions": 220,
+  "aggregation": "research.aggregate_intraday_shards",
+  "strategy_parameters": "research/intraday-strategy-generation-001-job.json",
+  "promotion_status": "development_only",
+  "shards": [
+    {"job_id":"intraday-g1-baseline10-shard-001","filename":"baseline_2024-01-01_2026-08-21_5m_iex-shard-001.csv","warmup_start":"2024-01-02","evaluation_start":"2024-01-02","evaluation_end":"2024-07-02","evaluation_sessions":126},
+    {"job_id":"intraday-g1-baseline10-shard-002","filename":"baseline_2024-01-01_2026-08-21_5m_iex-shard-002.csv","warmup_start":"2024-01-02","evaluation_start":"2024-07-03","evaluation_end":"2024-12-31","evaluation_sessions":126},
+    {"job_id":"intraday-g1-baseline10-shard-003","filename":"baseline_2024-01-01_2026-08-21_5m_iex-shard-003.csv","warmup_start":"2024-02-16","evaluation_start":"2025-01-02","evaluation_end":"2025-07-08","evaluation_sessions":126},
+    {"job_id":"intraday-g1-baseline10-shard-004","filename":"baseline_2024-01-01_2026-08-21_5m_iex-shard-004.csv","warmup_start":"2024-08-19","evaluation_start":"2025-07-09","evaluation_end":"2026-01-06","evaluation_sessions":126},
+    {"job_id":"intraday-g1-baseline10-shard-005","filename":"baseline_2024-01-01_2026-08-21_5m_iex-shard-005.csv","warmup_start":"2025-02-20","evaluation_start":"2026-01-07","evaluation_end":"2026-07-09","evaluation_sessions":126},
+    {"job_id":"intraday-g1-baseline10-shard-006","filename":"baseline_2024-01-01_2026-08-21_5m_iex-shard-006.csv","warmup_start":"2025-08-22","evaluation_start":"2026-07-10","evaluation_end":"2026-08-20","evaluation_sessions":30}
+  ]
+}

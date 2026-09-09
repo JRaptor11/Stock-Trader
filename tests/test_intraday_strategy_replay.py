@@ -2,10 +2,20 @@ import csv, hashlib, json, tempfile, unittest, zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from research.intraday_strategy_replay import IntradayBar, IntradayConfig, _parameter_stability, load_sessions, run_tournament
+from research.intraday_strategy_replay import IntradayBar, IntradayConfig, _parameter_stability, _write_csv_member, load_sessions, run_tournament
 
 
 class IntradayStrategyReplayTests(unittest.TestCase):
+    def test_csv_archive_accepts_fields_that_appear_in_later_rows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            archive=Path(directory)/"rows.zip"
+            with zipfile.ZipFile(archive,"w") as bundle:
+                _write_csv_member(bundle,"rows.csv",[{"date":"2026-01-01"},{"date":"2026-01-02","market_state":"bull"}])
+            with zipfile.ZipFile(archive) as bundle:
+                rows=list(csv.DictReader(bundle.read("rows.csv").decode().splitlines()))
+            self.assertEqual("",rows[0]["market_state"])
+            self.assertEqual("bull",rows[1]["market_state"])
+
     def test_regular_session_filter_handles_standard_and_daylight_time(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/"bars.csv"
@@ -74,7 +84,7 @@ class IntradayStrategyReplayTests(unittest.TestCase):
                     for index in range(30):
                         price=10+index*(.01 if session<11 else .08)
                         writer.writerow({"timestamp":(start+timedelta(days=session,minutes=5*index)).isoformat(),"symbol":"TEST","open":price,"high":price+.04,"low":price-.02,"close":price+.02,"volume":100000 if session<11 else 400000,"vwap":price})
-            job={"experiment":{"hypothesis_id":"INTRADAY_STRATEGY_ISOLATION","trial_id":"test"},"intraday_config":{"minimum_average_daily_dollar_volume":1,"target_notional":1,"strategy_names":["OPENING_RANGE_BREAKOUT"],"security_master_available":True,"halt_luld_available":True,"point_in_time_market_cap_available":True,"point_in_time_float_available":True}}
+            job={"experiment":{"hypothesis_id":"INTRADAY_STRATEGY_ISOLATION","trial_id":"test"},"intraday_config":{"minimum_average_daily_dollar_volume":1,"target_notional":1,"strategy_names":["OPENING_RANGE_BREAKOUT"],"security_master_available":True,"halt_luld_available":True,"point_in_time_market_cap_available":True,"point_in_time_float_available":True,"evaluation_start_date":"2026-01-13","evaluation_end_date":"2026-01-13"}}
             run_tournament(job,bars_path,archive,hashlib.sha256(bars_path.read_bytes()).hexdigest())
             with zipfile.ZipFile(archive) as bundle:
                 manifest=json.loads(bundle.read("intraday_manifest.json")); trades=bundle.read("intraday_trades.csv").decode()
@@ -83,6 +93,7 @@ class IntradayStrategyReplayTests(unittest.TestCase):
             self.assertFalse(manifest["strategies_combined"])
             self.assertIn("OPENING_RANGE_BREAKOUT",trades)
             self.assertIn("entry_timestamp",trades)
+            self.assertNotIn("2026-01-12",trades)
             self.assertEqual({"baseline","opening_range_bars=2","opening_range_bars=4"},{row["variant"] for row in stability})
             self.assertIn("return_delta_vs_baseline",stability[0])
             self.assertEqual("OPENING_RANGE_BREAKOUT",stability_summary[0]["strategy"])
