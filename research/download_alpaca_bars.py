@@ -28,6 +28,12 @@ def _date(value: str) -> date:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
 
 
+def timestamp_in_requested_range(timestamp: str, start: str, end: str) -> bool:
+    """Enforce the downloader's documented half-open date range locally."""
+    bar_date = _date(timestamp)
+    return _date(start) <= bar_date < _date(end)
+
+
 def date_chunks(start: str, end: str, chunk_days: int) -> list[tuple[str, str]]:
     """Return non-overlapping half-open date ranges for deterministic downloads."""
     if chunk_days < 1:
@@ -70,6 +76,8 @@ def download(*, symbols: list[str], start: str, end: str, feed: str,
                 pages += 1
                 for symbol, bars in payload.get("bars", {}).items():
                     for bar in bars:
+                        if not timestamp_in_requested_range(bar["t"], start, end):
+                            continue
                         row = {
                             "timestamp": bar["t"], "symbol": symbol,
                             "open": bar["o"], "high": bar["h"], "low": bar["l"],
