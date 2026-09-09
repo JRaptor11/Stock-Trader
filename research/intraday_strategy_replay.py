@@ -14,21 +14,33 @@ from research.strategy_registry import registry_snapshot, validate_experiment_de
 from research.execution_model import ExecutionAssumptions, entry_fill, exit_fill, net_return
 from research.research_contracts import apply_security_master, audit_bar_csv, load_security_master, promotion_gate
 from research.portfolio_accounting import allocate_trades
-from research.market_conditions import causal_market_conditions
+from research.market_conditions import causal_market_conditions, condition_scorecards
 from research.statistical_safeguards import return_evidence
-from research.intraday_validation import matched_controls, walk_forward_trade_scorecards
+from research.intraday_validation import (
+    benchmark_scorecards, cost_sensitivity, matched_controls, nested_regime_walk_forward,
+    portfolio_daily_series, spy_benchmark_daily, walk_forward_trade_scorecards,
+)
 from research.market_events import blocked_event, load_market_events, market_event_audit
 from research.point_in_time_fundamentals import fundamentals_audit, load_fundamentals, snapshot_at
+from research.data_readiness import intraday_data_readiness
 from research.historical_replay import SpilledRows
 
-STRATEGIES = ("OPENING_RANGE_BREAKOUT", "RELATIVE_VOLUME_BREAKOUT", "VWAP_MEAN_REVERSION")
+STRATEGIES = (
+    "OPENING_RANGE_BREAKOUT", "OPENING_RANGE_BREAKOUT_CONFIRMATION",
+    "RELATIVE_VOLUME_BREAKOUT", "VOLATILITY_COMPRESSION_BREAKOUT",
+    "VWAP_MEAN_REVERSION", "VWAP_RECLAIM", "SHORT_TERM_REVERSAL",
+)
 NEW_YORK = ZoneInfo("America/New_York")
 REGULAR_SESSION_OPEN = time(9, 30)
 REGULAR_SESSION_CLOSE = time(16, 0)
 STABILITY_NEIGHBORHOODS = {
     "OPENING_RANGE_BREAKOUT": (("opening_range_bars", 2), ("opening_range_bars", 4)),
+    "OPENING_RANGE_BREAKOUT_CONFIRMATION": (("breakout_confirmation_bars", 1), ("breakout_confirmation_bars", 3)),
     "RELATIVE_VOLUME_BREAKOUT": (("breakout_lookback_bars", 15), ("breakout_lookback_bars", 25)),
+    "VOLATILITY_COMPRESSION_BREAKOUT": (("compression_ratio", .5), ("compression_ratio", .7)),
     "VWAP_MEAN_REVERSION": (("vwap_deviation_pct", .0125), ("vwap_deviation_pct", .0175)),
+    "VWAP_RECLAIM": (("vwap_deviation_pct", .0125), ("vwap_deviation_pct", .0175)),
+    "SHORT_TERM_REVERSAL": (("reversal_threshold_pct", .015), ("reversal_threshold_pct", .025)),
 }
 
 
@@ -104,7 +116,12 @@ class IntradayConfig:
     breakout_buffer_bps: float = 5.0
     opening_breakout_rvol: float = 2.0
     continuation_rvol: float = 3.0
+    breakout_confirmation_bars: int = 2
+    compression_lookback_bars: int = 12
+    compression_ratio: float = .60
     vwap_deviation_pct: float = .015
+    reversal_lookback_bars: int = 6
+    reversal_threshold_pct: float = .02
     stop_loss_pct: float = .01
     profit_target_pct: float = .02
     maximum_holding_bars: int = 12
@@ -129,7 +146,7 @@ class IntradayConfig:
     maximum_symbol_pct: float = .20
     discovery_end_date: str | None = None
     holdout_start_date: str | None = None
-    family_trial_count: int = 3
+    family_trial_count: int = 7
     walk_forward_train_sessions: int = 252
     walk_forward_test_sessions: int = 63
     walk_forward_step_sessions: int = 63
@@ -143,8 +160,10 @@ class IntradayConfig:
         if unknown: raise ValueError(f"unknown intraday strategies: {sorted(unknown)}")
         if not self.strategy_names or len(set(self.strategy_names)) != len(self.strategy_names):
             raise ValueError("strategy_names must be nonempty and unique")
-        for name in ("opening_range_bars", "breakout_lookback_bars", "volume_baseline_sessions", "minimum_baseline_sessions", "maximum_holding_bars"):
+        for name in ("opening_range_bars", "breakout_lookback_bars", "breakout_confirmation_bars", "compression_lookback_bars", "reversal_lookback_bars", "volume_baseline_sessions", "minimum_baseline_sessions", "maximum_holding_bars"):
             if getattr(self, name) < 1: raise ValueError(f"{name} must be positive")
+        if not 0 < self.compression_ratio <= 1 or not 0 < self.reversal_threshold_pct < 1:
+            raise ValueError("compression and reversal thresholds must be in (0, 1]")
         if not 0 < self.maximum_bar_participation <= 1:
             raise ValueError("maximum_bar_participation must be in (0, 1]")
         if self.initial_cash <= 0 or self.maximum_positions < 1 or not 0 < self.maximum_symbol_pct <= 1:
@@ -198,14 +217,32 @@ def load_sessions(path: Path, *, regular_session_only: bool = True, storage_path
 
 def _trigger(strategy, bars, index, rvol, config):
     bar=bars[index]
-    if strategy=="OPENING_RANGE_BREAKOUT":
+    if strategy in {"OPENING_RANGE_BREAKOUT","OPENING_RANGE_BREAKOUT_CONFIRMATION"}:
         if index < config.opening_range_bars: return False,"opening_range_incomplete"
         level=max(row["high"] for row in bars[:config.opening_range_bars]); threshold=config.opening_breakout_rvol
+        if strategy=="OPENING_RANGE_BREAKOUT_CONFIRMATION":
+            start=index-config.breakout_confirmation_bars+1
+            if start<config.opening_range_bars or any(row["close"]<=level*(1+config.breakout_buffer_bps/10000) for row in bars[start:index+1]):
+                return False,"breakout_confirmation_incomplete"
     elif strategy=="RELATIVE_VOLUME_BREAKOUT":
         if index < config.breakout_lookback_bars: return False,"breakout_history_incomplete"
         level=max(row["high"] for row in bars[index-config.breakout_lookback_bars:index]); threshold=config.continuation_rvol
-    else:
+    elif strategy=="VOLATILITY_COMPRESSION_BREAKOUT":
+        lookback=config.compression_lookback_bars
+        if index < lookback*2: return False,"compression_history_incomplete"
+        compressed=bars[index-lookback:index]; baseline=bars[index-lookback*2:index-lookback]
+        average=lambda rows: statistics.fmean((row["high"]-row["low"])/max(row["close"],1e-9) for row in rows)
+        if average(compressed)>average(baseline)*config.compression_ratio: return False,"range_not_compressed"
+        level=max(row["high"] for row in compressed); threshold=config.continuation_rvol
+    elif strategy=="VWAP_MEAN_REVERSION":
         return bar["close"] < bar["vwap"]*(1-config.vwap_deviation_pct),"below_vwap"
+    elif strategy=="VWAP_RECLAIM":
+        if index<1 or bars[index-1]["close"]>=bars[index-1]["vwap"]*(1-config.vwap_deviation_pct): return False,"vwap_deviation_not_observed"
+        return bar["close"]>=bar["vwap"],"vwap_reclaim"
+    else:
+        if index<config.reversal_lookback_bars: return False,"reversal_history_incomplete"
+        reference=bars[index-config.reversal_lookback_bars]["close"]
+        return bar["close"]<=reference*(1-config.reversal_threshold_pct) and bar["close"]<bar["vwap"],"short_term_reversal"
     return bar["close"] > level*(1+config.breakout_buffer_bps/10000) and rvol >= threshold,"price_volume_breakout"
 
 
@@ -346,7 +383,15 @@ def run_tournament(job: dict, bars_path: Path, archive_path: Path, source_sha256
     trades,signals=_simulate(config,sessions,conditions,market_events,fundamentals,progress_callback,"intraday_baseline",signal_sink=signal_spill)
     portfolio_trades,portfolio_curve=allocate_trades(trades,initial_cash=config.initial_cash,target_notional=config.target_notional,maximum_positions=config.maximum_positions,maximum_symbol_pct=config.maximum_symbol_pct)
     controls=matched_controls(portfolio_trades,signals,sessions,assumptions,config.target_notional)
-    walk_forward=walk_forward_trade_scorecards(portfolio_trades,config.walk_forward_train_sessions,config.walk_forward_test_sessions,config.walk_forward_step_sessions,config.initial_cash)
+    session_dates=sorted(sessions)
+    walk_forward=walk_forward_trade_scorecards(portfolio_trades,config.walk_forward_train_sessions,config.walk_forward_test_sessions,config.walk_forward_step_sessions,config.initial_cash,session_dates=session_dates)
+    daily_rows=portfolio_daily_series(portfolio_trades,session_dates,config.strategy_names,config.initial_cash,config.cost_bps_per_side)
+    benchmark_rows=spy_benchmark_daily(daily,session_dates,config.initial_cash)
+    performance,annual,bootstrap=benchmark_scorecards(daily_rows,benchmark_rows,config.initial_cash,config.family_trial_count)
+    condition_single,condition_pairs=condition_scorecards(daily_rows,conditions,config.cost_bps_per_side)
+    nested_regime=nested_regime_walk_forward(portfolio_trades,session_dates,config.walk_forward_train_sessions,
+        config.walk_forward_test_sessions,config.walk_forward_step_sessions,config.initial_cash,config.family_trial_count,strategies=config.strategy_names)
+    costs=cost_sensitivity(portfolio_trades,config.initial_cash,current_cost_bps=config.cost_bps_per_side)
     stability=_parameter_stability(config,sessions,conditions,portfolio_trades,market_events,fundamentals,initial_checkpoint,checkpoint_callback,progress_callback); stability_summary=_stability_summary(stability)
     scorecards=[]
     for strategy in config.strategy_names:
@@ -359,10 +404,13 @@ def run_tournament(job: dict, bars_path: Path, archive_path: Path, source_sha256
     evaluation=[row for row in scorecards if row["period"]==("holdout" if config.holdout_start_date else "full")]
     verified_master=bool(master_summary.get("complete_observed_coverage") and config.survivorship_safe_universe)
     gate=promotion_gate(audit=audit,security_master=verified_master,halt_luld=event_audit["halt_luld_complete"],corporate_actions=event_audit["corporate_actions_complete"],delistings=event_audit["delistings_complete"],point_in_time_cap=fundamentals_summary["market_cap_complete"],point_in_time_float=fundamentals_summary["float_complete"],minimum_trades_met=all(row["accepted_trades"]>=config.minimum_trades_for_promotion for row in evaluation))
-    manifest={"engine":"intraday_strategy_isolation","source_sha256":source_sha256,"dataset_audit":asdict(audit),"security_master":master_summary,"market_events":event_audit,"point_in_time_fundamentals":fundamentals_summary,"survivorship_safe_universe_declared":config.survivorship_safe_universe,"promotion_gate":gate,"config":asdict(config),"experiment":validate_experiment_declaration(job.get("experiment")),"hypothesis_registry":registry_snapshot(),"strategies_combined":False,"session_filter":"09:30 inclusive to 16:00 exclusive America/New_York" if config.regular_session_only else "all observed bars","evaluation_range":{"start":config.evaluation_start_date,"end":config.evaluation_end_date},"warmup_sessions_generate_trades":False,"execution_semantics":"completed-bar signal; next-bar-open entry; pessimistic same-bar stop precedence; halt and LULD intervals block signals and entries","validation_semantics":"expanding chronological walk-forward folds plus same-session, same-entry-bar, nearest-price non-signal controls","limitations":["a security master classifies observed bars but only a source-universe guarantee controls omitted-delisted-symbol survivorship bias","fundamental eligibility uses only snapshots known by the intended entry timestamp","delisting returns are audited for universe integrity but are not applied because this engine closes positions intraday","matched controls reduce timing and price differences but do not establish causal treatment effects"]}
+    readiness=intraday_data_readiness(audit=audit,universe=universe,security_master=master_summary,market_events=event_audit,fundamentals=fundamentals_summary,survivorship_safe_declared=config.survivorship_safe_universe)
+    statistical_checks={row["strategy"]:{"bootstrap_excess_ci_low_above_zero":bool(row["excess_return_ci_95"] and row["excess_return_ci_95"][0]>0)} for row in bootstrap}
+    universe_record={"symbols":universe,"sha256":hashlib.sha256("\n".join(universe).encode()).hexdigest()}
+    manifest={"engine":"intraday_strategy_isolation","source_sha256":source_sha256,"dataset_audit":asdict(audit),"data_readiness":readiness,"universe":universe_record,"security_master":master_summary,"market_events":event_audit,"point_in_time_fundamentals":fundamentals_summary,"survivorship_safe_universe_declared":config.survivorship_safe_universe,"promotion_gate":gate,"intraday_statistical_checks":statistical_checks,"config":asdict(config),"experiment":validate_experiment_declaration(job.get("experiment")),"hypothesis_registry":registry_snapshot(),"strategies_combined":False,"session_filter":"09:30 inclusive to 16:00 exclusive America/New_York" if config.regular_session_only else "all observed bars","evaluation_range":{"start":config.evaluation_start_date,"end":config.evaluation_end_date},"warmup_sessions_generate_trades":False,"execution_semantics":"completed-bar signal; next-bar-open entry; pessimistic same-bar stop precedence; halt and LULD intervals block signals and entries","validation_semantics":"expanding chronological walk-forward folds, nested training-only regime selection, paired block bootstrap, causal condition scorecards, and same-session matched controls","limitations":["a security master classifies observed bars but only a source-universe guarantee controls omitted-delisted-symbol survivorship bias","fundamental eligibility uses only snapshots known by the intended entry timestamp","delisting returns are audited for universe integrity but are not applied because this engine closes positions intraday","matched controls reduce timing and price differences but do not establish causal treatment effects"]}
     archive_path.parent.mkdir(parents=True,exist_ok=True)
     with zipfile.ZipFile(archive_path,"w",zipfile.ZIP_DEFLATED,compresslevel=1) as bundle:
-        for name,rows in (("intraday_signals.csv",signals),("intraday_trades.csv",portfolio_trades),("intraday_matched_controls.csv",controls),("intraday_walk_forward.csv",walk_forward),("intraday_parameter_stability.csv",stability),("intraday_parameter_stability_summary.csv",stability_summary),("intraday_portfolio_events.csv",portfolio_curve),("intraday_market_conditions.csv",list(conditions.values())),("security_master_diagnostics.csv",master_diagnostics),("point_in_time_fundamentals_diagnostics.csv",fundamentals_diagnostics),("intraday_scorecard.csv",scorecards)):
+        for name,rows in (("intraday_signals.csv",signals),("intraday_trades.csv",portfolio_trades),("intraday_matched_controls.csv",controls),("intraday_walk_forward.csv",walk_forward),("intraday_nested_regime_walk_forward.csv",nested_regime),("intraday_daily.csv",daily_rows),("intraday_benchmark_daily.csv",benchmark_rows),("intraday_performance.csv",performance),("intraday_calendar_years.csv",annual),("intraday_cost_sensitivity.csv",costs),("intraday_block_bootstrap.csv",bootstrap),("intraday_condition_scorecards.csv",condition_single),("intraday_condition_pair_scorecards.csv",condition_pairs),("intraday_parameter_stability.csv",stability),("intraday_parameter_stability_summary.csv",stability_summary),("intraday_portfolio_events.csv",portfolio_curve),("intraday_market_conditions.csv",list(conditions.values())),("security_master_diagnostics.csv",master_diagnostics),("point_in_time_fundamentals_diagnostics.csv",fundamentals_diagnostics),("intraday_scorecard.csv",scorecards)):
             _write_csv_member(bundle,name,rows)
         bundle.writestr("intraday_manifest.json",json.dumps(manifest,indent=2,default=list))
     signal_spill.close(); signal_spill.path.unlink(missing_ok=True); shutil.rmtree(signal_spill_root,ignore_errors=True)

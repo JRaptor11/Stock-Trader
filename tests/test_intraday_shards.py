@@ -62,6 +62,10 @@ class IntradayShardTests(unittest.TestCase):
                 trades=list(csv.DictReader(bundle.read("intraday_trades.csv").decode().splitlines()))
                 conditions=list(csv.DictReader(bundle.read("intraday_market_conditions.csv").decode().splitlines()))
                 manifest=json.loads(bundle.read("intraday_aggregate_manifest.json"))
+                required={"intraday_daily.csv","intraday_performance.csv","intraday_cost_sensitivity.csv",
+                          "intraday_block_bootstrap.csv","intraday_condition_scorecards.csv",
+                          "intraday_condition_pair_scorecards.csv","intraday_nested_regime_walk_forward.csv"}
+                self.assertTrue(required.issubset(bundle.namelist()))
             self.assertEqual(["accepted","accepted"],[row["portfolio_status"] for row in trades])
             self.assertEqual(["2026-01-01","2026-01-02"],[row["date"] for row in conditions])
             self.assertIn("reconstructed chronologically",manifest["portfolio_accounting"])

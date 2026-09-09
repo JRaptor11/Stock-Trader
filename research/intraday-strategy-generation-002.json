@@ -1,0 +1,35 @@
+{
+  "generation": "intraday-strategy-generation-002",
+  "declared_before_results": true,
+  "status": "research_only",
+  "hypothesis_id": "INTRADAY_STRATEGY_ISOLATION",
+  "universe": "DIVERSIFIED_30_PLUS_SPY",
+  "strategies": [
+    "OPENING_RANGE_BREAKOUT",
+    "OPENING_RANGE_BREAKOUT_CONFIRMATION",
+    "RELATIVE_VOLUME_BREAKOUT",
+    "VOLATILITY_COMPRESSION_BREAKOUT",
+    "VWAP_MEAN_REVERSION",
+    "VWAP_RECLAIM",
+    "SHORT_TERM_REVERSAL"
+  ],
+  "policy": {
+    "strategies_combined": false,
+    "completed_bar_signals_only": true,
+    "entry": "next bar open",
+    "same_bar_stop_target": "stop first",
+    "primary_cost_bps_per_side": 10,
+    "cost_ladder_bps_per_side": [1, 5, 10, 20],
+    "nested_regime_selection": "training-only with cash fallback and family-wide correction",
+    "forward_shadow_required": true,
+    "paper_trading_approved": false
+  },
+  "data_policy": {
+    "bars_and_spy_required_for_research": true,
+    "security_master_required_for_promotion": true,
+    "survivorship_safe_membership_required_for_promotion": true,
+    "halt_luld_corporate_action_and_delisting_history_required_for_promotion": true,
+    "point_in_time_market_cap_and_float_required_for_promotion": true,
+    "missing_source_data_fails_closed": true
+  }
+}

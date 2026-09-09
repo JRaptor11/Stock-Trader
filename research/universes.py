@@ -24,6 +24,7 @@ UNIVERSES = {
     "BASELINE_10": BASELINE_10,
     "DIVERSIFIED_20": DIVERSIFIED_20,
     "DIVERSIFIED_30": DIVERSIFIED_30,
+    "DIVERSIFIED_30_PLUS_SPY": DIVERSIFIED_30 + ("SPY",),
     # Stable, liquid ETF universes for the first low-cost research wave. ETF
     # membership is declared before each experiment and avoids reconstructing
     # historical index constituents before the point-in-time equity dataset is

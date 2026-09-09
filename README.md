@@ -488,6 +488,43 @@ readiness. Results should be validated against recorded paper sessions and
 evaluated chronologically across multiple market regimes before model training
 or strategy promotion.
 
+Intraday isolation archives also contain standardized daily portfolio and SPY
+benchmark series, calendar-year attribution, cash and SPY excess returns,
+drawdown and recovery diagnostics, turnover, a 1/5/10/20-basis-point cost
+ladder, paired moving-block bootstrap uncertainty, and causal single- and
+two-condition scorecards. A nested walk-forward report selects any regime
+filter using only the training portion of each fold. It selects cash when no
+predeclared bucket has positive evidence after the family-wide adjustment.
+
+Frozen intraday candidates can be recorded without enabling broker execution:
+
+```powershell
+python -m research.intraday_forward_ledger `
+  --archive completed-intraday-results.zip `
+  --ledger intraday-forward-shadow\opening-range-breakout.jsonl `
+  --forward-start 2026-09-10 `
+  --strategy OPENING_RANGE_BREAKOUT
+```
+
+The ledger is append-only, idempotent by session date, hash chained, and fails
+closed if any frozen strategy or execution parameter changes. Each observation
+includes strategy and SPY daily and cumulative returns, drawdown, turnover, and
+trade count. Ledger creation does not authorize paper or live trading.
+
+The second isolated intraday generation expands the roster without combining
+signals. It evaluates the original opening-range, relative-volume, and VWAP
+mean-reversion candidates alongside opening-range confirmation,
+volatility-compression breakout, VWAP reclaim, and short-term reversal. Each
+mechanism maintains separate trades, capital, scorecards, regime results, and
+forward records. The fixed research universe is `DIVERSIFIED_30_PLUS_SPY`.
+
+Every intraday manifest contains a provider-neutral data-readiness report. Bars
+and SPY are sufficient to run development research, but promotion remains
+blocked unless source-backed point-in-time security membership, historical
+halts/LULD pauses, corporate actions, delistings, market capitalization, and
+float coverage are complete. Present-day values are never backfilled and
+represented as historical observations.
+
 ## Deploying on Render
 
 The repository contains `render.yaml`, `runtime.txt`, and `build.sh` for the

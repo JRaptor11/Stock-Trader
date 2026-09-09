@@ -2,10 +2,22 @@ import csv, hashlib, json, tempfile, unittest, zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from research.intraday_strategy_replay import IntradayBar, IntradayConfig, _parameter_stability, _write_csv_member, load_sessions, run_tournament
+from research.intraday_strategy_replay import IntradayBar, IntradayConfig, _parameter_stability, _trigger, _write_csv_member, load_sessions, run_tournament
 
 
 class IntradayStrategyReplayTests(unittest.TestCase):
+    def test_generation_two_mechanisms_have_independent_triggers(self):
+        config=IntradayConfig(opening_range_bars=2,breakout_confirmation_bars=2,compression_lookback_bars=2,
+                              reversal_lookback_bars=2,reversal_threshold_pct=.02)
+        make=lambda close,high=None,low=None,vwap=10: {"open":close,"high":high if high is not None else close+.01,
+            "low":low if low is not None else close-.01,"close":close,"volume":100,"vwap":vwap}
+        opening=[make(9.9,10),make(9.95,10),make(10.1,10.11),make(10.2,10.21)]
+        self.assertTrue(_trigger("OPENING_RANGE_BREAKOUT_CONFIRMATION",opening,3,3,config)[0])
+        compression=[make(10,10.5,9.5),make(10,10.5,9.5),make(10,10.05,9.95),make(10,10.05,9.95),make(10.2,10.21,10.1)]
+        self.assertTrue(_trigger("VOLATILITY_COMPRESSION_BREAKOUT",compression,4,4,config)[0])
+        self.assertTrue(_trigger("VWAP_RECLAIM",[make(9.8,vwap=10),make(10.1,vwap=10)],1,1,config)[0])
+        self.assertTrue(_trigger("SHORT_TERM_REVERSAL",[make(10),make(9.9),make(9.7,vwap=10)],2,1,config)[0])
+
     def test_csv_archive_accepts_fields_that_appear_in_later_rows(self):
         with tempfile.TemporaryDirectory() as directory:
             archive=Path(directory)/"rows.zip"
@@ -90,6 +102,11 @@ class IntradayStrategyReplayTests(unittest.TestCase):
                 manifest=json.loads(bundle.read("intraday_manifest.json")); trades=bundle.read("intraday_trades.csv").decode()
                 stability=list(csv.DictReader(bundle.read("intraday_parameter_stability.csv").decode().splitlines()))
                 stability_summary=list(csv.DictReader(bundle.read("intraday_parameter_stability_summary.csv").decode().splitlines()))
+                required={"intraday_daily.csv","intraday_benchmark_daily.csv","intraday_performance.csv",
+                          "intraday_calendar_years.csv","intraday_cost_sensitivity.csv","intraday_block_bootstrap.csv",
+                          "intraday_condition_scorecards.csv","intraday_condition_pair_scorecards.csv",
+                          "intraday_nested_regime_walk_forward.csv"}
+                self.assertTrue(required.issubset(bundle.namelist()))
             self.assertFalse(manifest["strategies_combined"])
             self.assertIn("OPENING_RANGE_BREAKOUT",trades)
             self.assertIn("entry_timestamp",trades)
@@ -101,6 +118,7 @@ class IntradayStrategyReplayTests(unittest.TestCase):
             self.assertFalse(manifest["promotion_gate"]["checks"]["point_in_time_security_master"])
             self.assertFalse(manifest["promotion_gate"]["checks"]["halt_luld_available"])
             self.assertFalse(manifest["promotion_gate"]["checks"]["point_in_time_market_cap"])
+            self.assertIn("intraday_statistical_checks",manifest)
             self.assertEqual([],list(root.glob("*.intraday-spill")))
             self.assertEqual([],list(root.glob("*.sessions.sqlite")))
 

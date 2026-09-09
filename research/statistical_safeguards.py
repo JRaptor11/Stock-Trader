@@ -1,5 +1,5 @@
 """Small dependency-free safeguards for broad strategy tournaments."""
-import math, statistics
+import math, random, statistics
 
 def return_evidence(values: list[float], family_trials: int) -> dict:
     n=len(values); mean=statistics.fmean(values) if values else None
@@ -12,3 +12,32 @@ def return_evidence(values: list[float], family_trials: int) -> dict:
             "bonferroni_adjusted_p":min(1.,p*max(1,family_trials)) if p is not None else None,
             "return_without_best_trade":compound(ordered[1:]),"return_without_best_1pct":compound(ordered[remove_1:]),
             "return_without_best_5pct":compound(ordered[remove_5:])}
+
+
+def paired_block_bootstrap(candidate: list[float], benchmark: list[float], *,
+                           block_size: int = 5, samples: int = 2_000,
+                           seed: int = 7) -> dict:
+    """Deterministic moving-block bootstrap for paired session returns."""
+    if len(candidate) != len(benchmark):
+        raise ValueError("candidate and benchmark returns must be paired")
+    if block_size < 1 or samples < 1:
+        raise ValueError("block_size and samples must be positive")
+    excess=[float(left)-float(right) for left,right in zip(candidate,benchmark)]
+    if not excess:
+        return {"observations":0,"block_size":block_size,"samples":samples,
+                "mean_excess_return":None,"excess_return_ci_95":None,
+                "probability_mean_excess_positive":None}
+    rng=random.Random(seed); n=len(excess); starts=range(max(1,n-block_size+1)); estimates=[]
+    for _ in range(samples):
+        draw=[]
+        while len(draw)<n:
+            start=rng.choice(starts); draw.extend(excess[start:min(n,start+block_size)])
+        estimates.append(statistics.fmean(draw[:n]))
+    estimates.sort()
+    def quantile(probability):
+        position=(len(estimates)-1)*probability; low=math.floor(position); high=math.ceil(position)
+        return estimates[low] if low==high else estimates[low]*(high-position)+estimates[high]*(position-low)
+    return {"observations":n,"block_size":block_size,"samples":samples,
+            "mean_excess_return":statistics.fmean(excess),
+            "excess_return_ci_95":[quantile(.025),quantile(.975)],
+            "probability_mean_excess_positive":sum(value>0 for value in estimates)/len(estimates)}

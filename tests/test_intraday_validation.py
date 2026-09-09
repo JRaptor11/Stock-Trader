@@ -1,8 +1,32 @@
 import unittest
-from research.intraday_validation import matched_controls, walk_forward_trade_scorecards
+from research.intraday_validation import (
+    benchmark_scorecards, matched_controls, nested_regime_walk_forward,
+    portfolio_daily_series, spy_benchmark_daily, walk_forward_trade_scorecards,
+)
 from research.execution_model import ExecutionAssumptions
 
 class IntradayValidationTests(unittest.TestCase):
+    def test_daily_benchmark_and_performance_are_standardized(self):
+        trades=[{"date":"2026-01-02","strategy":"S","portfolio_status":"accepted","realized_pnl":100,
+                 "allocated_notional":1000,"net_return":.1}]
+        days=["2026-01-01","2026-01-02"]
+        daily=portfolio_daily_series(trades,days,["S"],10000,10)
+        spy=spy_benchmark_daily({"2026-01-01":{"SPY":{"open":100,"close":101}},"2026-01-02":{"SPY":{"open":101,"close":102}}},days,10000)
+        summary,annual,bootstrap=benchmark_scorecards(daily,spy,10000,1)
+        self.assertEqual(2,len(daily)); self.assertAlmostEqual(.01,summary[0]["portfolio_return"])
+        self.assertEqual(1,summary[0]["trade_count"]); self.assertEqual(1,len(annual)); self.assertEqual(2,bootstrap[0]["observations"])
+
+    def test_nested_regime_selection_uses_training_only(self):
+        days=[f"2026-01-{day:02d}" for day in range(1,7)]; trades=[]
+        for day,value in zip(days[:4],[.02,.021,.019,.022]):
+            trades.append({"date":day,"strategy":"S","portfolio_status":"accepted","net_return":value,"realized_pnl":value*1000,
+                           "market_trend_20d_return_bucket":"Q5_HIGH"})
+        trades.append({"date":days[4],"strategy":"S","portfolio_status":"accepted","net_return":.01,"realized_pnl":10,
+                       "market_trend_20d_return_bucket":"Q5_HIGH"})
+        rows=nested_regime_walk_forward(trades,days,4,1,1,1000,1,minimum_bucket_trades=4,alpha=1.)
+        self.assertEqual("REGIME_BUCKET",rows[0]["selection"]); self.assertEqual(1,rows[0]["test_trades"])
+        self.assertAlmostEqual(.01,rows[0]["test_portfolio_return"])
+
     def test_walk_forward_can_use_full_market_calendar(self):
         trades=[{"date":"2026-01-04","strategy":"A","portfolio_status":"accepted","net_return":.01,"realized_pnl":100}]
         rows=walk_forward_trade_scorecards(trades,min_train_sessions=2,test_sessions=1,step_sessions=1,session_dates=["2026-01-01","2026-01-02","2026-01-03","2026-01-04"])
