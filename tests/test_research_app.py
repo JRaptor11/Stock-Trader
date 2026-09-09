@@ -12,12 +12,37 @@ from unittest.mock import patch
 
 try:
     from fastapi.testclient import TestClient
-    from research.app import app, runtime, _upload_status_snapshot
+    from research.app import app, runtime, _deprioritize_worker, _health_egress_usage, _upload_status_snapshot
 except ImportError:
     TestClient = None
     app = None
     runtime = None
     _upload_status_snapshot = None
+
+
+class _EgressStore:
+    durable = True
+
+    def __init__(self): self.calls = 0
+    def egress_usage(self):
+        self.calls += 1
+        return {"used_bytes": 123}
+
+
+@unittest.skipIf(_upload_status_snapshot is None, "FastAPI dependencies are not installed")
+class HealthResponsivenessTests(unittest.TestCase):
+    def test_health_egress_usage_is_cached(self):
+        store=_EgressStore()
+        with patch.object(runtime,"store",store),patch.object(runtime,"_health_egress_cache",None):
+            self.assertEqual(123,_health_egress_usage()["used_bytes"])
+            self.assertEqual(123,_health_egress_usage()["used_bytes"])
+        self.assertEqual(1,store.calls)
+
+    def test_posix_worker_is_deprioritized(self):
+        process=type("Process",(),{"pid":42})()
+        with patch.object(os,"name","posix"),patch.object(os,"PRIO_PROCESS",0,create=True),patch.object(os,"setpriority",create=True) as setpriority:
+            _deprioritize_worker(process)
+        setpriority.assert_called_once_with(0,42,10)
 
 
 class _SnapshotStore:

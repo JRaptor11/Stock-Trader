@@ -55,6 +55,7 @@ class ResearchRuntime:
         self.retry_max_seconds = 300.0
         self.cleanup_local_artifacts = True
         self._storage_usage_cache: tuple[float, int] | None = None
+        self._health_egress_cache: tuple[float, dict] | None = None
 
     def initialize(self) -> None:
         validate_service_startup(ServiceMode.HISTORICAL_RESEARCH)
@@ -80,6 +81,7 @@ class ResearchRuntime:
             os.getenv("RESEARCH_CLEANUP_LOCAL_ARTIFACTS", "true")
         ).strip().lower() in {"1", "true", "yes", "on"}
         self._storage_usage_cache = None
+        self._health_egress_cache = None
         if len(self.api_token) < 24:
             raise RuntimeError("RESEARCH_API_TOKEN must contain at least 24 characters")
         for path in (self.data_root, self.job_root, self.results_root):
@@ -208,11 +210,26 @@ def health() -> dict:
 def _health_egress_usage() -> dict | None:
     if not runtime.store:
         return None
+    now = time.monotonic()
+    if runtime._health_egress_cache and now - runtime._health_egress_cache[0] < 300:
+        return runtime._health_egress_cache[1]
     try:
-        return runtime.store.egress_usage()
+        usage=runtime.store.egress_usage()
+        runtime._health_egress_cache=(now,usage)
+        return usage
     except Exception:
         logging.warning("Could not read the R2 egress ledger", exc_info=True)
         return {"status": "temporarily_unavailable"}
+
+
+def _deprioritize_worker(process: subprocess.Popen) -> None:
+    """Keep the coordinator responsive to Render's five-second health probe."""
+    if os.name != "posix" or not hasattr(os,"setpriority"):
+        return
+    try:
+        os.setpriority(os.PRIO_PROCESS,process.pid,10)
+    except (AttributeError,OSError,PermissionError):
+        logging.warning("Could not lower research worker CPU priority",exc_info=True)
 
 
 @app.put("/api/datasets/{filename}", dependencies=[Depends(require_token)])
@@ -267,6 +284,7 @@ def _run_job(job_id: str, job_path: Path) -> None:
                 "--data-root", str(runtime.data_root), "--results-root", str(runtime.results_root),
             ]
             process = subprocess.Popen(command, cwd=str(Path(__file__).resolve().parents[1]))
+            _deprioritize_worker(process)
             last_uploaded_digest = None
             while True:
                 if status_path.is_file() and runtime.store.durable:
