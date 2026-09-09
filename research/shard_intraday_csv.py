@@ -41,14 +41,16 @@ def shard_csv(source: Path, output: Path, *, evaluation_sessions: int = 126,
 def build_jobs(template_path: Path, shard_manifest_path: Path, output: Path,
                *, implementation_commit: str) -> list[Path]:
     template=json.loads(template_path.read_text(encoding="utf-8")); manifest=json.loads(shard_manifest_path.read_text(encoding="utf-8")); paths=[]
-    declared_path=template_path.with_name("intraday-strategy-generation-001-shards.json")
+    base_name=template_path.name.removesuffix("-job.json")
+    declared_path=template_path.with_name(f"{base_name}-shards.json")
     declared=json.loads(declared_path.read_text(encoding="utf-8")) if declared_path.is_file() else {}
     declared_by_file={row["filename"]:row for row in declared.get("shards",[])}
     for shard in manifest["shards"]:
         declaration=declared_by_file.get(shard["filename"])
         if not declaration: raise ValueError(f"shard is not predeclared: {shard['filename']}")
         job=copy.deepcopy(template); job.update({"job_id":declaration["job_id"],"bars_csv":shard["filename"],"implementation_commit":implementation_commit})
-        job["experiment"]["trial_id"]=f"intraday-generation-001-baseline10-shard-{shard['number']:03d}"
+        base_trial=str(template.get("experiment",{}).get("trial_id") or base_name)
+        job["experiment"]["trial_id"]=f"{base_trial}-shard-{shard['number']:03d}"
         job["intraday_config"]["evaluation_start_date"]=shard["evaluation_start"]
         job["intraday_config"]["evaluation_end_date"]=shard["evaluation_end"]
         destination=output/f"{job['job_id']}.json"; destination.write_text(json.dumps(job,indent=2),encoding="utf-8"); paths.append(destination)

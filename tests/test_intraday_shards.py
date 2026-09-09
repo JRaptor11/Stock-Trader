@@ -41,6 +41,15 @@ class IntradayShardTests(unittest.TestCase):
             self.assertEqual("job-001",job["job_id"]); self.assertEqual("abc123",job["implementation_commit"])
             self.assertEqual("2026-01-01",job["intraday_config"]["evaluation_start_date"])
 
+    def test_generation_two_uses_its_own_declaration_and_trial_prefix(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); template=root/"intraday-strategy-generation-002-job.json"; manifest=root/"shards.json"
+            template.write_text(json.dumps({"job_id":"template","bars_csv":"source.csv","experiment":{"trial_id":"generation-two"},"intraday_config":{}}))
+            template.with_name("intraday-strategy-generation-002-shards.json").write_text(json.dumps({"shards":[{"job_id":"g2-001","filename":"part.csv"}]}))
+            manifest.write_text(json.dumps({"shards":[{"number":1,"filename":"part.csv","evaluation_start":"2026-01-01","evaluation_end":"2026-01-31"}]}))
+            job=json.loads(build_jobs(template,manifest,root,implementation_commit="commit")[0].read_text())
+            self.assertEqual("generation-two-shard-001",job["experiment"]["trial_id"])
+
     def test_aggregate_rejects_overlapping_evaluation_ranges(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory); archives=[]
