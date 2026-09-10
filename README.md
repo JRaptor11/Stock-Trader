@@ -564,6 +564,10 @@ costs on untouched data.
 The transition scan passes each frozen candidate column through repeated
 `--dimension` arguments. Missing columns fail closed, and only that explicit set
 defines the family-wide multiple-testing correction.
+Use `--benchmark-strategy STATIC_MULTI_SLEEVE` for focused switching research;
+the default remains `SPY_BUY_HOLD` for backward-compatible strategy evidence.
+Focused declarations can freeze `benchmark_strategy`; validation fails closed if
+the runtime comparator differs from that declaration.
 
 ## Deploying on Render
 

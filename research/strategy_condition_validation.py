@@ -56,8 +56,14 @@ def validate_bundle(path: Path, train_sessions: int = 252, test_sessions: int = 
                     step_sessions: int = 63, minimum_bucket_sessions: int = 30,
                     alpha: float = 0.05, declaration_path: Path | None = None,
                     cohort: str | None = None,
-                    dimensions: tuple[str, ...] | None = None) -> tuple[list[dict], list[dict], dict]:
+                    dimensions: tuple[str, ...] | None = None,
+                    benchmark_strategy: str = "SPY_BUY_HOLD") -> tuple[list[dict], list[dict], dict]:
     declaration = _load_declaration(declaration_path, cohort)
+    if declaration and declaration.get("benchmark_strategy") not in (None, benchmark_strategy):
+        raise ValueError(
+            "focused declaration benchmark does not match requested benchmark: "
+            f"{declaration['benchmark_strategy']} != {benchmark_strategy}"
+        )
     with zipfile.ZipFile(path) as bundle:
         names = set(bundle.namelist())
         required = {"normalized_daily_returns.csv", "causal_market_conditions.csv", "strategy_evidence_manifest.json"}
@@ -70,11 +76,11 @@ def validate_bundle(path: Path, train_sessions: int = 252, test_sessions: int = 
     series: dict[tuple[str, str], dict[str, float]] = defaultdict(dict)
     for row in daily:
         series[(row["source"], row["strategy"])][row["date"]] = float(row["daily_return"])
-    benchmark_keys = [key for key in series if key[1] == "SPY_BUY_HOLD"]
+    benchmark_keys = [key for key in series if key[1] == benchmark_strategy]
     if not benchmark_keys:
-        raise ValueError("SPY_BUY_HOLD is required")
+        raise ValueError(f"benchmark strategy is required: {benchmark_strategy}")
     benchmark = series[benchmark_keys[0]]
-    strategy_keys = [key for key in series if key[1] != "SPY_BUY_HOLD"]
+    strategy_keys = [key for key in series if key[1] != benchmark_strategy]
     common_dates = sorted(set(conditions).intersection(benchmark, *(series[key] for key in strategy_keys)))
     if len(common_dates) < train_sessions + test_sessions:
         raise ValueError("insufficient common condition-labeled sessions for one fold")
@@ -120,6 +126,7 @@ def validate_bundle(path: Path, train_sessions: int = 252, test_sessions: int = 
                     )
                     rows.append({
                         "fold": fold, "hypothesis_id": hypothesis["id"] if hypothesis else "", "source": source, "strategy": strategy,
+                        "benchmark_strategy": benchmark_strategy,
                         "dimension": dimension, "bucket": bucket,
                         "train_start": train_dates[0], "train_end": train_dates[-1],
                         "test_start": test_dates[0], "test_end": test_dates[-1],
@@ -127,11 +134,13 @@ def validate_bundle(path: Path, train_sessions: int = 252, test_sessions: int = 
                         "minimum_bucket_sessions": minimum_bucket_sessions,
                         "train_mean_daily_excess": statistics.fmean(train_excess) if train_excess else None,
                         "train_compounded_return": _compound([returns[day] for day in train_bucket]) if train_bucket else None,
-                        "train_spy_return": _compound([benchmark[day] for day in train_bucket]) if train_bucket else None,
+                        "train_benchmark_return": _compound([benchmark[day] for day in train_bucket]) if train_bucket else None,
+                        "train_spy_return": _compound([benchmark[day] for day in train_bucket]) if train_bucket and benchmark_strategy == "SPY_BUY_HOLD" else None,
                         "bonferroni_family_trials": family_trials,
                         "train_adjusted_p": adjusted_p, "qualified_on_train": qualified,
                         "test_compounded_return": _compound([returns[day] for day in test_bucket]) if test_bucket else None,
-                        "test_spy_return": _compound([benchmark[day] for day in test_bucket]) if test_bucket else None,
+                        "test_benchmark_return": _compound([benchmark[day] for day in test_bucket]) if test_bucket else None,
+                        "test_spy_return": _compound([benchmark[day] for day in test_bucket]) if test_bucket and benchmark_strategy == "SPY_BUY_HOLD" else None,
                         "test_excess_return": (_compound([returns[day] for day in test_bucket]) - _compound([benchmark[day] for day in test_bucket])) if test_bucket else None,
                         "test_mean_daily_excess": statistics.fmean(test_excess) if test_excess else None,
                         "test_positive_excess": statistics.fmean(test_excess) > 0 if test_excess else None,
@@ -167,6 +176,7 @@ def validate_bundle(path: Path, train_sessions: int = 252, test_sessions: int = 
         "source_manifest": source_manifest, "folds": fold, "train_sessions": train_sessions,
         "test_sessions": test_sessions, "step_sessions": step_sessions,
         "minimum_bucket_sessions": minimum_bucket_sessions, "alpha": alpha,
+        "benchmark_strategy": benchmark_strategy,
         "condition_dimensions": dimensions,
         "family_trials": family_trials, "selection_policy": "training-only; descriptive validation; no router or execution",
         "focused_declaration": declaration,
@@ -199,12 +209,15 @@ def main() -> None:
     parser.add_argument("--cohort")
     parser.add_argument("--dimension", action="append", dest="dimensions",
                         help="Limit the multiplicity family to an explicit condition bucket column; repeatable")
+    parser.add_argument("--benchmark-strategy", default="SPY_BUY_HOLD",
+                        help="Strategy return series used as the direct comparator")
     args = parser.parse_args()
     metadata = write_validation(args.evidence_bundle, args.output, train_sessions=args.train_sessions,
                                 test_sessions=args.test_sessions, step_sessions=args.step_sessions,
                                 minimum_bucket_sessions=args.minimum_bucket_sessions, alpha=args.alpha,
                                 declaration_path=args.declaration, cohort=args.cohort,
-                                dimensions=tuple(args.dimensions) if args.dimensions else None)
+                                dimensions=tuple(args.dimensions) if args.dimensions else None,
+                                benchmark_strategy=args.benchmark_strategy)
     print(json.dumps(metadata, indent=2))
 
 

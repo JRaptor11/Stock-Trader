@@ -84,6 +84,37 @@ class StrategyConditionValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "unavailable"):
                 validate_bundle(path, train_sessions=6, test_sessions=3, dimensions=("missing_bucket",))
 
+    def test_fixed_strategy_can_be_the_direct_benchmark(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "evidence.zip"
+            dates = [f"2026-{1 + i // 28:02d}-{1 + i % 28:02d}" for i in range(12)]
+            conditions = [{"date": day, "transition_bucket": "Q3"} for day in dates]
+            daily = []
+            for strategy, value in (("SPY_BUY_HOLD", 0), ("STATIC_MULTI_SLEEVE", .005), ("TEST", .01)):
+                daily.extend({"source": "x", "strategy": strategy, "date": day, "daily_return": value} for day in dates)
+            with zipfile.ZipFile(path, "w") as bundle:
+                bundle.writestr("normalized_daily_returns.csv", _csv(daily)); bundle.writestr("causal_market_conditions.csv", _csv(conditions)); bundle.writestr("strategy_evidence_manifest.json", "{}")
+            rows, _summary, metadata = validate_bundle(
+                path, train_sessions=6, test_sessions=3, minimum_bucket_sessions=3, alpha=1,
+                benchmark_strategy="STATIC_MULTI_SLEEVE",
+            )
+            test_row = next(row for row in rows if row["strategy"] == "TEST")
+            self.assertEqual("STATIC_MULTI_SLEEVE", metadata["benchmark_strategy"])
+            self.assertEqual("STATIC_MULTI_SLEEVE", test_row["benchmark_strategy"])
+            self.assertGreater(test_row["test_excess_return"], 0)
+            self.assertNotIn("STATIC_MULTI_SLEEVE", {row["strategy"] for row in rows})
+
+    def test_focused_declaration_benchmark_must_match(self):
+        with tempfile.TemporaryDirectory() as directory:
+            declaration = Path(directory) / "declaration.json"
+            declaration.write_text(json.dumps({
+                "frozen_at": "2026-01-01", "evidence_observed_through": "2025-01-01",
+                "benchmark_strategy": "STATIC_MULTI_SLEEVE",
+                "hypotheses": [{"id": "one", "strategy": "TEST", "dimension": "transition_bucket", "bucket": "Q3"}],
+            }))
+            with self.assertRaisesRegex(ValueError, "benchmark does not match"):
+                validate_bundle(Path("unused.zip"), declaration_path=declaration)
+
 
 if __name__ == "__main__":
     unittest.main()
