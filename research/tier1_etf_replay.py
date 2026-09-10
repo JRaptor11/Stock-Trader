@@ -33,6 +33,7 @@ STRATEGIES = LEGACY_STRATEGIES + (
     "STATIC_MULTI_SLEEVE", "REGIME_MULTI_SLEEVE",
     "STATIC_60_30_10", "INVERSE_VOLATILITY_BALANCED",
     "SECTOR_SHORT_TERM_REVERSAL",
+    "SECTOR_PRICE_BREAKOUT_20D", "MARKET_DIP_REBOUND_1D",
 )
 CROSS_ASSET_RISK = ("SPY", "QQQ", "IWM", "TLT", "IEF", "GLD", "DBC", "EFA", "EEM", "VNQ")
 FACTOR_ETFS = ("MTUM", "QUAL", "VLUE", "USMV", "IWF", "IWD")
@@ -41,6 +42,8 @@ DEFENSIVE_ETFS = ("BIL", "IEF", "GLD")
 BALANCED_ASSETS = ("SPY", "IEF", "GLD")
 STRATEGY_REBALANCE_FREQUENCIES = {
     "SECTOR_SHORT_TERM_REVERSAL": "weekly",
+    "SECTOR_PRICE_BREAKOUT_20D": "daily",
+    "MARKET_DIP_REBOUND_1D": "daily",
 }
 
 
@@ -222,6 +225,7 @@ def _trend_positive(closes: list[float], days: int) -> bool:
 def _rebalance_day(day: str, previous_day: str | None, frequency: str) -> bool:
     date = datetime.fromisoformat(day).date()
     if previous_day is None: return True
+    if frequency == "daily": return True
     prior = datetime.fromisoformat(previous_day).date()
     return ((date.isocalendar().year, date.isocalendar().week) != (prior.isocalendar().year, prior.isocalendar().week)) if frequency == "weekly" else (date.year, date.month) != (prior.year, prior.month)
 
@@ -272,6 +276,23 @@ def _targets(name: str, histories: dict[str, list[float]], config: Tier1Config) 
         selected = [symbol for _, symbol in sorted(ranked)[:config.sector_holdings]]
         return ({symbol: 1.0 / len(selected) for symbol in selected}
                 if selected else {config.cash_proxy_symbol: 1.0})
+    if name == "SECTOR_PRICE_BREAKOUT_20D":
+        breakouts = []
+        for symbol in SECTOR_ETFS:
+            closes = histories.get(symbol, [])
+            if len(closes) < 21:
+                continue
+            prior_high = max(closes[-21:-1])
+            if prior_high > 0 and closes[-1] > prior_high:
+                breakouts.append((closes[-1] / prior_high - 1.0, symbol))
+        if not breakouts:
+            return {config.cash_proxy_symbol: 1.0}
+        return {max(breakouts)[1]: 1.0}
+    if name == "MARKET_DIP_REBOUND_1D":
+        previous_return = _return(spy, 1)
+        return ({config.benchmark_symbol: 1.0}
+                if previous_return is not None and previous_return <= -0.02
+                else {config.cash_proxy_symbol: 1.0})
     if name == "VOL_MANAGED_SPY":
         returns = [spy[i] / spy[i-1] - 1.0 for i in range(max(1, len(spy)-config.volatility_lookback_days), len(spy)) if spy[i-1]]
         if len(returns) < config.volatility_lookback_days // 2: return {config.cash_proxy_symbol: 1.0}

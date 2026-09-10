@@ -33,6 +33,12 @@ HYPOTHESES = {
         "data_frequency": "1d", "turnover_expectation": "mixed",
         "point_in_time_equities_required": False,
     },
+    "DAILY_EVENT_STRATEGIES": {
+        "tier": 2, "status": "active_research",
+        "mechanism": "test price breakouts and sharp-dip rebounds as isolated short-holding-period daily ETF events",
+        "data_frequency": "1d", "turnover_expectation": "event_dependent",
+        "point_in_time_equities_required": False,
+    },
     "CURRENT_INTRADAY_FAMILY": {
         "tier": "legacy_challenger", "status": "active_challenger",
         "mechanism": "intraday cross-sectional price ranking and target rotation",
@@ -115,6 +121,18 @@ HYPOTHESES = {
         "tier": 2, "status": "active_research",
         "mechanism": "hold the three weakest sectors by lagged five-session return and rebalance weekly",
         "data_frequency": "1d", "turnover_expectation": "high",
+        "point_in_time_equities_required": False,
+    },
+    "SECTOR_PRICE_BREAKOUT_20D": {
+        "tier": 2, "status": "active_research",
+        "mechanism": "hold the sector with the strongest close above its prior 20-session closing high while a breakout remains active",
+        "data_frequency": "1d", "turnover_expectation": "medium_to_high",
+        "point_in_time_equities_required": False,
+    },
+    "MARKET_DIP_REBOUND_1D": {
+        "tier": 2, "status": "active_research",
+        "mechanism": "hold SPY for one session after a lagged daily decline of at least two percent",
+        "data_frequency": "1d", "turnover_expectation": "event_dependent",
         "point_in_time_equities_required": False,
     },
     "CROSS_ASSET_DUAL_MOMENTUM": {

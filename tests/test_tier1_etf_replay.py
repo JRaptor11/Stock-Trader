@@ -54,6 +54,39 @@ class Tier1ETFReplayTests(unittest.TestCase):
             "STATIC_MULTI_SLEEVE", config
         ))
 
+    def test_event_strategies_use_daily_cadence_without_changing_incumbents(self):
+        config = Tier1Config(rebalance_frequency="monthly")
+        self.assertEqual("daily", _strategy_rebalance_frequency(
+            "SECTOR_PRICE_BREAKOUT_20D", config
+        ))
+        self.assertEqual("daily", _strategy_rebalance_frequency(
+            "MARKET_DIP_REBOUND_1D", config
+        ))
+        self.assertEqual("monthly", _strategy_rebalance_frequency(
+            "SPY_BUY_HOLD", config
+        ))
+
+    def test_breakout_uses_only_prior_closes_and_selects_strongest(self):
+        config = Tier1Config(universe_name="ETF_TIER2_MULTI_SLEEVE")
+        histories = {symbol: [100.0] * 21 for symbol in resolve_universe(config.universe_name)}
+        histories["XLE"][-1] = 101.0
+        histories["XLK"][-1] = 103.0
+        self.assertEqual({"XLK": 1.0}, _targets(
+            "SECTOR_PRICE_BREAKOUT_20D", histories, config
+        ))
+        histories["XLE"][-1] = histories["XLK"][-1] = 100.0
+        self.assertEqual({"SHY": 1.0}, _targets(
+            "SECTOR_PRICE_BREAKOUT_20D", histories, config
+        ))
+
+    def test_dip_rebound_enters_only_after_fixed_threshold(self):
+        config = Tier1Config(universe_name="ETF_TIER2_MULTI_SLEEVE")
+        histories = {symbol: [100.0, 100.0] for symbol in resolve_universe(config.universe_name)}
+        histories["SPY"] = [100.0, 97.9]
+        self.assertEqual({"SPY": 1.0}, _targets("MARKET_DIP_REBOUND_1D", histories, config))
+        histories["SPY"] = [100.0, 98.1]
+        self.assertEqual({"SHY": 1.0}, _targets("MARKET_DIP_REBOUND_1D", histories, config))
+
     def test_generation_3_strategies_produce_long_only_normalized_targets(self):
         symbols = resolve_universe("ETF_GENERATION_3")
         histories = {

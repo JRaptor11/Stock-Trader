@@ -1,0 +1,57 @@
+{
+  "generation_id": "daily-event-generation-004",
+  "declared_at": "2026-09-10T14:00:00-07:00",
+  "retrospective_evidence_end": "2026-09-03",
+  "forward_confirmation_start": "2026-09-11",
+  "status": "research_only",
+  "objective": "Test simple breakout and sharp-dip rebound mechanisms independently and measure defensive controls under causal market conditions before designing any strategy router.",
+  "candidates": [
+    {
+      "strategy": "SECTOR_PRICE_BREAKOUT_20D",
+      "signal": "sector close exceeds its highest close from the preceding 20 sessions",
+      "selection": "largest percentage distance above the prior closing high",
+      "holding_rule": "hold while a qualifying close remains present; otherwise use SHY",
+      "signal_frequency": "daily",
+      "execution": "next session open"
+    },
+    {
+      "strategy": "MARKET_DIP_REBOUND_1D",
+      "signal": "SPY close-to-close return is at or below negative two percent",
+      "holding_rule": "hold SPY for the following session; otherwise use SHY",
+      "signal_frequency": "daily",
+      "execution": "next session open"
+    }
+  ],
+  "defensive_condition_controls": [
+    "STATIC_60_30_10",
+    "INVERSE_VOLATILITY_BALANCED"
+  ],
+  "return_controls": [
+    "SPY_BUY_HOLD",
+    "STATIC_MULTI_SLEEVE"
+  ],
+  "condition_policy": {
+    "features_are_lagged": true,
+    "retain_all_single_and_predeclared_pair_scorecards": true,
+    "focused_defensive_states": [
+      {"dimension": "volatility_20d_bucket", "bucket": "Q5_HIGH"},
+      {"dimension": "volatility_change_5d_bucket", "bucket": "Q5_HIGH"},
+      {"dimension": "trend_200d_distance_bucket", "bucket": "Q1_LOW"},
+      {"dimension": "trend_acceleration_5d_bucket", "bucket": "Q1_LOW"}
+    ]
+  },
+  "execution_assumptions": {
+    "long_only": true,
+    "no_trade_band": 0.02,
+    "cost_ladder_bps": [1.0, 5.0, 10.0, 20.0],
+    "primary_cost_bps": 10.0
+  },
+  "constraints": {
+    "no_strategy_combination": true,
+    "no_router_training": true,
+    "no_live_or_paper_execution": true,
+    "no_parameter_retuning_inside_generation": true,
+    "retrospective_results_are_not_promotion_evidence": true,
+    "forward_confirmation_required": true
+  }
+}
