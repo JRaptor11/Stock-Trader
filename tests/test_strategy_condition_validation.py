@@ -65,6 +65,25 @@ class StrategyConditionValidationTests(unittest.TestCase):
                 from research.strategy_condition_validation import _load_declaration
                 _load_declaration(declaration, "other")
 
+    def test_explicit_dimensions_define_family_and_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "evidence.zip"
+            dates = [f"2026-{1 + i // 28:02d}-{1 + i % 28:02d}" for i in range(12)]
+            conditions = [{"date": day, "volatility_change_5d_bucket": "Q5_HIGH", "unrelated_bucket": "Q1_LOW"} for day in dates]
+            daily = [{"source": "x", "strategy": strategy, "date": day, "daily_return": value}
+                     for strategy, value in (("SPY_BUY_HOLD", 0), ("TEST", .01)) for day in dates]
+            with zipfile.ZipFile(path, "w") as bundle:
+                bundle.writestr("normalized_daily_returns.csv", _csv(daily)); bundle.writestr("causal_market_conditions.csv", _csv(conditions)); bundle.writestr("strategy_evidence_manifest.json", "{}")
+            rows, _summary, metadata = validate_bundle(
+                path, train_sessions=6, test_sessions=3, minimum_bucket_sessions=3, alpha=1,
+                dimensions=("volatility_change_5d_bucket",),
+            )
+            self.assertEqual(["volatility_change_5d_bucket"], metadata["condition_dimensions"])
+            self.assertEqual(5, metadata["family_trials"])
+            self.assertTrue(all(row["dimension"] == "volatility_change_5d_bucket" for row in rows))
+            with self.assertRaisesRegex(ValueError, "unavailable"):
+                validate_bundle(path, train_sessions=6, test_sessions=3, dimensions=("missing_bucket",))
+
 
 if __name__ == "__main__":
     unittest.main()

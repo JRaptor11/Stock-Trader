@@ -1,0 +1,29 @@
+{
+  "generation": "transition-condition-generation-001",
+  "frozen_at": "2026-09-10T00:00:00-07:00",
+  "evidence_observed_through": "2026-09-03",
+  "status": "exploratory_research_only",
+  "objective": "Measure whether changes in market state explain relative strategy performance before declaring focused switching hypotheses.",
+  "primary_cost_bps": 10.0,
+  "candidate_dimensions": [
+    "trend_acceleration_5d_bucket",
+    "volatility_change_5d_bucket",
+    "breadth_20d_change_5d_bucket",
+    "breadth_50d_change_5d_bucket",
+    "dispersion_20d_change_5d_bucket",
+    "momentum_dispersion_63d_bucket",
+    "momentum_dispersion_63d_change_5d_bucket",
+    "correlation_20d_bucket",
+    "correlation_20d_change_5d_bucket"
+  ],
+  "strategy_policy": "Evaluate every non-benchmark strategy present in each comparable evidence cohort.",
+  "selection_policy": "Unfocused retrospective scan with family-wide multiplicity correction; any promising relationship must be placed in a later frozen focused generation before untouched-forward evaluation.",
+  "benchmark_policy": "Compare against SPY and require any eventual router to also beat the best eligible fixed strategy, including STATIC_MULTI_SLEEVE.",
+  "constraints": {
+    "no_strategy_combination": true,
+    "no_router_training": true,
+    "no_live_or_paper_execution": true,
+    "no_parameter_retuning_inside_generation": true,
+    "retrospective_results_are_not_promotion_evidence": true
+  }
+}

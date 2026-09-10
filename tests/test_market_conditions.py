@@ -33,6 +33,29 @@ class MarketConditionTests(unittest.TestCase):
         long = causal_market_conditions(dates, bars, ("SPY", "XLK"), minimum_bucket_history=1)
         self.assertEqual(short[dates[6]], long[dates[6]])
 
+    def test_transition_features_are_lagged_and_available(self):
+        dates = [f"2026-{1 + index // 28:02d}-{1 + index % 28:02d}" for index in range(80)]
+        bars = {
+            day: {
+                "SPY": {"open": 100.0 + index, "close": 100.0 + index + (index % 4) * .2},
+                "XLK": {"open": 60.0 + index * .7, "close": 60.0 + index * .7 + (index % 3) * .3},
+                "XLF": {"open": 50.0 + index * .4, "close": 50.0 + index * .4 - (index % 5) * .1},
+            }
+            for index, day in enumerate(dates)
+        }
+        conditions = causal_market_conditions(dates, bars, ("SPY", "XLK", "XLF"), minimum_bucket_history=1)
+        final = conditions[dates[-1]]
+        for feature in (
+            "trend_acceleration_5d", "volatility_change_5d", "breadth_50d_change_5d",
+            "dispersion_20d_change_5d", "correlation_20d_change_5d", "momentum_dispersion_63d",
+        ):
+            self.assertIsNotNone(final[feature])
+            self.assertIn(f"{feature}_bucket", final)
+
+        changed = {day: {symbol: dict(values) for symbol, values in rows.items()} for day, rows in bars.items()}
+        changed[dates[-1]]["SPY"]["close"] = 9999.0
+        self.assertEqual(final, causal_market_conditions(dates, changed, ("SPY", "XLK", "XLF"), minimum_bucket_history=1)[dates[-1]])
+
     def test_scorecards_report_distributions_and_sparse_samples(self):
         daily = [
             {"date": f"2026-03-0{index}", "strategy": "TEST", "cost_bps": 10.0, "equity": equity}

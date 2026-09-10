@@ -553,6 +553,18 @@ data only, with family-wide multiplicity correction, before their following
 test-period results are examined. Its separate all-fold stability fields are
 exploratory hypothesis generators and are never router eligibility signals.
 
+`transition-condition-generation-001` extends those causal labels with five-session
+changes in trend, volatility, breadth, dispersion, momentum dispersion, and
+cross-sectional correlation. The initial pass remains an unfocused retrospective
+scan across every strategy in a comparable cohort. It may generate later frozen
+hypotheses, but cannot train or activate a capital router. Any eventual adaptive
+system must outperform both SPY and the strongest eligible fixed strategy after
+costs on untouched data.
+
+The transition scan passes each frozen candidate column through repeated
+`--dimension` arguments. Missing columns fail closed, and only that explicit set
+defines the family-wide multiple-testing correction.
+
 ## Deploying on Render
 
 The repository contains `render.yaml`, `runtime.txt`, and `build.sh` for the

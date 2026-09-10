@@ -19,7 +19,12 @@ DEFAULT_PAIR_DIMENSIONS = (
     ("breadth_50d_bucket", "dispersion_20d_bucket"),
     ("volatility_20d_bucket", "volatility_expansion_bucket"),
     ("trend_20d_return_bucket", "breadth_50d_bucket"),
+    ("trend_acceleration_5d_bucket", "volatility_change_5d_bucket"),
+    ("breadth_50d_change_5d_bucket", "correlation_20d_change_5d_bucket"),
+    ("momentum_dispersion_63d_bucket", "correlation_20d_bucket"),
 )
+
+TRANSITION_LAG = 5
 
 
 def _returns(values: list[float], window: int) -> list[float]:
@@ -53,17 +58,58 @@ def _percentile_bucket(value: float | None, history: list[float], minimum_histor
     return percentile, BUCKET_LABELS[index]
 
 
+def _correlation(first: list[float], second: list[float]) -> float | None:
+    if len(first) != len(second) or len(first) < 2:
+        return None
+    first_mean, second_mean = statistics.fmean(first), statistics.fmean(second)
+    numerator = sum((x - first_mean) * (y - second_mean) for x, y in zip(first, second))
+    first_variance = sum((x - first_mean) ** 2 for x in first)
+    second_variance = sum((y - second_mean) ** 2 for y in second)
+    denominator = math.sqrt(first_variance * second_variance)
+    return numerator / denominator if denominator else None
+
+
 def _cross_sectional_features(histories: dict[str, list[float]], benchmark: str) -> dict[str, float | None]:
     eligible = [values for symbol, values in histories.items() if symbol != benchmark and len(values) >= 51]
     breadth_20 = [values[-1] > statistics.fmean(values[-20:]) for values in eligible]
     breadth_50 = [values[-1] > statistics.fmean(values[-50:]) for values in eligible]
     one_day = [values[-1] / values[-2] - 1.0 for values in eligible if values[-2]]
     twenty_day = [values[-1] / values[-21] - 1.0 for values in eligible if values[-21]]
+    sixty_three_day = [values[-1] / values[-64] - 1.0 for values in eligible if len(values) >= 64 and values[-64]]
+    benchmark_returns = _returns(histories.get(benchmark, []), 20)
+    correlations = []
+    for symbol, values in histories.items():
+        if symbol == benchmark or len(values) < 21:
+            continue
+        correlation = _correlation(_returns(values, 20), benchmark_returns)
+        if correlation is not None:
+            correlations.append(correlation)
     return {
         "breadth_20d": sum(breadth_20) / len(breadth_20) if breadth_20 else None,
         "breadth_50d": sum(breadth_50) / len(breadth_50) if breadth_50 else None,
         "dispersion_1d": statistics.stdev(one_day) if len(one_day) > 1 else None,
         "dispersion_20d": statistics.stdev(twenty_day) if len(twenty_day) > 1 else None,
+        "momentum_dispersion_63d": statistics.stdev(sixty_three_day) if len(sixty_three_day) > 1 else None,
+        "correlation_20d": statistics.fmean(correlations) if correlations else None,
+    }
+
+
+def _transition_features(snapshot: dict, prior_snapshots: list[dict], lag: int = TRANSITION_LAG) -> dict[str, float | None]:
+    """Measure causal state changes versus the snapshot five sessions earlier."""
+    prior = prior_snapshots[-lag] if len(prior_snapshots) >= lag else {}
+
+    def change(name: str) -> float | None:
+        current, previous = snapshot.get(name), prior.get(name)
+        return float(current) - float(previous) if current is not None and previous is not None else None
+
+    return {
+        "trend_acceleration_5d": change("trend_20d_return"),
+        "volatility_change_5d": change("volatility_20d"),
+        "breadth_20d_change_5d": change("breadth_20d"),
+        "breadth_50d_change_5d": change("breadth_50d"),
+        "dispersion_20d_change_5d": change("dispersion_20d"),
+        "momentum_dispersion_63d_change_5d": change("momentum_dispersion_63d"),
+        "correlation_20d_change_5d": change("correlation_20d"),
     }
 
 
@@ -75,6 +121,7 @@ def causal_market_conditions(
     histories = {symbol: [] for symbol in symbols}
     feature_history: dict[str, list[float]] = defaultdict(list)
     conditions: dict[str, dict] = {}
+    prior_snapshots: list[dict] = []
     previous_gap = None
     for day in dates:
         benchmark_history = histories.get(benchmark, [])
@@ -92,6 +139,7 @@ def causal_market_conditions(
                 "prior_market_gap": previous_gap,
                 **_cross_sectional_features(histories, benchmark),
             }
+            snapshot.update(_transition_features(snapshot, prior_snapshots))
             for feature, value in tuple(snapshot.items()):
                 if feature == "date":
                     continue
@@ -99,6 +147,10 @@ def causal_market_conditions(
                 snapshot[f"{feature}_percentile"] = percentile
                 snapshot[f"{feature}_bucket"] = bucket
             conditions[day] = snapshot
+            prior_snapshots.append({
+                key: value for key, value in snapshot.items()
+                if key != "date" and not key.endswith(("_bucket", "_percentile"))
+            })
             for feature, value in snapshot.items():
                 if feature != "date" and not feature.endswith(("_bucket", "_percentile")) and value is not None:
                     feature_history[feature].append(float(value))

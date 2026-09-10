@@ -55,7 +55,8 @@ def _load_declaration(path: Path | None, cohort: str | None = None) -> dict | No
 def validate_bundle(path: Path, train_sessions: int = 252, test_sessions: int = 63,
                     step_sessions: int = 63, minimum_bucket_sessions: int = 30,
                     alpha: float = 0.05, declaration_path: Path | None = None,
-                    cohort: str | None = None) -> tuple[list[dict], list[dict], dict]:
+                    cohort: str | None = None,
+                    dimensions: tuple[str, ...] | None = None) -> tuple[list[dict], list[dict], dict]:
     declaration = _load_declaration(declaration_path, cohort)
     with zipfile.ZipFile(path) as bundle:
         names = set(bundle.namelist())
@@ -77,7 +78,14 @@ def validate_bundle(path: Path, train_sessions: int = 252, test_sessions: int = 
     common_dates = sorted(set(conditions).intersection(benchmark, *(series[key] for key in strategy_keys)))
     if len(common_dates) < train_sessions + test_sessions:
         raise ValueError("insufficient common condition-labeled sessions for one fold")
-    dimensions = sorted({key for day in common_dates for key in conditions[day] if key.endswith("_bucket")})
+    available_dimensions = sorted({key for day in common_dates for key in conditions[day] if key.endswith("_bucket")})
+    if dimensions:
+        missing_requested = sorted(set(dimensions).difference(available_dimensions))
+        if missing_requested:
+            raise ValueError(f"requested condition dimensions are unavailable: {missing_requested}")
+        dimensions = sorted(set(dimensions))
+    else:
+        dimensions = available_dimensions
     focused = {(item["strategy"], item["dimension"], item["bucket"]): item for item in (declaration or {}).get("hypotheses", [])}
     missing_strategies = sorted({key[0] for key in focused}.difference(key[1] for key in strategy_keys))
     missing_dimensions = sorted({key[1] for key in focused}.difference(dimensions))
@@ -159,6 +167,7 @@ def validate_bundle(path: Path, train_sessions: int = 252, test_sessions: int = 
         "source_manifest": source_manifest, "folds": fold, "train_sessions": train_sessions,
         "test_sessions": test_sessions, "step_sessions": step_sessions,
         "minimum_bucket_sessions": minimum_bucket_sessions, "alpha": alpha,
+        "condition_dimensions": dimensions,
         "family_trials": family_trials, "selection_policy": "training-only; descriptive validation; no router or execution",
         "focused_declaration": declaration,
         "promotion_policy": "only untouched_forward rows may support promotion; retrospective_reuse and mixed_boundary are development evidence",
@@ -188,11 +197,14 @@ def main() -> None:
     parser.add_argument("--alpha", type=float, default=0.05)
     parser.add_argument("--declaration", type=Path)
     parser.add_argument("--cohort")
+    parser.add_argument("--dimension", action="append", dest="dimensions",
+                        help="Limit the multiplicity family to an explicit condition bucket column; repeatable")
     args = parser.parse_args()
     metadata = write_validation(args.evidence_bundle, args.output, train_sessions=args.train_sessions,
                                 test_sessions=args.test_sessions, step_sessions=args.step_sessions,
                                 minimum_bucket_sessions=args.minimum_bucket_sessions, alpha=args.alpha,
-                                declaration_path=args.declaration, cohort=args.cohort)
+                                declaration_path=args.declaration, cohort=args.cohort,
+                                dimensions=tuple(args.dimensions) if args.dimensions else None)
     print(json.dumps(metadata, indent=2))
 
 
