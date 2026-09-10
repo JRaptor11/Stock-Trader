@@ -27,6 +27,12 @@ HYPOTHESES = {
         "data_frequency": "1d", "turnover_expectation": "medium",
         "point_in_time_equities_required": False,
     },
+    "INDEPENDENT_DAILY_FAMILIES": {
+        "tier": 2, "status": "active_research",
+        "mechanism": "compare strategic diversification, inverse-volatility allocation, and short-horizon sector reversal as isolated daily ETF mechanisms",
+        "data_frequency": "1d", "turnover_expectation": "mixed",
+        "point_in_time_equities_required": False,
+    },
     "CURRENT_INTRADAY_FAMILY": {
         "tier": "legacy_challenger", "status": "active_challenger",
         "mechanism": "intraday cross-sectional price ranking and target rotation",
@@ -91,6 +97,24 @@ HYPOTHESES = {
         "tier": 2, "status": "active_research",
         "mechanism": "moderately shift a static multi-sleeve portfolio toward defensive assets using lagged trend and volatility",
         "data_frequency": "1d", "turnover_expectation": "medium",
+        "point_in_time_equities_required": False,
+    },
+    "STATIC_60_30_10": {
+        "tier": 2, "status": "active_research",
+        "mechanism": "hold a fixed 60 percent equity, 30 percent intermediate Treasury, and 10 percent gold strategic allocation",
+        "data_frequency": "1d", "turnover_expectation": "low",
+        "point_in_time_equities_required": False,
+    },
+    "INVERSE_VOLATILITY_BALANCED": {
+        "tier": 2, "status": "active_research",
+        "mechanism": "allocate across equities, intermediate Treasuries, and gold in inverse proportion to lagged realized volatility",
+        "data_frequency": "1d", "turnover_expectation": "low",
+        "point_in_time_equities_required": False,
+    },
+    "SECTOR_SHORT_TERM_REVERSAL": {
+        "tier": 2, "status": "active_research",
+        "mechanism": "hold the three weakest sectors by lagged five-session return and rebalance weekly",
+        "data_frequency": "1d", "turnover_expectation": "high",
         "point_in_time_equities_required": False,
     },
     "CROSS_ASSET_DUAL_MOMENTUM": {

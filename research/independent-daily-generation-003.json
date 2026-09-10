@@ -1,0 +1,43 @@
+{
+  "generation_id": "independent-daily-generation-003",
+  "declared_at": "2026-09-10T00:00:00-07:00",
+  "evidence_boundary": "2026-09-03",
+  "purpose": "Test materially different daily ETF mechanisms independently before considering any regime router or combination.",
+  "shared_controls": [
+    "SPY_BUY_HOLD",
+    "STATIC_MULTI_SLEEVE"
+  ],
+  "candidates": [
+    {
+      "strategy": "STATIC_60_30_10",
+      "mechanism": "strategic diversification",
+      "assets": {"SPY": 0.6, "IEF": 0.3, "GLD": 0.1},
+      "rebalance": "monthly"
+    },
+    {
+      "strategy": "INVERSE_VOLATILITY_BALANCED",
+      "mechanism": "risk-balanced allocation without a return forecast",
+      "assets": ["SPY", "IEF", "GLD"],
+      "volatility_lookback_sessions": 60,
+      "rebalance": "monthly"
+    },
+    {
+      "strategy": "SECTOR_SHORT_TERM_REVERSAL",
+      "mechanism": "short-horizon cross-sectional reversal",
+      "assets": ["XLC", "XLY", "XLP", "XLE", "XLF", "XLV", "XLI", "XLB", "XLRE", "XLK", "XLU"],
+      "ranking_return_sessions": 5,
+      "holdings": 3,
+      "selection": "lowest trailing returns",
+      "rebalance": "weekly"
+    }
+  ],
+  "execution": {
+    "signal_at": "session close using only then-available data",
+    "trade_at": "next session open",
+    "long_only": true,
+    "no_trade_band": 0.02,
+    "cost_ladder_bps": [1.0, 5.0, 10.0, 20.0],
+    "primary_cost_bps": 10.0
+  },
+  "decision_policy": "No candidate is eligible for promotion from retrospective performance alone. Evaluate return, drawdown, risk-adjusted performance, turnover/cost sensitivity, rolling windows, walk-forward folds, and causal market-condition scorecards."
+}

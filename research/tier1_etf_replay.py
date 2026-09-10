@@ -31,11 +31,17 @@ STRATEGIES = LEGACY_STRATEGIES + (
     "REGIME_ROUTED_SECTOR",
     "FACTOR_ETF_MOMENTUM", "INDUSTRY_ETF_MOMENTUM",
     "STATIC_MULTI_SLEEVE", "REGIME_MULTI_SLEEVE",
+    "STATIC_60_30_10", "INVERSE_VOLATILITY_BALANCED",
+    "SECTOR_SHORT_TERM_REVERSAL",
 )
 CROSS_ASSET_RISK = ("SPY", "QQQ", "IWM", "TLT", "IEF", "GLD", "DBC", "EFA", "EEM", "VNQ")
 FACTOR_ETFS = ("MTUM", "QUAL", "VLUE", "USMV", "IWF", "IWD")
 INDUSTRY_ETFS = ("XBI", "XRT", "XHB", "XME", "XOP", "KRE", "SMH", "IYT")
 DEFENSIVE_ETFS = ("BIL", "IEF", "GLD")
+BALANCED_ASSETS = ("SPY", "IEF", "GLD")
+STRATEGY_REBALANCE_FREQUENCIES = {
+    "SECTOR_SHORT_TERM_REVERSAL": "weekly",
+}
 
 
 @dataclass(frozen=True)
@@ -220,9 +226,52 @@ def _rebalance_day(day: str, previous_day: str | None, frequency: str) -> bool:
     return ((date.isocalendar().year, date.isocalendar().week) != (prior.isocalendar().year, prior.isocalendar().week)) if frequency == "weekly" else (date.year, date.month) != (prior.year, prior.month)
 
 
+def _strategy_rebalance_frequency(name: str, config: Tier1Config) -> str:
+    """Keep cadence part of each hypothesis without altering incumbents."""
+    return STRATEGY_REBALANCE_FREQUENCIES.get(name, config.rebalance_frequency)
+
+
+def _inverse_volatility_targets(roster: tuple[str, ...], histories: dict[str, list[float]],
+                                lookback: int) -> dict[str, float]:
+    inverse_volatility = {}
+    for symbol in roster:
+        closes = histories.get(symbol, [])
+        returns = [
+            closes[index] / closes[index - 1] - 1.0
+            for index in range(max(1, len(closes) - lookback), len(closes))
+            if closes[index - 1]
+        ]
+        if len(returns) < max(2, lookback // 2):
+            continue
+        volatility = statistics.stdev(returns)
+        if volatility > 0:
+            inverse_volatility[symbol] = 1.0 / volatility
+    scale = sum(inverse_volatility.values())
+    return ({symbol: value / scale for symbol, value in inverse_volatility.items()}
+            if scale > 0 else {})
+
+
 def _targets(name: str, histories: dict[str, list[float]], config: Tier1Config) -> dict[str, float]:
     spy = histories.get(config.benchmark_symbol, [])
     if name == "SPY_BUY_HOLD": return {config.benchmark_symbol: 1.0}
+    if name == "STATIC_60_30_10":
+        required = {symbol for symbol in BALANCED_ASSETS if histories.get(symbol)}
+        return ({"SPY": 0.60, "IEF": 0.30, "GLD": 0.10}
+                if required == set(BALANCED_ASSETS) else {config.cash_proxy_symbol: 1.0})
+    if name == "INVERSE_VOLATILITY_BALANCED":
+        targets = _inverse_volatility_targets(
+            BALANCED_ASSETS, histories, config.volatility_lookback_days
+        )
+        return targets or {config.cash_proxy_symbol: 1.0}
+    if name == "SECTOR_SHORT_TERM_REVERSAL":
+        ranked = []
+        for symbol in SECTOR_ETFS:
+            short_return = _return(histories.get(symbol, []), 5)
+            if short_return is not None:
+                ranked.append((short_return, symbol))
+        selected = [symbol for _, symbol in sorted(ranked)[:config.sector_holdings]]
+        return ({symbol: 1.0 / len(selected) for symbol in selected}
+                if selected else {config.cash_proxy_symbol: 1.0})
     if name == "VOL_MANAGED_SPY":
         returns = [spy[i] / spy[i-1] - 1.0 for i in range(max(1, len(spy)-config.volatility_lookback_days), len(spy)) if spy[i-1]]
         if len(returns) < config.volatility_lookback_days // 2: return {config.cash_proxy_symbol: 1.0}
@@ -413,7 +462,9 @@ def _simulate(name: str, dates: list[str], bars: dict, config: Tier1Config,
         equity=cash+sum(quantity*today.get(symbol,{"close":0})["close"] for symbol,quantity in shares.items())
         if day >= scored_start:
             daily.append({"date":day,"strategy":name,"cost_bps":cost_bps,"equity":equity,"cash":cash,"positions":len(shares)})
-            if _rebalance_day(day,previous_day,config.rebalance_frequency):
+            if _rebalance_day(
+                day, previous_day, _strategy_rebalance_frequency(name, config)
+            ):
                 pending=_targets(name,histories,config)
             previous_day=day
         elif index + 1 < len(dates) and dates[index + 1] == scored_start:

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from research.tier1_etf_replay import (
     LEGACY_STRATEGIES, STRATEGIES, Tier1Config, _causal_market_regimes, _targets, _validated_calendar,
+    _strategy_rebalance_frequency,
     config_from_job, load_daily_bars,
     run_tier1_job,
 )
@@ -31,6 +32,28 @@ def write_bars(path: Path, sessions: int = 280):
 
 
 class Tier1ETFReplayTests(unittest.TestCase):
+    def test_independent_families_are_long_only_and_normalized(self):
+        config = Tier1Config(universe_name="ETF_TIER2_MULTI_SLEEVE")
+        histories = {
+            symbol: [100 + offset + index * (0.02 + offset * 0.001)
+                     for index in range(300)]
+            for offset, symbol in enumerate(resolve_universe(config.universe_name))
+        }
+        for strategy in ("STATIC_60_30_10", "INVERSE_VOLATILITY_BALANCED",
+                         "SECTOR_SHORT_TERM_REVERSAL"):
+            targets = _targets(strategy, histories, config)
+            self.assertAlmostEqual(1.0, sum(targets.values()))
+            self.assertTrue(all(weight >= 0 for weight in targets.values()))
+
+    def test_reversal_cadence_does_not_change_incumbents(self):
+        config = Tier1Config(rebalance_frequency="monthly")
+        self.assertEqual("weekly", _strategy_rebalance_frequency(
+            "SECTOR_SHORT_TERM_REVERSAL", config
+        ))
+        self.assertEqual("monthly", _strategy_rebalance_frequency(
+            "STATIC_MULTI_SLEEVE", config
+        ))
+
     def test_generation_3_strategies_produce_long_only_normalized_targets(self):
         symbols = resolve_universe("ETF_GENERATION_3")
         histories = {
