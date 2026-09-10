@@ -569,6 +569,12 @@ the default remains `SPY_BUY_HOLD` for backward-compatible strategy evidence.
 Focused declarations can freeze `benchmark_strategy`; validation fails closed if
 the runtime comparator differs from that declaration.
 
+`research.condition_forward_ledger` records every post-freeze session for each
+focused hypothesis, including the causal bucket, continuous condition value,
+strategy and fixed-benchmark returns, active-condition excess, and cumulative
+active-session results. The JSONL ledger is idempotent, hash chained, and fails
+closed if either the declaration or strategy configuration changes.
+
 ## Deploying on Render
 
 The repository contains `render.yaml`, `runtime.txt`, and `build.sh` for the
