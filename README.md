@@ -525,6 +525,34 @@ halts/LULD pauses, corporate actions, delistings, market capitalization, and
 float coverage are complete. Present-day values are never backfilled and
 represented as historical observations.
 
+### Cross-family evidence catalog
+
+Completed daily ETF and intraday archives can be normalized into one diagnostic
+condition matrix without combining or activating their strategies:
+
+```powershell
+python -m research.strategy_evidence_catalog `
+  --archive tier2-generation-002-development-results.zip `
+  --archive intraday-generation-002-aggregate.zip `
+  --output strategy-evidence-catalog.zip `
+  --cost-bps 10
+```
+
+The tool fails closed when costs do not match, no causal condition source is
+available, the archives have no common dates, SPY is absent, or duplicate SPY
+series conflict. Archives with conflicting benchmark lineages must be emitted
+as separate comparison cohorts. A conditions-only source may be supplied with
+`--condition-archive` when an older result predates condition output. All descriptive condition rankings use the
+intersection of dates shared by every included strategy. The resulting catalog
+and matrix are research evidence only; they do not train a router or authorize
+execution.
+
+`research.strategy_condition_validation` applies expanding chronological folds
+to an evidence bundle. Strategy-condition relationships qualify from training
+data only, with family-wide multiplicity correction, before their following
+test-period results are examined. Its separate all-fold stability fields are
+exploratory hypothesis generators and are never router eligibility signals.
+
 ## Deploying on Render
 
 The repository contains `render.yaml`, `runtime.txt`, and `build.sh` for the

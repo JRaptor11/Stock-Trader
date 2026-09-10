@@ -1,0 +1,75 @@
+{
+  "generation": "focused-condition-generation-001",
+  "frozen_at": "2026-09-10T00:00:00-07:00",
+  "evidence_observed_through": "2026-09-03",
+  "status": "research_only",
+  "objective": "Test a small set of repeated exploratory strategy-condition relationships without creating a capital router.",
+  "primary_cost_bps": 10.0,
+  "minimum_training_bucket_sessions": 30,
+  "family_wide_alpha": 0.05,
+  "hypotheses": [
+    {
+      "id": "FCG1-SECTOR-BREADTH-Q3",
+      "cohort": "iex-tier1-intraday",
+      "strategy": "SECTOR_ETF_ROTATION",
+      "dimension": "breadth_50d_bucket",
+      "bucket": "Q3",
+      "rationale": "Repeated positive test-fold excess in both IEX Tier 1 and Yahoo Tier 2 evidence cohorts."
+    },
+    {
+      "id": "FCG1-ETFDUAL-TREND63-Q2",
+      "cohort": "iex-tier1-intraday",
+      "strategy": "ETF_DUAL_MOMENTUM",
+      "dimension": "trend_63d_return_bucket",
+      "bucket": "Q2",
+      "rationale": "Repeated positive test-fold excess during below-median intermediate trend."
+    },
+    {
+      "id": "FCG1-ETFDUAL-DISP20-Q2",
+      "cohort": "iex-tier1-intraday",
+      "strategy": "ETF_DUAL_MOMENTUM",
+      "dimension": "dispersion_20d_bucket",
+      "bucket": "Q2",
+      "rationale": "Repeated positive test-fold excess during low-to-moderate cross-sectional dispersion."
+    },
+    {
+      "id": "FCG1-CROSSASSET-DISP20-Q1",
+      "cohort": "iex-tier1-intraday",
+      "strategy": "CROSS_ASSET_DUAL_MOMENTUM",
+      "dimension": "dispersion_20d_bucket",
+      "bucket": "Q1_LOW",
+      "rationale": "Repeated positive test-fold excess during the lowest observed dispersion state."
+    },
+    {
+      "id": "FCG1-INDUSTRY-TREND200-Q3",
+      "cohort": "yahoo-tier2",
+      "strategy": "INDUSTRY_ETF_MOMENTUM",
+      "dimension": "trend_200d_distance_bucket",
+      "bucket": "Q3",
+      "rationale": "Strong repeated test-fold excess in the Tier 2 cohort near the middle long-trend state."
+    },
+    {
+      "id": "FCG1-STATIC-BREADTH-Q3",
+      "cohort": "yahoo-tier2",
+      "strategy": "STATIC_MULTI_SLEEVE",
+      "dimension": "breadth_50d_bucket",
+      "bucket": "Q3",
+      "rationale": "Repeated test-fold excess for the diversified fixed sleeve in middle breadth."
+    },
+    {
+      "id": "FCG1-FACTOR-VOL20-Q1",
+      "cohort": "yahoo-tier2",
+      "strategy": "FACTOR_ETF_MOMENTUM",
+      "dimension": "volatility_20d_bucket",
+      "bucket": "Q1_LOW",
+      "rationale": "Repeated test-fold excess in the lowest short-volatility state."
+    }
+  ],
+  "constraints": {
+    "no_strategy_combination": true,
+    "no_live_or_paper_execution": true,
+    "no_parameter_retuning_inside_generation": true,
+    "cash_and_spy_remain_valid_fallbacks": true,
+    "retrospective_results_are_not_promotion_evidence": true
+  }
+}

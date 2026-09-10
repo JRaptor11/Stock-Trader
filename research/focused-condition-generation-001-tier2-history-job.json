@@ -1,12 +1,12 @@
 {
-  "job_id": "tier2-generation-002-development",
+  "job_id": "focused-condition-generation-001-tier2-history-2026-09-10",
   "engine": "tier1_etf_daily",
   "bars_csv": "tier2_multi_sleeve_yahoo_2013_2026-09-03.csv",
   "data_source": "Yahoo adjusted daily chart endpoint; historical development only",
   "experiment": {
     "hypothesis_id": "TIER2_ETF_TOURNAMENT",
-    "trial_id": "tier2-multi-sleeve-001",
-    "holdout_policy": "Previously observed dates are development evidence; forward confirmation begins 2026-09-04"
+    "trial_id": "focused-condition-generation-001-tier2-history",
+    "holdout_policy": "Condition hypotheses frozen 2026-09-10 from evidence observed through 2026-09-03; all included dates remain retrospective development evidence"
   },
   "tier1_config": {
     "initial_cash": 100000.0,
