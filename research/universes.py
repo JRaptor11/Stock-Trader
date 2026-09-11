@@ -54,6 +54,13 @@ UNIVERSES = {
         "MTUM", "QUAL", "VLUE", "USMV", "IWF", "IWD",
         "XBI", "XRT", "XHB", "XME", "XOP", "KRE", "SMH", "IYT",
     ),
+    "ETF_GENERAL_CONCEPTS": (
+        "SPY", "QQQ", "IWM", "SHY", "BIL", "IEF", "TLT", "GLD", "DBC",
+        "EFA", "EEM", "VNQ",
+        "XLC", "XLY", "XLP", "XLE", "XLF", "XLV", "XLI", "XLB", "XLRE", "XLK", "XLU",
+        "MTUM", "QUAL", "VLUE", "USMV", "IWF", "IWD",
+        "XBI", "XRT", "XHB", "XME", "XOP", "KRE", "SMH", "IYT",
+    ),
 }
 
 ETF_METADATA = {

@@ -1,0 +1,42 @@
+{
+  "generation_id": "general-daily-concepts-generation-005",
+  "declared_at": "2026-09-10T21:10:00-07:00",
+  "retrospective_evidence_end": "2026-09-03",
+  "forward_confirmation_start": "2026-09-11",
+  "status": "research_only",
+  "objective": "Compare representative implementations of distinct general strategy concepts across persistent causal market states before refining parameters or designing a switching strategy.",
+  "candidate_families": [
+    {"strategy": "VOL_MANAGED_SPY", "concept": "volatility-managed broad equity exposure"},
+    {"strategy": "ETF_DUAL_MOMENTUM", "concept": "absolute and relative ETF momentum"},
+    {"strategy": "CROSS_ASSET_DUAL_MOMENTUM", "concept": "cross-asset absolute and relative momentum"},
+    {"strategy": "DIVERSIFIED_TREND", "concept": "diversified time-series trend participation"},
+    {"strategy": "SECTOR_ETF_ROTATION", "concept": "sector relative momentum with absolute trend"},
+    {"strategy": "FACTOR_ETF_MOMENTUM", "concept": "factor relative momentum"},
+    {"strategy": "INDUSTRY_ETF_MOMENTUM", "concept": "industry relative momentum"},
+    {"strategy": "SECTOR_SHORT_TERM_REVERSAL", "concept": "cross-sectional short-term mean reversion"},
+    {"strategy": "SECTOR_PRICE_BREAKOUT_20D", "concept": "sector price breakout continuation"},
+    {"strategy": "MARKET_DIP_REBOUND_1D", "concept": "broad-market dip mean reversion"}
+  ],
+  "controls": [
+    "SPY_BUY_HOLD",
+    "STATIC_MULTI_SLEEVE",
+    "STATIC_60_30_10",
+    "INVERSE_VOLATILITY_BALANCED"
+  ],
+  "evaluation_policy": {
+    "primary_unit": "persistent causal market-state episode",
+    "state_change_confirmation_sessions": 3,
+    "minimum_state_sessions": 30,
+    "minimum_state_episodes": 5,
+    "retain_calendar_rolling_and_walk_forward_controls": true,
+    "compare_pooled_state_return_and_separate_episode_distribution": true
+  },
+  "constraints": {
+    "representative_values_only": true,
+    "no_parameter_search": true,
+    "no_strategy_combination": true,
+    "no_router_training": true,
+    "no_live_or_paper_execution": true,
+    "retrospective_state_results_are_descriptive": true
+  }
+}
