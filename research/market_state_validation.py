@@ -54,11 +54,129 @@ def _benjamini_hochberg(rows: list[dict]) -> None:
         row["passes_fdr_05"] = bool(adjusted.get(index, 1.0) <= 0.05)
 
 
+def _fold_recurrence(fold_rows: list[dict], benchmark_strategy: str) -> list[dict]:
+    groups = defaultdict(list)
+    for row in fold_rows:
+        if row["strategy"] != benchmark_strategy and row["sample_sufficient"]:
+            groups[(row["strategy"], row["core_state"])].append(row)
+    result = []
+    for (strategy, state), rows in sorted(groups.items()):
+        excess = [float(row["relative_wealth_vs_spy"]) for row in rows]
+        result.append({
+            "strategy": strategy, "core_state": state,
+            "eligible_folds": len(rows),
+            "positive_excess_folds": sum(value > 0 for value in excess),
+            "fold_win_rate": sum(value > 0 for value in excess) / len(excess),
+            "mean_fold_relative_wealth_vs_spy": statistics.fmean(excess),
+            "median_fold_relative_wealth_vs_spy": statistics.median(excess),
+            "worst_fold_relative_wealth_vs_spy": min(excess),
+            "best_fold_relative_wealth_vs_spy": max(excess),
+            "recurs_in_chronological_folds": (
+                len(rows) >= 3
+                and sum(value > 0 for value in excess) / len(excess) >= 0.60
+                and statistics.median(excess) > 0
+            ),
+        })
+    return result
+
+
+def _transition_horizons(
+    daily_returns: dict[tuple[str, str], float], labels_by_date: dict[str, dict],
+    strategies: list[str], benchmark_strategy: str, horizons: tuple[int, ...] = (1, 3, 5, 10),
+) -> list[dict]:
+    dates = sorted(labels_by_date)
+    events = [(index, day, labels_by_date[day]["core_state"])
+              for index, day in enumerate(dates) if labels_by_date[day]["state_changed"]]
+    groups = defaultdict(list)
+    for index, event_date, state in events:
+        for horizon in horizons:
+            window = dates[index:index + horizon]
+            if len(window) != horizon:
+                continue
+            benchmark_values = [daily_returns.get((benchmark_strategy, day)) for day in window]
+            if any(value is None for value in benchmark_values):
+                continue
+            benchmark_return = math.prod(1 + value for value in benchmark_values) - 1
+            for strategy in strategies:
+                if strategy == benchmark_strategy:
+                    continue
+                values = [daily_returns.get((strategy, day)) for day in window]
+                if any(value is None for value in values):
+                    continue
+                strategy_return = math.prod(1 + value for value in values) - 1
+                excess = (1 + strategy_return) / (1 + benchmark_return) - 1
+                groups[(strategy, state, horizon)].append((event_date, excess))
+    result = []
+    for (strategy, state, horizon), observations in sorted(groups.items()):
+        excess = [value for _, value in observations]
+        boot = _episode_bootstrap(excess)
+        result.append({
+            "strategy": strategy, "entered_core_state": state,
+            "horizon_sessions": horizon, "transition_events": len(excess),
+            "first_event_date": observations[0][0], "last_event_date": observations[-1][0],
+            "mean_relative_wealth_vs_spy": statistics.fmean(excess),
+            "median_relative_wealth_vs_spy": statistics.median(excess),
+            "event_beat_spy_rate": sum(value > 0 for value in excess) / len(excess),
+            "raw_p_value": _mean_test(excess),
+            "event_excess_ci_95_low": boot["ci_low"],
+            "event_excess_ci_95_high": boot["ci_high"],
+            "bootstrap_probability_excess_positive": boot["probability_positive"],
+        })
+    for horizon in horizons:
+        _benjamini_hochberg([row for row in result if row["horizon_sessions"] == horizon])
+    return result
+
+
+def _survival_table(
+    period_rows: list[dict], inference: list[dict], cost_rows: list[dict],
+    recurrence: list[dict], benchmark_strategy: str,
+) -> list[dict]:
+    holdout = {(row["strategy"], row["core_state"]): row for row in period_rows
+               if row["period"] == "holdout" and row["strategy"] != benchmark_strategy}
+    tests = {(row["strategy"], row["core_state"]): row for row in inference
+             if row["period"] == "holdout"}
+    folds = {(row["strategy"], row["core_state"]): row for row in recurrence}
+    high_cost = {(row["strategy"], row["core_state"]): row for row in cost_rows
+                 if row["period"] == "holdout" and float(row["cost_bps"]) == 20.0}
+    result = []
+    for key, row in sorted(holdout.items()):
+        test, fold, cost = tests.get(key, {}), folds.get(key, {}), high_cost.get(key, {})
+        adequate = bool(row["sample_sufficient"])
+        positive = float(row["relative_wealth_vs_spy"]) > 0
+        corrected = bool(test.get("passes_fdr_05"))
+        ci_positive = (test.get("episode_excess_ci_95_low") is not None
+                       and float(test["episode_excess_ci_95_low"]) > 0)
+        promising = adequate and positive and corrected and ci_positive
+        recurring = promising and bool(fold.get("recurs_in_chronological_folds"))
+        robust = recurring and bool(cost) and float(cost["relative_wealth_vs_spy"]) > 0
+        if not adequate:
+            status = "INSUFFICIENT_EVIDENCE"
+        elif not promising:
+            status = "FAILED_STATISTICAL_GATES"
+        elif not recurring:
+            status = "HISTORICALLY_PROMISING"
+        elif not robust:
+            status = "CHRONOLOGICALLY_RECURRING"
+        else:
+            status = "COST_ROBUST_AWAITING_FORWARD_VALIDATION"
+        result.append({
+            "strategy": key[0], "core_state": key[1], "status": status,
+            "holdout_sessions": row["sessions"], "holdout_episodes": row["episodes"],
+            "holdout_relative_wealth_vs_spy": row["relative_wealth_vs_spy"],
+            "holdout_fdr_pass": corrected, "holdout_episode_ci_low_above_zero": ci_positive,
+            "eligible_chronological_folds": fold.get("eligible_folds", 0),
+            "chronological_fold_win_rate": fold.get("fold_win_rate"),
+            "positive_at_20_bps": bool(cost) and float(cost["relative_wealth_vs_spy"]) > 0,
+            "forward_observations": 0, "routing_eligible": False,
+        })
+    return result
+
+
 def state_validation_outputs(
     daily: list[dict], conditions: dict[str, dict], cost_ladder_bps: tuple[float, ...],
     primary_cost_bps: float, discovery_end: str | None, holdout_start: str | None,
     benchmark_strategy: str = "SPY_BUY_HOLD", fold_sessions: int = 252,
-) -> tuple[list[dict], list[dict], list[dict], list[dict], list[dict]]:
+) -> tuple[list[dict], list[dict], list[dict], list[dict], list[dict], list[dict], list[dict], list[dict]]:
     """Build period, episode-inference, transition, and chronological-fold evidence."""
     periods = [("full", None, None)]
     if discovery_end and holdout_start:
@@ -103,9 +221,14 @@ def state_validation_outputs(
 
     cost_rows = []
     for cost in cost_ladder_bps:
-        _, _, states, _ = market_state_scorecards(daily, conditions, cost, benchmark_strategy)
-        for row in states:
-            cost_rows.append({**row, "is_primary_cost": float(cost) == float(primary_cost_bps)})
+        for period, start, end in periods:
+            _, _, states, _ = market_state_scorecards(
+                daily, conditions, cost, benchmark_strategy,
+                period_start=start, period_end=end,
+            )
+            for row in states:
+                cost_rows.append({"period": period, **row,
+                                  "is_primary_cost": float(cost) == float(primary_cost_bps)})
 
     # Stable and transition sessions are evaluated separately using the causal
     # state_changed flag. Daily returns are reconstructed before filtering.
@@ -113,15 +236,16 @@ def state_validation_outputs(
     labels_by_date = {row["date"]: row for row in labels}
     selected = sorted((row for row in daily if float(row["cost_bps"]) == float(primary_cost_bps)),
                       key=lambda row: (row["strategy"], row["date"]))
-    transition_groups, prior = defaultdict(list), {}
+    transition_groups, prior, daily_returns = defaultdict(list), {}, {}
     for row in selected:
         strategy, equity = row["strategy"], float(row["equity"])
         previous = prior.get(strategy); prior[strategy] = equity
         label = labels_by_date.get(row["date"])
         if previous and label:
+            daily_returns[(strategy, row["date"])] = equity / previous - 1.0
             in_transition = bool(label["state_changed"] or label["pending_core_state"])
             kind = "transition_state_session" if in_transition else "stable_state_session"
-            transition_groups[(strategy, kind)].append(equity / previous - 1.0)
+            transition_groups[(strategy, kind)].append(daily_returns[(strategy, row["date"])])
     transition_rows = []
     for (strategy, kind), returns in sorted(transition_groups.items()):
         transition_rows.append({
@@ -145,4 +269,13 @@ def state_validation_outputs(
         )
         fold_rows.extend({"fold": fold, "fold_start": fold_dates[0], "fold_end": fold_dates[-1], **row}
                          for row in states)
-    return period_rows, inference, cost_rows, transition_rows, fold_rows
+    recurrence = _fold_recurrence(fold_rows, benchmark_strategy)
+    strategies = sorted({row["strategy"] for row in selected})
+    transition_horizons = _transition_horizons(
+        daily_returns, labels_by_date, strategies, benchmark_strategy,
+    )
+    survival = _survival_table(
+        period_rows, inference, cost_rows, recurrence, benchmark_strategy,
+    ) if holdout_start else []
+    return (period_rows, inference, cost_rows, transition_rows, fold_rows,
+            recurrence, transition_horizons, survival)
