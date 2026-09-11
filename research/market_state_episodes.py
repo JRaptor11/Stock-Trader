@@ -195,6 +195,7 @@ def market_state_scorecards(
     daily: list[dict], conditions: dict[str, dict], primary_cost_bps: float,
     benchmark_strategy: str = "SPY_BUY_HOLD", minimum_state_sessions: int = 30,
     minimum_state_episodes: int = 5,
+    period_start: str | None = None, period_end: str | None = None,
 ) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
     """Attribute every strategy to pooled state sessions and repeated episodes."""
     labels = causal_state_labels(conditions)
@@ -210,7 +211,9 @@ def market_state_scorecards(
         equity = float(row["equity"])
         prior = prior_equity.get(strategy)
         prior_equity[strategy] = equity
-        if prior and row["date"] in labels:
+        in_period = ((period_start is None or row["date"] >= period_start)
+                     and (period_end is None or row["date"] <= period_end))
+        if prior and in_period and row["date"] in labels:
             observations.append({
                 "strategy": strategy, "date": row["date"],
                 "return": equity / prior - 1.0,
