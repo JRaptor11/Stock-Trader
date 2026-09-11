@@ -18,6 +18,7 @@ from research.walk_forward import build_walk_forward_folds
 from research.market_conditions import causal_market_conditions, condition_scorecards
 from research.market_state_episodes import STATE_DEFINITION, market_state_scorecards
 from research.event_diagnostics import build_event_diagnostics
+from research.daily_strategy_interface import DailyStrategyRegistry, DailyStrategySpec
 
 
 UTC = timezone.utc
@@ -234,7 +235,7 @@ def _rebalance_day(day: str, previous_day: str | None, frequency: str) -> bool:
 
 def _strategy_rebalance_frequency(name: str, config: Tier1Config) -> str:
     """Keep cadence part of each hypothesis without altering incumbents."""
-    return STRATEGY_REBALANCE_FREQUENCIES.get(name, config.rebalance_frequency)
+    return _daily_strategy_registry().cadence(name, config.rebalance_frequency)
 
 
 def _inverse_volatility_targets(roster: tuple[str, ...], histories: dict[str, list[float]],
@@ -257,7 +258,7 @@ def _inverse_volatility_targets(roster: tuple[str, ...], histories: dict[str, li
             if scale > 0 else {})
 
 
-def _targets(name: str, histories: dict[str, list[float]], config: Tier1Config) -> dict[str, float]:
+def _legacy_targets(name: str, histories: dict[str, list[float]], config: Tier1Config) -> dict[str, float]:
     spy = histories.get(config.benchmark_symbol, [])
     if name == "SPY_BUY_HOLD": return {config.benchmark_symbol: 1.0}
     if name == "STATIC_60_30_10":
@@ -433,6 +434,51 @@ def _targets(name: str, histories: dict[str, list[float]], config: Tier1Config) 
     return {symbol: 1.0 / len(selected) for symbol in selected}
 
 
+STRATEGY_CONCEPT_FAMILIES = {
+    "SPY_BUY_HOLD": "passive_equity_benchmark",
+    "STATIC_MULTI_SLEEVE": "static_multi_sleeve_momentum",
+    "STATIC_60_30_10": "static_balanced_allocation",
+    "INVERSE_VOLATILITY_BALANCED": "risk_balanced_allocation",
+    "SECTOR_PRICE_BREAKOUT_20D": "price_breakout",
+    "MARKET_DIP_REBOUND_1D": "market_mean_reversion",
+    "VOL_MANAGED_SPY": "volatility_managed_equity",
+    "ETF_DUAL_MOMENTUM": "dual_momentum",
+    "CROSS_ASSET_DUAL_MOMENTUM": "cross_asset_dual_momentum",
+    "DIVERSIFIED_TREND": "diversified_time_series_trend",
+    "REGIME_BALANCED": "rule_based_regime_allocation",
+    "SECTOR_ROTATION_CONCENTRATED": "concentrated_sector_momentum",
+    "SECTOR_ROTATION_INV_VOL": "risk_weighted_sector_momentum",
+    "REGIME_ROUTED_SECTOR": "rule_based_regime_sector_rotation",
+    "FACTOR_ETF_MOMENTUM": "factor_momentum",
+    "INDUSTRY_ETF_MOMENTUM": "industry_momentum",
+    "REGIME_MULTI_SLEEVE": "rule_based_regime_multi_sleeve",
+    "SECTOR_SHORT_TERM_REVERSAL": "cross_sectional_mean_reversion",
+    "SECTOR_ETF_ROTATION": "sector_momentum",
+}
+
+
+_STRATEGY_REGISTRY = DailyStrategyRegistry(
+    DailyStrategySpec(
+        name=name,
+        concept_family=STRATEGY_CONCEPT_FAMILIES[name],
+        rebalance_frequency=STRATEGY_REBALANCE_FREQUENCIES.get(name),
+        target_builder=lambda context, strategy=name: _legacy_targets(
+            strategy, context.histories, context.config
+        ),
+    )
+    for name in STRATEGIES
+)
+
+
+def _daily_strategy_registry() -> DailyStrategyRegistry:
+    return _STRATEGY_REGISTRY
+
+
+def _targets(name: str, histories: dict[str, list[float]], config: Tier1Config) -> dict[str, float]:
+    """Evaluate one strategy through the shared validated daily interface."""
+    return _daily_strategy_registry().targets(name, histories, config)
+
+
 def _max_drawdown(values: list[float]) -> float:
     peak = values[0]; worst = 0.0
     for value in values:
@@ -464,7 +510,8 @@ def _period_metrics(daily: list[dict], initial: float, start: str | None, end: s
 
 
 def _simulate(name: str, dates: list[str], bars: dict, config: Tier1Config,
-              cost_bps: float, scored_start: str) -> tuple[list[dict], list[dict]]:
+              cost_bps: float, scored_start: str, target_function=None) -> tuple[list[dict], list[dict]]:
+    target_function = target_function or _targets
     symbols = resolve_universe(config.universe_name); histories = {s: [] for s in symbols}
     cash = config.initial_cash; shares: dict[str, float] = {}; pending = None; daily=[]; trades=[]; previous_day=None
     for index, day in enumerate(dates):
@@ -488,12 +535,12 @@ def _simulate(name: str, dates: list[str], bars: dict, config: Tier1Config,
             if _rebalance_day(
                 day, previous_day, _strategy_rebalance_frequency(name, config)
             ):
-                pending=_targets(name,histories,config)
+                pending=target_function(name,histories,config)
             previous_day=day
         elif index + 1 < len(dates) and dates[index + 1] == scored_start:
             # Compute the first target after the final warm-up close so the
             # first scored session receives the same next-open semantics.
-            pending=_targets(name,histories,config)
+            pending=target_function(name,histories,config)
     return daily,trades
 
 
@@ -720,7 +767,7 @@ def run_tier1_job(job: dict, bars_path: Path, archive_path: Path, source_sha256:
                            "stage_total_rows":len(config.strategy_names),"stage_percent_complete":100.0})
     pairwise_summary=_pairwise_summary(period_scorecards,rolling_scorecards,walk_forward_scorecards,config)
     declaration=validate_experiment_declaration(job.get("experiment"))
-    manifest={"created_at":datetime.now(UTC).isoformat(),"engine":"tier1_etf_daily","source_path":str(bars_path),"source_sha256":source_sha256,"config":asdict(config),"coverage":coverage,"universe":universe_metadata(config.universe_name,tuple(sorted(symbols))),"hypothesis_registry":registry_snapshot(),"experiment":declaration,"execution_semantics":"warm-up excluded; signal at close and fill at next available open on validated common sessions","strategies":list(config.strategy_names),"promotion_policy":"diagnostic gate only; shadow approval requires untouched holdout and stability tests"}
+    manifest={"created_at":datetime.now(UTC).isoformat(),"engine":"tier1_etf_daily","source_path":str(bars_path),"source_sha256":source_sha256,"config":asdict(config),"coverage":coverage,"universe":universe_metadata(config.universe_name,tuple(sorted(symbols))),"hypothesis_registry":registry_snapshot(),"experiment":declaration,"execution_semantics":"warm-up excluded; signal at close and fill at next available open on validated common sessions","strategies":list(config.strategy_names),"daily_strategy_interface":{"version":1,"validation":"long-only finite weights, no leverage, universe membership","specifications":_daily_strategy_registry().snapshot(config.strategy_names)},"promotion_policy":"diagnostic gate only; shadow approval requires untouched holdout and stability tests"}
     archive_path.parent.mkdir(parents=True,exist_ok=True)
     with zipfile.ZipFile(archive_path,"w",zipfile.ZIP_DEFLATED,compresslevel=1) as bundle:
         _write_csv(bundle,"tier1_daily.csv",all_daily); _write_csv(bundle,"tier1_trades.csv",all_trades); _write_csv(bundle,"tier1_cost_ladder_scorecard.csv",scorecards); _write_csv(bundle,"tier1_period_scorecard.csv",period_scorecards); _write_csv(bundle,"tier1_promotion_gates.csv",promotions); _write_csv(bundle,"tier1_rolling_3y_scorecard.csv",rolling_scorecards); _write_csv(bundle,"tier1_walk_forward_scorecard.csv",walk_forward_scorecards); _write_csv(bundle,"tier1_regime_scorecard.csv",regime_scorecards); _write_csv(bundle,"tier1_market_conditions.csv",list(market_conditions.values())); _write_csv(bundle,"tier1_condition_scorecard.csv",condition_rows); _write_csv(bundle,"tier1_condition_pair_scorecard.csv",condition_pair_rows); _write_csv(bundle,"tier1_market_state_labels.csv",state_labels); _write_csv(bundle,"tier1_market_state_episodes.csv",state_episodes); _write_csv(bundle,"tier1_market_state_attribution.csv",state_attribution); _write_csv(bundle,"tier1_market_state_episode_returns.csv",state_episode_returns); _write_csv(bundle,"tier1_pairwise_summary.csv",pairwise_summary); _write_csv(bundle,"tier1_event_diagnostics.csv",event_rows); _write_csv(bundle,"tier1_event_summary.csv",event_summary); _write_csv(bundle,"tier1_event_horizon_summary.csv",event_horizons); _write_csv(bundle,"tier1_event_condition_summary.csv",event_conditions)
