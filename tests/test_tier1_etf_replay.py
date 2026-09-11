@@ -242,6 +242,8 @@ class Tier1ETFReplayTests(unittest.TestCase):
                 self.assertIn("tier1_condition_scorecard.csv",names)
                 self.assertIn("tier1_condition_pair_scorecard.csv",names)
                 self.assertIn("tier1_pairwise_summary.csv",names)
+                self.assertIn("tier1_event_diagnostics.csv",names)
+                self.assertIn("tier1_event_summary.csv",names)
                 self.assertIn("warm-up excluded",manifest["execution_semantics"])
                 self.assertEqual(253,manifest["coverage"]["warmup_sessions"])
                 self.assertEqual(set(LEGACY_STRATEGIES),{row["strategy"] for row in summary["scorecards"]})

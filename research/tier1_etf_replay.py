@@ -16,6 +16,7 @@ from research.strategy_registry import registry_snapshot, validate_experiment_de
 from research.universes import resolve_universe, universe_metadata
 from research.walk_forward import build_walk_forward_folds
 from research.market_conditions import causal_market_conditions, condition_scorecards
+from research.event_diagnostics import build_event_diagnostics
 
 
 UTC = timezone.utc
@@ -703,11 +704,14 @@ def run_tier1_job(job: dict, bars_path: Path, archive_path: Path, source_sha256:
     condition_rows,condition_pair_rows=condition_scorecards(
         all_daily,market_conditions,config.primary_cost_bps
     )
+    event_rows,event_summary=build_event_diagnostics(
+        dates, bars, config, scored_start, market_conditions, _targets
+    )
     pairwise_summary=_pairwise_summary(period_scorecards,rolling_scorecards,walk_forward_scorecards,config)
     declaration=validate_experiment_declaration(job.get("experiment"))
     manifest={"created_at":datetime.now(UTC).isoformat(),"engine":"tier1_etf_daily","source_path":str(bars_path),"source_sha256":source_sha256,"config":asdict(config),"coverage":coverage,"universe":universe_metadata(config.universe_name,tuple(sorted(symbols))),"hypothesis_registry":registry_snapshot(),"experiment":declaration,"execution_semantics":"warm-up excluded; signal at close and fill at next available open on validated common sessions","strategies":list(config.strategy_names),"promotion_policy":"diagnostic gate only; shadow approval requires untouched holdout and stability tests"}
     archive_path.parent.mkdir(parents=True,exist_ok=True)
     with zipfile.ZipFile(archive_path,"w",zipfile.ZIP_DEFLATED,compresslevel=1) as bundle:
-        _write_csv(bundle,"tier1_daily.csv",all_daily); _write_csv(bundle,"tier1_trades.csv",all_trades); _write_csv(bundle,"tier1_cost_ladder_scorecard.csv",scorecards); _write_csv(bundle,"tier1_period_scorecard.csv",period_scorecards); _write_csv(bundle,"tier1_promotion_gates.csv",promotions); _write_csv(bundle,"tier1_rolling_3y_scorecard.csv",rolling_scorecards); _write_csv(bundle,"tier1_walk_forward_scorecard.csv",walk_forward_scorecards); _write_csv(bundle,"tier1_regime_scorecard.csv",regime_scorecards); _write_csv(bundle,"tier1_market_conditions.csv",list(market_conditions.values())); _write_csv(bundle,"tier1_condition_scorecard.csv",condition_rows); _write_csv(bundle,"tier1_condition_pair_scorecard.csv",condition_pair_rows); _write_csv(bundle,"tier1_pairwise_summary.csv",pairwise_summary)
+        _write_csv(bundle,"tier1_daily.csv",all_daily); _write_csv(bundle,"tier1_trades.csv",all_trades); _write_csv(bundle,"tier1_cost_ladder_scorecard.csv",scorecards); _write_csv(bundle,"tier1_period_scorecard.csv",period_scorecards); _write_csv(bundle,"tier1_promotion_gates.csv",promotions); _write_csv(bundle,"tier1_rolling_3y_scorecard.csv",rolling_scorecards); _write_csv(bundle,"tier1_walk_forward_scorecard.csv",walk_forward_scorecards); _write_csv(bundle,"tier1_regime_scorecard.csv",regime_scorecards); _write_csv(bundle,"tier1_market_conditions.csv",list(market_conditions.values())); _write_csv(bundle,"tier1_condition_scorecard.csv",condition_rows); _write_csv(bundle,"tier1_condition_pair_scorecard.csv",condition_pair_rows); _write_csv(bundle,"tier1_pairwise_summary.csv",pairwise_summary); _write_csv(bundle,"tier1_event_diagnostics.csv",event_rows); _write_csv(bundle,"tier1_event_summary.csv",event_summary)
         bundle.writestr("tier1_manifest.json",json.dumps(manifest,indent=2,default=list)); bundle.writestr("tier1_summary.json",json.dumps({"primary_cost_bps":config.primary_cost_bps,"promotion_period":promotion_period,"scorecards":list(primary.values()),"promotion_gates":promotions},indent=2))
     return archive_path
