@@ -29,7 +29,7 @@ class EventDiagnosticsTests(unittest.TestCase):
             calls["count"] += 1
             return {"SPY": 1.0} if calls["count"] in (1, 2) else {"SHY": 1.0}
 
-        rows, summary = build_event_diagnostics(
+        rows, summary, horizons, conditions_summary = build_event_diagnostics(
             dates, bars, config, dates[0], conditions, targets
         )
         zero_cost = [row for row in rows if row["cost_bps"] == 0.0]
@@ -44,6 +44,8 @@ class EventDiagnosticsTests(unittest.TestCase):
                                bars[dates[1]]["SPY"]["open"] - 1,
                                event["gross_return"])
         self.assertEqual(2, len(summary))
+        self.assertEqual(10, len(horizons))
+        self.assertTrue(conditions_summary)
 
     def test_cost_is_applied_on_entry_and_exit(self):
         dates, bars, config, conditions = self._fixture()
@@ -51,7 +53,7 @@ class EventDiagnosticsTests(unittest.TestCase):
         def targets(_strategy, histories, _config):
             return {"SPY": 1.0} if len(histories["SPY"]) == 1 else {"SHY": 1.0}
 
-        rows, _ = build_event_diagnostics(
+        rows, _, _, _ = build_event_diagnostics(
             dates, bars, config, dates[0], conditions, targets
         )
         gross = next(row for row in rows if row["cost_bps"] == 0.0)
@@ -66,11 +68,26 @@ class EventDiagnosticsTests(unittest.TestCase):
         def targets(_strategy, _histories, _config):
             return {"SPY": 1.0}
 
-        rows, _ = build_event_diagnostics(
+        rows, _, _, _ = build_event_diagnostics(
             dates, bars, config, dates[0], conditions, targets
         )
         self.assertTrue(rows[0]["censored"])
         self.assertEqual(dates[-1], rows[0]["exit_date"])
+
+    def test_counterfactuals_include_trailing_stop_and_failed_breakout(self):
+        dates, bars, config, conditions = self._fixture()
+        config.strategy_names = ("SECTOR_PRICE_BREAKOUT_20D",)
+        for day in dates:
+            bars[day]["SPY"]["low"] = bars[day]["SPY"]["open"] * 0.90
+
+        def targets(_strategy, histories, _config):
+            return {"SPY": 1.0} if len(histories["SPY"]) == 1 else {"SHY": 1.0}
+
+        rows, _, _, _ = build_event_diagnostics(
+            dates, bars, config, dates[0], conditions, targets
+        )
+        self.assertIsNotNone(rows[0]["trailing_stop_3pct_return"])
+        self.assertIn("failed_breakout_exit_return", rows[0])
 
 
 if __name__ == "__main__":
