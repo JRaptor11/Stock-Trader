@@ -520,7 +520,10 @@ def _simulate(name: str, dates: list[str], bars: dict, config: Tier1Config,
             equity_open = cash + sum(shares.get(s,0)*today.get(s,{"open":0})["open"] for s in shares)
             desired = {s: equity_open*w for s,w in pending.items() if s in today}
             current = {s: shares.get(s,0)*today.get(s,{"open":0})["open"] for s in set(shares)|set(desired)}
-            for symbol in sorted(current, key=lambda s: desired.get(s,0)-current.get(s,0)):
+            for symbol in sorted(
+                current,
+                key=lambda s: (desired.get(s, 0) - current.get(s, 0), s),
+            ):
                 price=today.get(symbol,{}).get("open"); delta=desired.get(symbol,0)-current.get(symbol,0)
                 if not price or abs(delta)/max(equity_open,1) < config.no_trade_band: continue
                 fee=abs(delta)*cost_bps/10000; cash-=delta+fee; shares[symbol]=shares.get(symbol,0)+delta/price

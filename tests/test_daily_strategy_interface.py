@@ -90,6 +90,28 @@ class DailyStrategyInterfaceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "outside"):
             invalid_symbol.targets("BAD_SYMBOL", {"SPY": [100]}, config)
 
+    def test_equal_weight_trade_order_is_deterministic(self):
+        config = Tier1Config(
+            universe_name="ETF_TIER2_MULTI_SLEEVE",
+            strategy_names=("STATIC_60_30_10",),
+        )
+        symbols = resolve_universe(config.universe_name)
+        dates = ["2026-01-02", "2026-01-05"]
+        bars = {
+            day: {symbol: {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0}
+                  for symbol in symbols}
+            for day in dates
+        }
+        _, trades = _simulate(
+            "STATIC_60_30_10", dates, bars, config, 10.0, dates[0]
+        )
+        self.assertEqual(
+            sorted(("GLD", "IEF", "SPY"), key=lambda symbol: (
+                {"GLD": .10, "IEF": .30, "SPY": .60}[symbol], symbol
+            )),
+            [row["symbol"] for row in trades],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
