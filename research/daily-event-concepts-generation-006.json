@@ -1,0 +1,77 @@
+{
+  "generation_id": "daily-event-concepts-generation-006",
+  "declared_at": "2026-09-11T11:30:00-07:00",
+  "retrospective_evidence_end": "2026-09-03",
+  "earliest_forward_confirmation": "2026-09-11",
+  "status": "research_only",
+  "objective": "Test structurally different breakout, recovery, acceleration, and defensive-event concepts independently before any parameter refinement or strategy combination.",
+  "research_basis": [
+    "Long-horizon trend and time-series momentum have shown persistence across markets, but implementation and costs require out-of-sample validation.",
+    "Momentum can crash following market declines in high-volatility rebound states, motivating separate recovery and deterioration experiments.",
+    "Volatility scaling does not consistently improve every implementable strategy, so volatility contraction is treated as a standalone hypothesis rather than assumed beneficial."
+  ],
+  "candidates": [
+    {
+      "strategy": "VOLATILITY_CONTRACTION_BREAKOUT",
+      "concept": "A sector emerging through a recent 20-session closing high while its short-term volatility is materially below its medium-term volatility may begin an expansion phase.",
+      "fixed_rules": "200-session positive trend; 20-session volatility no greater than 60 percent of 60-session volatility; breakout observed within five sessions; remain above 10-session mean; hold strongest sector.",
+      "cadence": "daily"
+    },
+    {
+      "strategy": "DONCHIAN_TREND_BREAKOUT",
+      "concept": "A longer closing-range breakout aligned with the prevailing trend may persist beyond a one-day new high.",
+      "fixed_rules": "200-session positive trend; 55-session closing breakout within ten sessions; remain above 20-session mean; hold strongest sector.",
+      "cadence": "daily"
+    },
+    {
+      "strategy": "SECTOR_MOMENTUM_ACCELERATION",
+      "concept": "A meaningful increase in short-horizon sector momentum may identify emerging leadership before a long-horizon rank fully adjusts.",
+      "fixed_rules": "20-session return exceeds its preceding 20-session return by at least three percentage points; positive 63-session return and 200-session trend; equal-weight top three.",
+      "cadence": "weekly"
+    },
+    {
+      "strategy": "BREADTH_THRUST_RECOVERY",
+      "concept": "A rapid expansion from narrow to broad sector participation with a confirmed positive market trend may identify a durable recovery.",
+      "fixed_rules": "Sector breadth rises from at most 35 percent during the prior five-to-ten sessions to at least 65 percent; SPY above its 20-session mean.",
+      "cadence": "daily"
+    },
+    {
+      "strategy": "OVERSOLD_TREND_REBOUND",
+      "concept": "A sharp pullback followed by an upward reversal may rebound differently when the long-term market trend remains positive.",
+      "fixed_rules": "At least five-percent five-session SPY decline observed within five sessions; current close reverses upward; SPY remains above its 200-session mean.",
+      "cadence": "daily"
+    },
+    {
+      "strategy": "BREADTH_DETERIORATION_DEFENSIVE",
+      "concept": "A rapid collapse in sector participation may favor temporarily rotating from SPY into a positively trending defensive asset.",
+      "fixed_rules": "Breadth falls from at least 65 percent to at most 35 percent in five sessions; select the strongest positive 20-session return among BIL, IEF, and GLD, otherwise SHY; hold SPY when inactive.",
+      "cadence": "daily"
+    }
+  ],
+  "controls": [
+    "SPY_BUY_HOLD",
+    "STATIC_MULTI_SLEEVE",
+    "CROSS_ASSET_DUAL_MOMENTUM",
+    "SECTOR_PRICE_BREAKOUT_20D",
+    "MARKET_DIP_REBOUND_1D"
+  ],
+  "evaluation": {
+    "primary_cost_bps": 10.0,
+    "cost_ladder_bps": [1.0, 5.0, 10.0, 20.0],
+    "primary_unit": "persistent causal market-state episode",
+    "required_outputs": [
+      "discovery_holdout_state_comparison",
+      "chronological_fold_recurrence",
+      "episode_bootstrap_and_false_discovery_control",
+      "transition_horizons",
+      "hypothesis_survival_status"
+    ]
+  },
+  "constraints": {
+    "no_parameter_search": true,
+    "no_strategy_combination": true,
+    "no_router_training": true,
+    "no_live_or_paper_execution": true,
+    "no_promotion_from_retrospective_results": true
+  }
+}

@@ -39,10 +39,11 @@ class MarketStateValidationTests(unittest.TestCase):
 
     def test_outputs_keep_period_cost_and_fold_evidence_separate(self):
         daily, conditions = self._fixture()
+        progress = []
         (periods, inference, costs, transitions, folds, recurrence,
          transition_horizons, survival) = state_validation_outputs(
             daily, conditions, (1.0, 10.0), 10.0, "2026-01-06", "2026-01-07",
-            fold_sessions=6,
+            fold_sessions=6, progress_callback=progress.append,
         )
         self.assertEqual({"full", "discovery", "holdout"}, {row["period"] for row in periods})
         self.assertTrue(inference)
@@ -54,6 +55,11 @@ class MarketStateValidationTests(unittest.TestCase):
         self.assertTrue(survival)
         self.assertTrue(any(row.get("session_type") == "stable_state_session"
                             for row in transitions))
+        stages = {row["stage"] for row in progress}
+        self.assertIn("market_state_periods", stages)
+        self.assertIn("market_state_inference", stages)
+        self.assertIn("market_state_cost_sensitivity", stages)
+        self.assertIn("market_state_validation_complete", stages)
 
     def test_fold_recurrence_requires_three_folds_and_sixty_percent_wins(self):
         rows = [{"strategy": "CANDIDATE", "core_state": "STATE", "sample_sufficient": True,

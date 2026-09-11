@@ -7,7 +7,23 @@ import statistics
 from collections import defaultdict
 
 
-EVENT_STRATEGIES = ("SECTOR_PRICE_BREAKOUT_20D", "MARKET_DIP_REBOUND_1D")
+EVENT_STRATEGIES = (
+    "SECTOR_PRICE_BREAKOUT_20D",
+    "MARKET_DIP_REBOUND_1D",
+    "VOLATILITY_CONTRACTION_BREAKOUT",
+    "DONCHIAN_TREND_BREAKOUT",
+    "SECTOR_MOMENTUM_ACCELERATION",
+    "BREADTH_THRUST_RECOVERY",
+    "OVERSOLD_TREND_REBOUND",
+    "BREADTH_DETERIORATION_DEFENSIVE",
+)
+# An event begins only when the strategy leaves its normal inactive posture.
+# Most event concepts park in SHY; the deterioration concept normally owns SPY
+# and activates by rotating into a defensive asset.
+INACTIVE_SYMBOL = {
+    strategy: "SHY" for strategy in EVENT_STRATEGIES
+}
+INACTIVE_SYMBOL["BREADTH_DETERIORATION_DEFENSIVE"] = "SPY"
 HORIZONS = (1, 2, 3, 5, 10)
 TRAILING_STOPS = (0.03, 0.05)
 
@@ -124,6 +140,7 @@ def build_event_diagnostics(
     date_index = {day: index for index, day in enumerate(dates)}
     rows = []
     for strategy in selected:
+        inactive_symbol = INACTIVE_SYMBOL[strategy]
         histories = {symbol: [] for symbol in symbols}
         desired_by_entry = {}
         for index, day in enumerate(dates):
@@ -134,7 +151,7 @@ def build_event_diagnostics(
                 continue
             targets = target_function(strategy, histories, config)
             risk = [(weight, symbol) for symbol, weight in targets.items()
-                    if symbol != config.cash_proxy_symbol and weight > 0]
+                    if symbol != inactive_symbol and weight > 0]
             desired_by_entry[dates[index + 1]] = {
                 "symbol": max(risk)[1] if risk else None,
                 "signal_date": day,

@@ -176,6 +176,7 @@ def state_validation_outputs(
     daily: list[dict], conditions: dict[str, dict], cost_ladder_bps: tuple[float, ...],
     primary_cost_bps: float, discovery_end: str | None, holdout_start: str | None,
     benchmark_strategy: str = "SPY_BUY_HOLD", fold_sessions: int = 252,
+    progress_callback=None,
 ) -> tuple[list[dict], list[dict], list[dict], list[dict], list[dict], list[dict], list[dict], list[dict]]:
     """Build period, episode-inference, transition, and chronological-fold evidence."""
     periods = [("full", None, None)]
@@ -183,13 +184,17 @@ def state_validation_outputs(
         periods += [("discovery", None, discovery_end), ("holdout", holdout_start, None)]
 
     period_rows, episode_rows = [], []
-    for period, start, end in periods:
+    for period_number, (period, start, end) in enumerate(periods, 1):
         _, _, states, episodes = market_state_scorecards(
             daily, conditions, primary_cost_bps, benchmark_strategy,
             period_start=start, period_end=end,
         )
         period_rows.extend({"period": period, **row} for row in states)
         episode_rows.extend({"period": period, **row} for row in episodes)
+        if progress_callback:
+            progress_callback({"stage": "market_state_periods", "stage_completed_rows": period_number,
+                               "stage_total_rows": len(periods),
+                               "stage_percent_complete": round(period_number / len(periods) * 100, 2)})
 
     benchmark = {(row["period"], row["core_state"], row["episode_id"]): row
                  for row in episode_rows if row["strategy"] == benchmark_strategy}
@@ -198,7 +203,8 @@ def state_validation_outputs(
     for row in episode_rows:
         if row["strategy"] != benchmark_strategy:
             groups[(row["period"], row["strategy"], row["core_state"])].append(row)
-    for (period, strategy, state), rows in sorted(groups.items()):
+    ordered_groups = sorted(groups.items())
+    for group_number, ((period, strategy, state), rows) in enumerate(ordered_groups, 1):
         excess = []
         for row in rows:
             peer = benchmark.get((period, state, row["episode_id"]))
@@ -215,12 +221,16 @@ def state_validation_outputs(
             "episode_excess_ci_95_high": boot["ci_high"],
             "bootstrap_probability_excess_positive": boot["probability_positive"],
         })
+        if progress_callback and (group_number == len(ordered_groups) or group_number % 20 == 0):
+            progress_callback({"stage": "market_state_inference", "stage_completed_rows": group_number,
+                               "stage_total_rows": len(ordered_groups),
+                               "stage_percent_complete": round(group_number / len(ordered_groups) * 100, 2)})
     # Control false discoveries separately within each genuinely evaluated period.
     for period in {row["period"] for row in inference}:
         _benjamini_hochberg([row for row in inference if row["period"] == period])
 
     cost_rows = []
-    for cost in cost_ladder_bps:
+    for cost_number, cost in enumerate(cost_ladder_bps, 1):
         for period, start, end in periods:
             _, _, states, _ = market_state_scorecards(
                 daily, conditions, cost, benchmark_strategy,
@@ -229,6 +239,11 @@ def state_validation_outputs(
             for row in states:
                 cost_rows.append({"period": period, **row,
                                   "is_primary_cost": float(cost) == float(primary_cost_bps)})
+        if progress_callback:
+            progress_callback({"stage": "market_state_cost_sensitivity",
+                               "stage_completed_rows": cost_number,
+                               "stage_total_rows": len(cost_ladder_bps),
+                               "stage_percent_complete": round(cost_number / len(cost_ladder_bps) * 100, 2)})
 
     # Stable and transition sessions are evaluated separately using the causal
     # state_changed flag. Daily returns are reconstructed before filtering.
@@ -270,6 +285,10 @@ def state_validation_outputs(
         fold_rows.extend({"fold": fold, "fold_start": fold_dates[0], "fold_end": fold_dates[-1], **row}
                          for row in states)
     recurrence = _fold_recurrence(fold_rows, benchmark_strategy)
+    if progress_callback:
+        progress_callback({"stage": "market_state_chronological_folds",
+                           "stage_completed_rows": len(fold_rows),
+                           "stage_total_rows": len(fold_rows), "stage_percent_complete": 100.0})
     strategies = sorted({row["strategy"] for row in selected})
     transition_horizons = _transition_horizons(
         daily_returns, labels_by_date, strategies, benchmark_strategy,
@@ -277,5 +296,7 @@ def state_validation_outputs(
     survival = _survival_table(
         period_rows, inference, cost_rows, recurrence, benchmark_strategy,
     ) if holdout_start else []
+    if progress_callback:
+        progress_callback({"stage": "market_state_validation_complete", "stage_percent_complete": 100.0})
     return (period_rows, inference, cost_rows, transition_rows, fold_rows,
             recurrence, transition_horizons, survival)

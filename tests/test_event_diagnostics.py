@@ -89,6 +89,25 @@ class EventDiagnosticsTests(unittest.TestCase):
         self.assertIsNotNone(rows[0]["trailing_stop_3pct_return"])
         self.assertIn("failed_breakout_exit_return", rows[0])
 
+    def test_defensive_event_uses_spy_as_its_inactive_baseline(self):
+        dates, bars, config, conditions = self._fixture()
+        config.strategy_names = ("BREADTH_DETERIORATION_DEFENSIVE",)
+        for day in dates:
+            bars[day]["GLD"] = {"open": 100, "high": 101, "low": 99, "close": 100}
+
+        calls = {"count": 0}
+        def targets(_strategy, _histories, _config):
+            calls["count"] += 1
+            return {"SPY": 1.0} if calls["count"] < 3 else {"GLD": 1.0}
+
+        rows, summary, _, _ = build_event_diagnostics(
+            dates, bars, config, dates[0], conditions, targets
+        )
+        self.assertTrue(rows)
+        self.assertTrue(summary)
+        self.assertTrue(all(row["symbol"] == "GLD" for row in rows))
+        self.assertEqual(dates[3], rows[0]["entry_date"])
+
 
 if __name__ == "__main__":
     unittest.main()

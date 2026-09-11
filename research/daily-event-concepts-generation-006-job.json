@@ -1,0 +1,52 @@
+{
+  "job_id": "daily-event-concepts-generation-006-history-2026-09-11",
+  "engine": "tier1_etf_daily",
+  "bars_csv": "general_daily_concepts_yahoo_2013_2026-09-03.csv",
+  "data_source": "Yahoo adjusted daily chart endpoint; retrospective research ending 2026-09-03",
+  "experiment": {
+    "hypothesis_id": "DAILY_EVENT_CONCEPTS_GENERATION_006",
+    "trial_id": "daily-event-concepts-generation-006",
+    "holdout_policy": "Historical evidence through 2026-09-03 is retrospective; no candidate may route capital or be promoted without later chronological forward validation."
+  },
+  "tier1_config": {
+    "initial_cash": 100000.0,
+    "universe_name": "ETF_GENERAL_CONCEPTS",
+    "benchmark_symbol": "SPY",
+    "cash_proxy_symbol": "SHY",
+    "rebalance_frequency": "monthly",
+    "volatility_lookback_days": 60,
+    "volatility_target_annualized": 0.12,
+    "regime_high_volatility_annualized": 0.18,
+    "trend_lookback_days": 200,
+    "momentum_lookbacks_days": [63, 126, 252],
+    "sector_holdings": 3,
+    "cross_asset_holdings": 3,
+    "factor_holdings": 2,
+    "industry_holdings": 3,
+    "no_trade_band": 0.02,
+    "cost_ladder_bps": [1.0, 5.0, 10.0, 20.0],
+    "primary_cost_bps": 10.0,
+    "discovery_end_date": "2024-09-02",
+    "holdout_start_date": "2024-09-03",
+    "required_common_start_date": "2018-06-19",
+    "minimum_common_coverage_pct": 99.0,
+    "minimum_scored_sessions": 1500,
+    "rolling_window_sessions": 756,
+    "walk_forward_train_sessions": 756,
+    "walk_forward_test_sessions": 252,
+    "walk_forward_step_sessions": 252,
+    "strategy_names": [
+      "SPY_BUY_HOLD",
+      "STATIC_MULTI_SLEEVE",
+      "CROSS_ASSET_DUAL_MOMENTUM",
+      "SECTOR_PRICE_BREAKOUT_20D",
+      "MARKET_DIP_REBOUND_1D",
+      "VOLATILITY_CONTRACTION_BREAKOUT",
+      "DONCHIAN_TREND_BREAKOUT",
+      "SECTOR_MOMENTUM_ACCELERATION",
+      "BREADTH_THRUST_RECOVERY",
+      "OVERSOLD_TREND_REBOUND",
+      "BREADTH_DETERIORATION_DEFENSIVE"
+    ]
+  }
+}

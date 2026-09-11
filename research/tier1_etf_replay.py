@@ -38,6 +38,12 @@ STRATEGIES = LEGACY_STRATEGIES + (
     "STATIC_60_30_10", "INVERSE_VOLATILITY_BALANCED",
     "SECTOR_SHORT_TERM_REVERSAL",
     "SECTOR_PRICE_BREAKOUT_20D", "MARKET_DIP_REBOUND_1D",
+    "VOLATILITY_CONTRACTION_BREAKOUT",
+    "DONCHIAN_TREND_BREAKOUT",
+    "SECTOR_MOMENTUM_ACCELERATION",
+    "BREADTH_THRUST_RECOVERY",
+    "OVERSOLD_TREND_REBOUND",
+    "BREADTH_DETERIORATION_DEFENSIVE",
 )
 CROSS_ASSET_RISK = ("SPY", "QQQ", "IWM", "TLT", "IEF", "GLD", "DBC", "EFA", "EEM", "VNQ")
 FACTOR_ETFS = ("MTUM", "QUAL", "VLUE", "USMV", "IWF", "IWD")
@@ -48,6 +54,12 @@ STRATEGY_REBALANCE_FREQUENCIES = {
     "SECTOR_SHORT_TERM_REVERSAL": "weekly",
     "SECTOR_PRICE_BREAKOUT_20D": "daily",
     "MARKET_DIP_REBOUND_1D": "daily",
+    "VOLATILITY_CONTRACTION_BREAKOUT": "daily",
+    "DONCHIAN_TREND_BREAKOUT": "daily",
+    "SECTOR_MOMENTUM_ACCELERATION": "weekly",
+    "BREADTH_THRUST_RECOVERY": "daily",
+    "OVERSOLD_TREND_REBOUND": "daily",
+    "BREADTH_DETERIORATION_DEFENSIVE": "daily",
 }
 
 
@@ -259,6 +271,26 @@ def _inverse_volatility_targets(roster: tuple[str, ...], histories: dict[str, li
             if scale > 0 else {})
 
 
+def _daily_volatility(closes: list[float], end: int, lookback: int = 20) -> float | None:
+    if end < lookback or end > len(closes):
+        return None
+    values = closes[end - lookback:end]
+    returns = [values[index] / values[index - 1] - 1 for index in range(1, len(values))
+               if values[index - 1]]
+    return statistics.stdev(returns) if len(returns) > 1 else None
+
+
+def _breadth(histories: dict[str, list[float]], offset: int = 0, lookback: int = 50) -> float | None:
+    observations = []
+    for symbol in SECTOR_ETFS:
+        closes = histories.get(symbol, [])
+        end = len(closes) - offset
+        if end < lookback:
+            continue
+        observations.append(closes[end - 1] > statistics.fmean(closes[end - lookback:end]))
+    return sum(observations) / len(observations) if observations else None
+
+
 def _legacy_targets(name: str, histories: dict[str, list[float]], config: Tier1Config) -> dict[str, float]:
     spy = histories.get(config.benchmark_symbol, [])
     if name == "SPY_BUY_HOLD": return {config.benchmark_symbol: 1.0}
@@ -296,6 +328,83 @@ def _legacy_targets(name: str, histories: dict[str, list[float]], config: Tier1C
         previous_return = _return(spy, 1)
         return ({config.benchmark_symbol: 1.0}
                 if previous_return is not None and previous_return <= -0.02
+                else {config.cash_proxy_symbol: 1.0})
+    if name == "VOLATILITY_CONTRACTION_BREAKOUT":
+        candidates = []
+        for symbol in SECTOR_ETFS:
+            closes = histories.get(symbol, [])
+            if len(closes) < 273 or not _trend_positive(closes, 200):
+                continue
+            current_vol = _daily_volatility(closes, len(closes))
+            # A fixed short/long realized-volatility ratio keeps the hypothesis
+            # interpretable and avoids an expensive nested percentile scan.
+            baseline_vol = _daily_volatility(closes, len(closes), 60)
+            recent_breakout_strength = max(
+                (closes[index] / max(closes[index-20:index]) - 1 for index in range(len(closes)-5, len(closes))),
+                default=-1.0,
+            )
+            if (current_vol is not None and baseline_vol is not None
+                    and current_vol <= baseline_vol * .60
+                    and recent_breakout_strength > 0
+                    and closes[-1] > statistics.fmean(closes[-10:])):
+                candidates.append((recent_breakout_strength, symbol))
+        return ({max(candidates)[1]: 1.0} if candidates
+                else {config.cash_proxy_symbol: 1.0})
+    if name == "DONCHIAN_TREND_BREAKOUT":
+        candidates = []
+        for symbol in SECTOR_ETFS:
+            closes = histories.get(symbol, [])
+            if len(closes) < 201 or not _trend_positive(closes, 200):
+                continue
+            strengths = [
+                closes[index] / max(closes[index-55:index]) - 1
+                for index in range(max(55, len(closes)-10), len(closes))
+            ]
+            strength = max(strengths, default=-1.0)
+            if strength > 0 and closes[-1] > statistics.fmean(closes[-20:]):
+                candidates.append((strength, symbol))
+        return ({max(candidates)[1]: 1.0} if candidates
+                else {config.cash_proxy_symbol: 1.0})
+    if name == "SECTOR_MOMENTUM_ACCELERATION":
+        candidates = []
+        for symbol in SECTOR_ETFS:
+            closes = histories.get(symbol, [])
+            current = _return(closes, 20)
+            prior = closes[-21] / closes[-41] - 1 if len(closes) > 40 and closes[-41] else None
+            medium = _return(closes, 63)
+            if (None not in (current, prior, medium) and current - prior >= .03
+                    and medium > 0 and _trend_positive(closes, 200)):
+                candidates.append((current - prior, symbol))
+        selected = [symbol for _, symbol in sorted(candidates, reverse=True)[:config.sector_holdings]]
+        return ({symbol: 1 / len(selected) for symbol in selected} if selected
+                else {config.cash_proxy_symbol: 1.0})
+    if name == "BREADTH_THRUST_RECOVERY":
+        current_breadth = _breadth(histories)
+        recent_prior = [_breadth(histories, offset=offset) for offset in range(5, 11)]
+        thrust = (current_breadth is not None and current_breadth >= .65
+                  and any(value is not None and value <= .35 for value in recent_prior))
+        confirmed = len(spy) >= 20 and spy[-1] > statistics.fmean(spy[-20:])
+        return ({config.benchmark_symbol: 1.0} if thrust and confirmed
+                else {config.cash_proxy_symbol: 1.0})
+    if name == "OVERSOLD_TREND_REBOUND":
+        recent_five_day = [
+            spy[index] / spy[index-5] - 1
+            for index in range(max(5, len(spy)-5), len(spy)) if spy[index-5]
+        ]
+        reversal = len(spy) > 1 and spy[-1] > spy[-2]
+        signal = (recent_five_day and min(recent_five_day) <= -.05 and reversal
+                  and _trend_positive(spy, config.trend_lookback_days))
+        return ({config.benchmark_symbol: 1.0} if signal
+                else {config.cash_proxy_symbol: 1.0})
+    if name == "BREADTH_DETERIORATION_DEFENSIVE":
+        current_breadth, prior_breadth = _breadth(histories), _breadth(histories, offset=5)
+        deterioration = (current_breadth is not None and prior_breadth is not None
+                         and current_breadth <= .35 and prior_breadth >= .65)
+        if not deterioration:
+            return {config.benchmark_symbol: 1.0}
+        defensive = [(_return(histories.get(symbol, []), 20), symbol) for symbol in DEFENSIVE_ETFS]
+        defensive = [(score, symbol) for score, symbol in defensive if score is not None and score > 0]
+        return ({max(defensive)[1]: 1.0} if defensive
                 else {config.cash_proxy_symbol: 1.0})
     if name == "VOL_MANAGED_SPY":
         returns = [spy[i] / spy[i-1] - 1.0 for i in range(max(1, len(spy)-config.volatility_lookback_days), len(spy)) if spy[i-1]]
@@ -442,6 +551,12 @@ STRATEGY_CONCEPT_FAMILIES = {
     "INVERSE_VOLATILITY_BALANCED": "risk_balanced_allocation",
     "SECTOR_PRICE_BREAKOUT_20D": "price_breakout",
     "MARKET_DIP_REBOUND_1D": "market_mean_reversion",
+    "VOLATILITY_CONTRACTION_BREAKOUT": "volatility_contraction_breakout",
+    "DONCHIAN_TREND_BREAKOUT": "trend_filtered_price_breakout",
+    "SECTOR_MOMENTUM_ACCELERATION": "momentum_acceleration",
+    "BREADTH_THRUST_RECOVERY": "breadth_thrust_recovery",
+    "OVERSOLD_TREND_REBOUND": "trend_filtered_oversold_rebound",
+    "BREADTH_DETERIORATION_DEFENSIVE": "breadth_deterioration_defense",
     "VOL_MANAGED_SPY": "volatility_managed_equity",
     "ETF_DUAL_MOMENTUM": "dual_momentum",
     "CROSS_ASSET_DUAL_MOMENTUM": "cross_asset_dual_momentum",
@@ -764,6 +879,7 @@ def run_tier1_job(job: dict, bars_path: Path, archive_path: Path, source_sha256:
         all_daily,market_conditions,config.cost_ladder_bps,config.primary_cost_bps,
         config.discovery_end_date,config.holdout_start_date,
         fold_sessions=config.walk_forward_test_sessions,
+        progress_callback=progress_callback,
     )
     if progress_callback:
         progress_callback({"stage":"building_event_diagnostics","stage_completed_rows":0,
