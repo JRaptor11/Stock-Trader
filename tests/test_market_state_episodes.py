@@ -21,12 +21,27 @@ class MarketStateEpisodeTests(unittest.TestCase):
         self.assertEqual("LOW", row["volatility_state"])
         self.assertEqual("BROAD", row["breadth_state"])
         self.assertEqual("FALLING", row["volatility_transition"])
+        self.assertEqual(row["raw_core_state"], row["core_state"])
+
+    def test_state_change_requires_three_observed_sessions(self):
+        conditions = self._conditions()
+        template = conditions["2026-01-02"]
+        for index in range(6, 10):
+            conditions[f"2026-01-0{index}"] = {
+                **template, "volatility_20d_bucket": "Q5_HIGH",
+            }
+        labels = causal_state_labels(conditions)
+        self.assertEqual("LOW", labels["2026-01-06"]["volatility_state"])
+        self.assertEqual("LOW", labels["2026-01-07"]["volatility_state"])
+        self.assertEqual("HIGH", labels["2026-01-08"]["volatility_state"])
+        self.assertTrue(labels["2026-01-08"]["state_changed"])
 
     def test_pools_noncontiguous_state_episodes(self):
         conditions = self._conditions()
-        conditions["2026-01-03"] = {
-            **conditions["2026-01-03"], "volatility_20d_bucket": "Q5_HIGH"
-        }
+        labels = causal_state_labels(conditions, confirmation_sessions=1)
+        labels["2026-01-03"]["core_state"] = "ALTERNATE"
+        from research.market_state_episodes import state_episodes
+        episodes, _ = state_episodes(labels)
         daily = []
         for strategy, equities in {
             "SPY_BUY_HOLD": [100, 101, 100, 102, 103],
@@ -37,7 +52,7 @@ class MarketStateEpisodeTests(unittest.TestCase):
                     "strategy": strategy, "date": f"2026-01-0{index}",
                     "cost_bps": 10.0, "equity": equity,
                 })
-        labels, episodes, attribution, episode_returns = market_state_scorecards(
+        labels, _, attribution, episode_returns = market_state_scorecards(
             daily, conditions, 10.0, minimum_state_sessions=1,
             minimum_state_episodes=1,
         )
@@ -45,10 +60,8 @@ class MarketStateEpisodeTests(unittest.TestCase):
         self.assertEqual(3, len(episodes))
         self.assertTrue(episode_returns)
         pooled = [row for row in attribution if row.get("strategy") == "CANDIDATE"]
-        self.assertEqual(2, len(pooled))
-        broad_low = next(row for row in pooled if row["volatility_state"] == "LOW")
-        self.assertEqual(2, broad_low["episodes"])
-        self.assertGreater(broad_low["strategy_compounded_return"], 0)
+        self.assertEqual(1, len(pooled))
+        self.assertGreater(pooled[0]["strategy_compounded_return"], 0)
 
 
 if __name__ == "__main__":

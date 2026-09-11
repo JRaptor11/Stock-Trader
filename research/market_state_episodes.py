@@ -37,7 +37,8 @@ STATE_DEFINITION = {
         "correlation_state": "Causal expanding-history quintile of average 20-day asset/market correlation.",
         "dispersion_state": "Causal expanding-history quintile of cross-sectional 20-day return dispersion.",
     },
-    "episode_rule": "A new episode starts whenever the core state changes; no future smoothing or retrospective relabeling is used.",
+    "episode_rule": "A new episode starts after a proposed core state persists for three consecutive sessions. Raw labels remain recorded. Confirmation uses no future observations and prior sessions are not relabeled.",
+    "state_change_confirmation_sessions": 3,
     "minimum_evidence": {"pooled_sessions": 30, "distinct_episodes": 5},
     "interpretation": "State results are descriptive research evidence and never authorize strategy switching or live allocation.",
 }
@@ -107,26 +108,60 @@ def _direction(value, deadband: float = 0.0) -> str | None:
     return "STABLE"
 
 
-def causal_state_labels(conditions: dict[str, dict]) -> dict[str, dict]:
+def causal_state_labels(
+    conditions: dict[str, dict], confirmation_sessions: int = 3,
+) -> dict[str, dict]:
     """Collapse continuous causal features into interpretable state axes."""
-    result = {}
+    if confirmation_sessions < 1:
+        raise ValueError("confirmation_sessions must be positive")
+    raw_rows = []
     for day, source in sorted(conditions.items()):
         trend = _trend_state(source)
         volatility = _volatility_state(source)
         breadth = _breadth_state(source)
         if not all((trend, volatility, breadth)):
             continue
-        result[day] = {
+        raw_rows.append({
             "date": day,
-            "trend_state": trend,
-            "volatility_state": volatility,
-            "breadth_state": breadth,
-            "core_state": f"{trend}__{volatility}_VOL__{breadth}_BREADTH",
+            "raw_trend_state": trend,
+            "raw_volatility_state": volatility,
+            "raw_breadth_state": breadth,
+            "raw_core_state": f"{trend}__{volatility}_VOL__{breadth}_BREADTH",
             "trend_transition": _direction(source.get("trend_acceleration_5d")),
             "volatility_transition": _direction(source.get("volatility_change_5d")),
             "breadth_transition": _direction(source.get("breadth_50d_change_5d")),
             "correlation_state": source.get("correlation_20d_bucket"),
             "dispersion_state": source.get("dispersion_20d_bucket"),
+        })
+    result = {}
+    active = pending = None
+    pending_count = 0
+    active_components = None
+    for row in raw_rows:
+        proposed = row["raw_core_state"]
+        proposed_components = (
+            row["raw_trend_state"], row["raw_volatility_state"],
+            row["raw_breadth_state"],
+        )
+        changed = False
+        if active is None:
+            active, active_components = proposed, proposed_components
+        elif proposed == active:
+            pending, pending_count = None, 0
+        else:
+            if proposed == pending:
+                pending_count += 1
+            else:
+                pending, pending_count = proposed, 1
+            if pending_count >= confirmation_sessions:
+                active, active_components = proposed, proposed_components
+                pending, pending_count, changed = None, 0, True
+        result[row["date"]] = {
+            **row, "trend_state": active_components[0],
+            "volatility_state": active_components[1],
+            "breadth_state": active_components[2], "core_state": active,
+            "state_changed": changed, "pending_core_state": pending,
+            "pending_confirmation_sessions": pending_count,
         }
     return result
 
