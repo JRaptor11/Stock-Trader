@@ -1,0 +1,19 @@
+{
+  "generation_id": "general-concepts-generation-008",
+  "declared_at": "2026-09-15T12:30:00-07:00",
+  "retrospective_evidence_end": "2026-09-03",
+  "earliest_forward_confirmation": "2026-09-15",
+  "status": "research_only",
+  "objective": "Test six independent return and protection mechanisms while adding explicit large-breakout precision and recall diagnostics.",
+  "candidates": [
+    {"strategy":"CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE","concept":"Risk assets should clear both an absolute trend test and the best defensive asset momentum hurdle.","fixed_rules":"Monthly composite 63/126/252-session momentum; equal-weight up to three positively trending risk assets only when each beats the strongest defensive score, otherwise hold the strongest defensive asset.","cadence":"monthly"},
+    {"strategy":"TREND_VOLATILITY_SCALED_EQUITY","concept":"Continuous risk scaling may preserve more upside than binary exits while controlling volatility.","fixed_rules":"Hold SPY only above its 200-session mean, scaled to a 12 percent annual volatility target using 60 sessions, with residual in SHY.","cadence":"weekly"},
+    {"strategy":"DEFENSIVE_TREND_PERSISTENCE","concept":"Persistent defensive trends may provide positive participation during negative equity trends.","fixed_rules":"Below the SPY 200-session mean, select the strongest asset among BIL, IEF, and GLD only when both 63- and 126-session returns are positive; otherwise SHY. Hold SPY when its trend is positive.","cadence":"weekly"},
+    {"strategy":"BREADTH_DIVERGENCE_DEFENSIVE","concept":"A market near a medium-term high while sector breadth falls materially may be vulnerable.","fixed_rules":"Rotate SPY to SHY when SPY is within two percent of its 63-session high and 50-session sector breadth has fallen at least 25 percentage points over 20 sessions.","cadence":"weekly"},
+    {"strategy":"RELATIVE_STRENGTH_BREAKOUT","concept":"A breakout may be more reliable when the sector is also outperforming SPY.","fixed_rules":"Hold the sector making a new 55-session closing high with a positive 200-session trend and at least three percentage points of 63-session relative strength versus SPY; otherwise SHY.","cadence":"daily"},
+    {"strategy":"CONFIRMED_CRASH_RECOVERY","concept":"Waiting for multi-session confirmation after a sharp decline may avoid premature first-reversal entries.","fixed_rules":"After an eight-percent 10-session SPY decline observed within five sessions, require three rising closes, a reclaim of the 10-session mean, and improving 50-session sector breadth; otherwise SHY.","cadence":"daily"}
+  ],
+  "controls":["SPY_BUY_HOLD","STATIC_MULTI_SLEEVE","CROSS_ASSET_DUAL_MOMENTUM","DONCHIAN_TREND_BREAKOUT","VOLATILITY_CONTRACTION_BREAKOUT","FAILED_BREAKDOWN_RECOVERY"],
+  "evaluation":{"primary_cost_bps":10.0,"cost_ladder_bps":[1.0,5.0,10.0,20.0],"breakout_opportunity_thresholds":[0.03,0.05,0.10],"breakout_horizon_sessions":5,"breakout_detection_window_sessions":2,"required_outputs":["market_state_survival","event_horizons","breakout_precision_recall_and_capture"]},
+  "constraints":{"no_parameter_search":true,"no_strategy_combination":true,"no_router_training":true,"no_live_or_paper_execution":true,"no_promotion_from_retrospective_results":true}
+}

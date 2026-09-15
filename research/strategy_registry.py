@@ -57,6 +57,12 @@ HYPOTHESES = {
         "data_frequency": "1d", "turnover_expectation": "event_dependent",
         "point_in_time_equities_required": False,
     },
+    "GENERAL_CONCEPTS_GENERATION_008": {
+        "tier": 2, "status": "active_research",
+        "mechanism": "compare relative momentum, trend-volatility scaling, defensive persistence, breadth divergence, relative-strength breakout, and confirmed crash recovery",
+        "data_frequency": "1d", "turnover_expectation": "mixed",
+        "point_in_time_equities_required": False,
+    },
     "CURRENT_INTRADAY_FAMILY": {
         "tier": "legacy_challenger", "status": "active_challenger",
         "mechanism": "intraday cross-sectional price ranking and target rotation",
