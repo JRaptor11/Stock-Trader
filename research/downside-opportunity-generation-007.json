@@ -1,0 +1,74 @@
+{
+  "generation_id": "downside-opportunity-generation-007",
+  "declared_at": "2026-09-15T12:00:00-07:00",
+  "retrospective_evidence_end": "2026-09-03",
+  "earliest_forward_confirmation": "2026-09-15",
+  "status": "research_only",
+  "objective": "Test structurally distinct downside-protection and short-duration opportunity mechanisms independently, without tuning Generation 006 or constructing a switching strategy.",
+  "candidates": [
+    {
+      "strategy": "EQUITY_TREND_DEFENSIVE",
+      "concept": "Equity exposure may be safer when both long and intermediate trends agree, with defensive assets used otherwise.",
+      "fixed_rules": "Hold SPY only above its 200-session mean while its 50-session mean exceeds its value 20 sessions earlier; otherwise hold the strongest positive 63-session return among BIL, IEF, and GLD, or SHY.",
+      "cadence": "weekly"
+    },
+    {
+      "strategy": "DRAWDOWN_BRAKE",
+      "concept": "A material drawdown that remains below a short trend may warrant temporary capital preservation.",
+      "fixed_rules": "Hold SHY when SPY is at least eight percent below its trailing 63-session high and below its 20-session mean; otherwise hold SPY.",
+      "cadence": "daily"
+    },
+    {
+      "strategy": "VOLATILITY_SHOCK_DEFENSIVE",
+      "concept": "Rapid volatility expansion combined with negative equity momentum may identify a distinct risk-off episode.",
+      "fixed_rules": "When SPY 20-session volatility is at least 1.5 times 60-session volatility and its 20-session return is negative, hold the strongest positive 20-session defensive asset among BIL, IEF, and GLD, or SHY; otherwise hold SPY.",
+      "cadence": "daily"
+    },
+    {
+      "strategy": "TREND_PULLBACK_REBOUND",
+      "concept": "A sharp short pullback inside a persistent sector uptrend may create a short-duration rebound opportunity.",
+      "fixed_rules": "Select the deepest sector three-session decline of at least three percent that reverses upward, retains positive 63-session momentum and a positive 200-session trend, and remains above its 50-session mean; otherwise hold SHY.",
+      "cadence": "daily"
+    },
+    {
+      "strategy": "FAILED_BREAKDOWN_RECOVERY",
+      "concept": "A downside range break that is quickly reclaimed inside a long-term uptrend may represent seller exhaustion.",
+      "fixed_rules": "Hold SPY after a close below the prior 20-session closing low within four sessions is reclaimed with an upward close while the 200-session trend remains positive; otherwise hold SHY.",
+      "cadence": "daily"
+    },
+    {
+      "strategy": "DEFENSIVE_ASSET_BREAKOUT",
+      "concept": "Fresh strength in a defensive asset during a negative equity trend may offer positive participation rather than only cash preservation.",
+      "fixed_rules": "When SPY is below its 200-session mean, hold the strongest positive 63-session defensive asset making a new 63-session closing high among BIL, IEF, and GLD; otherwise hold SHY.",
+      "cadence": "daily"
+    }
+  ],
+  "controls": [
+    "SPY_BUY_HOLD",
+    "STATIC_MULTI_SLEEVE",
+    "CROSS_ASSET_DUAL_MOMENTUM",
+    "DONCHIAN_TREND_BREAKOUT",
+    "BREADTH_THRUST_RECOVERY",
+    "OVERSOLD_TREND_REBOUND"
+  ],
+  "evaluation": {
+    "primary_cost_bps": 10.0,
+    "cost_ladder_bps": [1.0, 5.0, 10.0, 20.0],
+    "primary_unit": "persistent causal market-state episode",
+    "required_outputs": [
+      "discovery_holdout_state_comparison",
+      "chronological_fold_recurrence",
+      "episode_bootstrap_and_false_discovery_control",
+      "transition_horizons",
+      "event_activation_and_horizon_diagnostics",
+      "hypothesis_survival_status"
+    ]
+  },
+  "constraints": {
+    "no_parameter_search": true,
+    "no_strategy_combination": true,
+    "no_router_training": true,
+    "no_live_or_paper_execution": true,
+    "no_promotion_from_retrospective_results": true
+  }
+}

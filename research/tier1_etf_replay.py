@@ -44,6 +44,12 @@ STRATEGIES = LEGACY_STRATEGIES + (
     "BREADTH_THRUST_RECOVERY",
     "OVERSOLD_TREND_REBOUND",
     "BREADTH_DETERIORATION_DEFENSIVE",
+    "EQUITY_TREND_DEFENSIVE",
+    "DRAWDOWN_BRAKE",
+    "VOLATILITY_SHOCK_DEFENSIVE",
+    "TREND_PULLBACK_REBOUND",
+    "FAILED_BREAKDOWN_RECOVERY",
+    "DEFENSIVE_ASSET_BREAKOUT",
 )
 CROSS_ASSET_RISK = ("SPY", "QQQ", "IWM", "TLT", "IEF", "GLD", "DBC", "EFA", "EEM", "VNQ")
 FACTOR_ETFS = ("MTUM", "QUAL", "VLUE", "USMV", "IWF", "IWD")
@@ -60,6 +66,12 @@ STRATEGY_REBALANCE_FREQUENCIES = {
     "BREADTH_THRUST_RECOVERY": "daily",
     "OVERSOLD_TREND_REBOUND": "daily",
     "BREADTH_DETERIORATION_DEFENSIVE": "daily",
+    "EQUITY_TREND_DEFENSIVE": "weekly",
+    "DRAWDOWN_BRAKE": "daily",
+    "VOLATILITY_SHOCK_DEFENSIVE": "daily",
+    "TREND_PULLBACK_REBOUND": "daily",
+    "FAILED_BREAKDOWN_RECOVERY": "daily",
+    "DEFENSIVE_ASSET_BREAKOUT": "daily",
 }
 
 
@@ -406,6 +418,70 @@ def _legacy_targets(name: str, histories: dict[str, list[float]], config: Tier1C
         defensive = [(score, symbol) for score, symbol in defensive if score is not None and score > 0]
         return ({max(defensive)[1]: 1.0} if defensive
                 else {config.cash_proxy_symbol: 1.0})
+    if name == "EQUITY_TREND_DEFENSIVE":
+        long_trend = len(spy) >= 220 and spy[-1] > statistics.fmean(spy[-200:])
+        intermediate_rising = (len(spy) >= 70
+                               and statistics.fmean(spy[-50:]) > statistics.fmean(spy[-70:-20]))
+        if long_trend and intermediate_rising:
+            return {config.benchmark_symbol: 1.0}
+        defensive = [(_return(histories.get(symbol, []), 63), symbol) for symbol in DEFENSIVE_ETFS]
+        defensive = [(score, symbol) for score, symbol in defensive if score is not None and score > 0]
+        return ({max(defensive)[1]: 1.0} if defensive
+                else {config.cash_proxy_symbol: 1.0})
+    if name == "DRAWDOWN_BRAKE":
+        drawdown = spy[-1] / max(spy[-63:]) - 1.0 if len(spy) >= 63 else 0.0
+        braking = (len(spy) >= 63 and drawdown <= -.08
+                   and spy[-1] < statistics.fmean(spy[-20:]))
+        return ({config.cash_proxy_symbol: 1.0} if braking
+                else {config.benchmark_symbol: 1.0})
+    if name == "VOLATILITY_SHOCK_DEFENSIVE":
+        short_vol = _daily_volatility(spy, len(spy), 20)
+        medium_vol = _daily_volatility(spy, len(spy), 60)
+        risk_off = (short_vol is not None and medium_vol is not None
+                    and short_vol >= medium_vol * 1.5
+                    and (_return(spy, 20) or 0.0) < 0)
+        if not risk_off:
+            return {config.benchmark_symbol: 1.0}
+        defensive = [(_return(histories.get(symbol, []), 20), symbol) for symbol in DEFENSIVE_ETFS]
+        defensive = [(score, symbol) for score, symbol in defensive if score is not None and score > 0]
+        return ({max(defensive)[1]: 1.0} if defensive
+                else {config.cash_proxy_symbol: 1.0})
+    if name == "TREND_PULLBACK_REBOUND":
+        candidates = []
+        for symbol in SECTOR_ETFS:
+            closes = histories.get(symbol, [])
+            pullback = _return(closes, 3)
+            medium = _return(closes, 63)
+            if (len(closes) >= 201 and pullback is not None and pullback <= -.03
+                    and medium is not None and medium > 0
+                    and closes[-1] > closes[-2]
+                    and closes[-1] > statistics.fmean(closes[-50:])
+                    and _trend_positive(closes, 200)):
+                candidates.append((-pullback, symbol))
+        return ({max(candidates)[1]: 1.0} if candidates
+                else {config.cash_proxy_symbol: 1.0})
+    if name == "FAILED_BREAKDOWN_RECOVERY":
+        recovered = False
+        if len(spy) >= 26 and _trend_positive(spy, config.trend_lookback_days):
+            for index in range(len(spy) - 5, len(spy) - 1):
+                prior_floor = min(spy[index - 20:index])
+                if spy[index] < prior_floor and spy[-1] > prior_floor and spy[-1] > spy[-2]:
+                    recovered = True
+                    break
+        return ({config.benchmark_symbol: 1.0} if recovered
+                else {config.cash_proxy_symbol: 1.0})
+    if name == "DEFENSIVE_ASSET_BREAKOUT":
+        if len(spy) < 200 or spy[-1] >= statistics.fmean(spy[-200:]):
+            return {config.cash_proxy_symbol: 1.0}
+        candidates = []
+        for symbol in DEFENSIVE_ETFS:
+            closes = histories.get(symbol, [])
+            if len(closes) >= 64 and closes[-1] > max(closes[-64:-1]):
+                strength = _return(closes, 63)
+                if strength is not None and strength > 0:
+                    candidates.append((strength, symbol))
+        return ({max(candidates)[1]: 1.0} if candidates
+                else {config.cash_proxy_symbol: 1.0})
     if name == "VOL_MANAGED_SPY":
         returns = [spy[i] / spy[i-1] - 1.0 for i in range(max(1, len(spy)-config.volatility_lookback_days), len(spy)) if spy[i-1]]
         if len(returns) < config.volatility_lookback_days // 2: return {config.cash_proxy_symbol: 1.0}
@@ -557,6 +633,12 @@ STRATEGY_CONCEPT_FAMILIES = {
     "BREADTH_THRUST_RECOVERY": "breadth_thrust_recovery",
     "OVERSOLD_TREND_REBOUND": "trend_filtered_oversold_rebound",
     "BREADTH_DETERIORATION_DEFENSIVE": "breadth_deterioration_defense",
+    "EQUITY_TREND_DEFENSIVE": "multi_horizon_equity_trend_defense",
+    "DRAWDOWN_BRAKE": "drawdown_triggered_equity_defense",
+    "VOLATILITY_SHOCK_DEFENSIVE": "volatility_shock_equity_defense",
+    "TREND_PULLBACK_REBOUND": "trend_filtered_sector_pullback_rebound",
+    "FAILED_BREAKDOWN_RECOVERY": "trend_filtered_failed_breakdown_recovery",
+    "DEFENSIVE_ASSET_BREAKOUT": "risk_off_defensive_asset_breakout",
     "VOL_MANAGED_SPY": "volatility_managed_equity",
     "ETF_DUAL_MOMENTUM": "dual_momentum",
     "CROSS_ASSET_DUAL_MOMENTUM": "cross_asset_dual_momentum",

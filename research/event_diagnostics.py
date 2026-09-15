@@ -16,6 +16,12 @@ EVENT_STRATEGIES = (
     "BREADTH_THRUST_RECOVERY",
     "OVERSOLD_TREND_REBOUND",
     "BREADTH_DETERIORATION_DEFENSIVE",
+    "EQUITY_TREND_DEFENSIVE",
+    "DRAWDOWN_BRAKE",
+    "VOLATILITY_SHOCK_DEFENSIVE",
+    "TREND_PULLBACK_REBOUND",
+    "FAILED_BREAKDOWN_RECOVERY",
+    "DEFENSIVE_ASSET_BREAKOUT",
 )
 # An event begins only when the strategy leaves its normal inactive posture.
 # Most event concepts park in SHY; the deterioration concept normally owns SPY
@@ -24,6 +30,8 @@ INACTIVE_SYMBOL = {
     strategy: "SHY" for strategy in EVENT_STRATEGIES
 }
 INACTIVE_SYMBOL["BREADTH_DETERIORATION_DEFENSIVE"] = "SPY"
+for _strategy in ("EQUITY_TREND_DEFENSIVE", "DRAWDOWN_BRAKE", "VOLATILITY_SHOCK_DEFENSIVE"):
+    INACTIVE_SYMBOL[_strategy] = "SPY"
 HORIZONS = (1, 2, 3, 5, 10)
 TRAILING_STOPS = (0.03, 0.05)
 
