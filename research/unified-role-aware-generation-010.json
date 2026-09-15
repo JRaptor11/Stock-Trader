@@ -1,0 +1,32 @@
+{
+  "generation_id": "unified-role-aware-generation-010",
+  "declared_at": "2026-09-15T15:30:00-07:00",
+  "retrospective_evidence_end": "2026-09-03",
+  "status": "research_only",
+  "objective": "Evaluate a wide roster of independent baseline, defensive, and tactical strategies, identify repeatable conditional strengths, and measure tactical value relative to the baseline temporarily displaced.",
+  "roles": {
+    "baseline_candidate": "Strategies intended to hold capital through persistent conditions.",
+    "defensive_override": "Strategies intended to reduce or redirect risk temporarily during adverse conditions.",
+    "tactical_opportunity": "Short-horizon strategies that must outperform the baseline over the same interval.",
+    "hybrid_control": "Earlier combined concepts retained only as research controls, not proposed routers.",
+    "benchmark": "Passive SPY comparison."
+  },
+  "primary_baseline_comparator": "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+  "evaluation": {
+    "primary_cost_bps": 10.0,
+    "cost_ladder_bps": [1.0, 5.0, 10.0, 20.0],
+    "periods": ["full", "discovery", "untouched_holdout"],
+    "conditional_dimensions": ["trend", "trend_acceleration", "volatility", "breadth", "persistent_core_state", "state_transition"],
+    "tactical_horizon_sessions": 5,
+    "tactical_primary_metric": "incremental return versus the displaced baseline",
+    "required_recurrence": "at least three calendar years plus chronological-fold evidence"
+  },
+  "constraints": {
+    "strategies_remain_independent": true,
+    "no_strategy_combination": true,
+    "no_router_training": true,
+    "no_live_or_paper_execution": true,
+    "retain_weak_full_sample_strategies_for_conditional_analysis": true,
+    "no_promotion_from_retrospective_results": true
+  }
+}

@@ -69,6 +69,12 @@ HYPOTHESES = {
         "data_frequency": "1d", "turnover_expectation": "event_dependent",
         "point_in_time_equities_required": False,
     },
+    "UNIFIED_ROLE_AWARE_GENERATION_010": {
+        "tier": 2, "status": "active_research",
+        "mechanism": "evaluate independent baseline, defensive, and tactical families by persistent market state and tactical value over the displaced baseline",
+        "data_frequency": "1d", "turnover_expectation": "mixed",
+        "point_in_time_equities_required": False,
+    },
     "CURRENT_INTRADAY_FAMILY": {
         "tier": "legacy_challenger", "status": "active_challenger",
         "mechanism": "intraday cross-sectional price ranking and target rotation",
