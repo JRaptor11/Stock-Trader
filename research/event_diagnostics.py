@@ -24,6 +24,12 @@ EVENT_STRATEGIES = (
     "DEFENSIVE_ASSET_BREAKOUT",
     "BREADTH_DIVERGENCE_DEFENSIVE",
     "RELATIVE_STRENGTH_BREAKOUT",
+    "VOLUME_EXPANSION_BREAKOUT",
+    "VOLATILITY_ADJUSTED_ACCELERATION_BREAKOUT",
+    "OVERNIGHT_GAP_CONTINUATION",
+    "CROSS_SECTIONAL_ABNORMAL_RETURN_BREAKOUT",
+    "SECTOR_PARTICIPATION_BREAKOUT",
+    "MARKET_CONFIRMED_SECTOR_BREAKOUT",
     "CONFIRMED_CRASH_RECOVERY",
 )
 # An event begins only when the strategy leaves its normal inactive posture.
@@ -153,12 +159,14 @@ def build_event_diagnostics(
     rows = []
     for strategy in selected:
         inactive_symbol = INACTIVE_SYMBOL[strategy]
-        histories = {symbol: [] for symbol in symbols}
+        from research.tier1_etf_replay import MarketHistories
+        histories = MarketHistories(symbols)
         desired_by_entry = {}
         for index, day in enumerate(dates):
             for symbol in symbols:
                 if symbol in bars[day]:
                     histories[symbol].append(float(bars[day][symbol]["close"]))
+                    histories.market_bars[symbol].append(bars[day][symbol])
             if day < scored_start or index + 1 >= len(dates):
                 continue
             targets = target_function(strategy, histories, config)

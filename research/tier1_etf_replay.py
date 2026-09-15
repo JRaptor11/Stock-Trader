@@ -57,6 +57,12 @@ STRATEGIES = LEGACY_STRATEGIES + (
     "BREADTH_DIVERGENCE_DEFENSIVE",
     "RELATIVE_STRENGTH_BREAKOUT",
     "CONFIRMED_CRASH_RECOVERY",
+    "VOLUME_EXPANSION_BREAKOUT",
+    "VOLATILITY_ADJUSTED_ACCELERATION_BREAKOUT",
+    "OVERNIGHT_GAP_CONTINUATION",
+    "CROSS_SECTIONAL_ABNORMAL_RETURN_BREAKOUT",
+    "SECTOR_PARTICIPATION_BREAKOUT",
+    "MARKET_CONFIRMED_SECTOR_BREAKOUT",
 )
 CROSS_ASSET_RISK = ("SPY", "QQQ", "IWM", "TLT", "IEF", "GLD", "DBC", "EFA", "EEM", "VNQ")
 FACTOR_ETFS = ("MTUM", "QUAL", "VLUE", "USMV", "IWF", "IWD")
@@ -85,7 +91,21 @@ STRATEGY_REBALANCE_FREQUENCIES = {
     "BREADTH_DIVERGENCE_DEFENSIVE": "weekly",
     "RELATIVE_STRENGTH_BREAKOUT": "daily",
     "CONFIRMED_CRASH_RECOVERY": "daily",
+    "VOLUME_EXPANSION_BREAKOUT": "daily",
+    "VOLATILITY_ADJUSTED_ACCELERATION_BREAKOUT": "daily",
+    "OVERNIGHT_GAP_CONTINUATION": "daily",
+    "CROSS_SECTIONAL_ABNORMAL_RETURN_BREAKOUT": "daily",
+    "SECTOR_PARTICIPATION_BREAKOUT": "daily",
+    "MARKET_CONFIRMED_SECTOR_BREAKOUT": "daily",
 }
+
+
+class MarketHistories(dict):
+    """Close histories with causal OHLCV observations for newer concepts."""
+
+    def __init__(self, symbols):
+        super().__init__((symbol, []) for symbol in symbols)
+        self.market_bars = {symbol: [] for symbol in symbols}
 
 
 @dataclass(frozen=True)
@@ -557,6 +577,76 @@ def _legacy_targets(name: str, histories: dict[str, list[float]], config: Tier1C
                       and breadth_now > breadth_prior)
         return ({config.benchmark_symbol: 1.0} if recovering
                 else {config.cash_proxy_symbol: 1.0})
+    if name == "VOLUME_EXPANSION_BREAKOUT":
+        candidates = []
+        market_bars = getattr(histories, "market_bars", {})
+        for symbol in SECTOR_ETFS:
+            closes, observations = histories.get(symbol, []), market_bars.get(symbol, [])
+            if len(closes) < 201 or len(observations) < 21:
+                continue
+            prior_volume = [float(row.get("volume", 0)) for row in observations[-21:-1]]
+            current_volume = float(observations[-1].get("volume", 0))
+            prior_high = max(closes[-56:-1])
+            if (prior_high > 0 and closes[-1] > prior_high and _trend_positive(closes, 200)
+                    and prior_volume and statistics.fmean(prior_volume) > 0
+                    and current_volume >= 2.0 * statistics.fmean(prior_volume)):
+                candidates.append((current_volume / statistics.fmean(prior_volume), symbol))
+        return ({max(candidates)[1]: 1.0} if candidates else {config.cash_proxy_symbol: 1.0})
+    if name == "VOLATILITY_ADJUSTED_ACCELERATION_BREAKOUT":
+        candidates = []
+        for symbol in SECTOR_ETFS:
+            closes = histories.get(symbol, [])
+            vol, move = _daily_volatility(closes, len(closes), 20), _return(closes, 5)
+            if (len(closes) >= 201 and vol and move is not None
+                    and move >= 2.0 * vol * math.sqrt(5)
+                    and closes[-1] > max(closes[-21:-1]) and _trend_positive(closes, 200)):
+                candidates.append((move / (vol * math.sqrt(5)), symbol))
+        return ({max(candidates)[1]: 1.0} if candidates else {config.cash_proxy_symbol: 1.0})
+    if name == "OVERNIGHT_GAP_CONTINUATION":
+        candidates = []
+        market_bars = getattr(histories, "market_bars", {})
+        for symbol in SECTOR_ETFS:
+            closes, observations = histories.get(symbol, []), market_bars.get(symbol, [])
+            if len(closes) < 201 or len(observations) < 21 or closes[-2] <= 0:
+                continue
+            today = observations[-1]
+            opening, high, low = map(float, (today["open"], today["high"], today["low"]))
+            gap = opening / closes[-2] - 1.0
+            location = (closes[-1] - low) / (high - low) if high > low else 0.0
+            prior_volume = [float(row.get("volume", 0)) for row in observations[-21:-1]]
+            volume_ratio = (float(today.get("volume", 0)) / statistics.fmean(prior_volume)
+                            if prior_volume and statistics.fmean(prior_volume) > 0 else 0.0)
+            if gap >= .02 and location >= .70 and volume_ratio >= 1.5 and _trend_positive(closes, 200):
+                candidates.append((gap + (closes[-1] / opening - 1.0), symbol))
+        return ({max(candidates)[1]: 1.0} if candidates else {config.cash_proxy_symbol: 1.0})
+    if name == "CROSS_SECTIONAL_ABNORMAL_RETURN_BREAKOUT":
+        moves = [(_return(histories.get(symbol, []), 1), symbol) for symbol in SECTOR_ETFS]
+        valid = [(move, symbol) for move, symbol in moves if move is not None]
+        median = statistics.median(move for move, _ in valid) if valid else 0.0
+        candidates = [(move - median, symbol) for move, symbol in valid
+                      if move - median >= .02 and _trend_positive(histories[symbol], 200)]
+        return ({max(candidates)[1]: 1.0} if candidates else {config.cash_proxy_symbol: 1.0})
+    if name == "SECTOR_PARTICIPATION_BREAKOUT":
+        breakouts = []
+        for symbol in SECTOR_ETFS:
+            closes = histories.get(symbol, [])
+            if len(closes) >= 21 and closes[-1] > max(closes[-21:-1]):
+                breakouts.append((closes[-1] / max(closes[-21:-1]) - 1.0, symbol))
+        if len(breakouts) < 4:
+            return {config.cash_proxy_symbol: 1.0}
+        return {max(breakouts)[1]: 1.0}
+    if name == "MARKET_CONFIRMED_SECTOR_BREAKOUT":
+        market_confirmed = ((len(spy) >= 21 and spy[-1] > max(spy[-21:-1]))
+                            or (_breadth(histories) or 0) >= .65)
+        if not market_confirmed:
+            return {config.cash_proxy_symbol: 1.0}
+        candidates = []
+        for symbol in SECTOR_ETFS:
+            closes = histories.get(symbol, [])
+            if (len(closes) >= 201 and closes[-1] > max(closes[-56:-1])
+                    and _trend_positive(closes, 200)):
+                candidates.append((closes[-1] / max(closes[-56:-1]) - 1.0, symbol))
+        return ({max(candidates)[1]: 1.0} if candidates else {config.cash_proxy_symbol: 1.0})
     if name == "VOL_MANAGED_SPY":
         returns = [spy[i] / spy[i-1] - 1.0 for i in range(max(1, len(spy)-config.volatility_lookback_days), len(spy)) if spy[i-1]]
         if len(returns) < config.volatility_lookback_days // 2: return {config.cash_proxy_symbol: 1.0}
@@ -720,6 +810,12 @@ STRATEGY_CONCEPT_FAMILIES = {
     "BREADTH_DIVERGENCE_DEFENSIVE": "market_high_breadth_divergence_defense",
     "RELATIVE_STRENGTH_BREAKOUT": "sector_relative_strength_breakout",
     "CONFIRMED_CRASH_RECOVERY": "multi_session_crash_recovery",
+    "VOLUME_EXPANSION_BREAKOUT": "volume_confirmed_sector_breakout",
+    "VOLATILITY_ADJUSTED_ACCELERATION_BREAKOUT": "volatility_adjusted_price_acceleration",
+    "OVERNIGHT_GAP_CONTINUATION": "volume_confirmed_gap_continuation",
+    "CROSS_SECTIONAL_ABNORMAL_RETURN_BREAKOUT": "cross_sectional_abnormal_return",
+    "SECTOR_PARTICIPATION_BREAKOUT": "broad_sector_participation_breakout",
+    "MARKET_CONFIRMED_SECTOR_BREAKOUT": "market_confirmed_sector_breakout",
     "VOL_MANAGED_SPY": "volatility_managed_equity",
     "ETF_DUAL_MOMENTUM": "dual_momentum",
     "CROSS_ASSET_DUAL_MOMENTUM": "cross_asset_dual_momentum",
@@ -791,7 +887,7 @@ def _period_metrics(daily: list[dict], initial: float, start: str | None, end: s
 def _simulate(name: str, dates: list[str], bars: dict, config: Tier1Config,
               cost_bps: float, scored_start: str, target_function=None) -> tuple[list[dict], list[dict]]:
     target_function = target_function or _targets
-    symbols = resolve_universe(config.universe_name); histories = {s: [] for s in symbols}
+    symbols = resolve_universe(config.universe_name); histories = MarketHistories(symbols)
     cash = config.initial_cash; shares: dict[str, float] = {}; pending = None; daily=[]; trades=[]; previous_day=None
     for index, day in enumerate(dates):
         today=bars[day]
@@ -810,7 +906,9 @@ def _simulate(name: str, dates: list[str], bars: dict, config: Tier1Config,
                 trades.append({"date":day,"strategy":name,"symbol":symbol,"notional":delta,"cost":fee,"cost_bps":cost_bps})
             pending=None
         for symbol in symbols:
-            if symbol in today: histories[symbol].append(today[symbol]["close"])
+            if symbol in today:
+                histories[symbol].append(today[symbol]["close"])
+                histories.market_bars[symbol].append(today[symbol])
         equity=cash+sum(quantity*today.get(symbol,{"close":0})["close"] for symbol,quantity in shares.items())
         if day >= scored_start:
             daily.append({"date":day,"strategy":name,"cost_bps":cost_bps,"equity":equity,"cash":cash,"positions":len(shares)})

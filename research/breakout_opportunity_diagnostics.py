@@ -10,6 +10,9 @@ from collections import defaultdict
 BREAKOUT_STRATEGIES = (
     "SECTOR_PRICE_BREAKOUT_20D", "DONCHIAN_TREND_BREAKOUT",
     "VOLATILITY_CONTRACTION_BREAKOUT", "RELATIVE_STRENGTH_BREAKOUT",
+    "VOLUME_EXPANSION_BREAKOUT", "VOLATILITY_ADJUSTED_ACCELERATION_BREAKOUT",
+    "OVERNIGHT_GAP_CONTINUATION", "CROSS_SECTIONAL_ABNORMAL_RETURN_BREAKOUT",
+    "SECTOR_PARTICIPATION_BREAKOUT", "MARKET_CONFIRMED_SECTOR_BREAKOUT",
 )
 THRESHOLDS = (0.03, 0.05, 0.10)
 
@@ -30,11 +33,13 @@ def build_breakout_opportunity_diagnostics(
     states = {row["date"]: row["core_state"] for row in state_labels}
     signals = defaultdict(set)
     for strategy in strategies:
-        histories = {symbol: [] for symbol in symbols}
+        from research.tier1_etf_replay import MarketHistories
+        histories = MarketHistories(symbols)
         for index, day in enumerate(dates):
             for symbol in symbols:
                 if symbol in bars[day]:
                     histories[symbol].append(float(bars[day][symbol]["close"]))
+                    histories.market_bars[symbol].append(bars[day][symbol])
             if day < scored_start or index + 1 >= len(dates):
                 continue
             targets = target_function(strategy, histories, config)
@@ -108,5 +113,14 @@ def build_breakout_opportunity_diagnostics(
             "mean_detected_5d_return": statistics.fmean(returns) if returns else None,
             "capture_at_least_30pct_rate": sum(value >= .30 for value in captures) / len(captures)
                                            if captures else None,
+            "calendar_years": len({row["opportunity_date"][:4] for row in group}),
+            "years_with_detection": len({row["detected_entry_date"][:4] for row in detected}),
+            "conditionally_promising": bool(
+                state != "ALL" and len(group) >= 20 and len(detected) >= 5
+                and len(detected) / len(group) >= .10 and returns
+                and sum(value > 0 for value in returns) / len(returns) >= .60
+                and captures and sum(value >= .30 for value in captures) / len(captures) >= .50
+                and len({row["detected_entry_date"][:4] for row in detected}) >= 3
+            ),
         })
     return rows, summary

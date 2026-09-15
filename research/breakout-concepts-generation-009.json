@@ -1,0 +1,17 @@
+{
+  "generation_id": "breakout-concepts-generation-009",
+  "declared_at": "2026-09-15T14:30:00-07:00",
+  "retrospective_evidence_end": "2026-09-03",
+  "status": "research_only",
+  "objective": "Compare conceptually different breakout detectors and identify repeatable market states where a detector may be conditionally useful even when its full-history return is weak.",
+  "candidates": [
+    {"strategy":"VOLUME_EXPANSION_BREAKOUT","concept":"A price breakout accompanied by exceptional participation is more likely to persist.","fixed_rules":"Select the strongest sector closing above its prior 55-session high, above its 200-session mean, with volume at least twice its prior 20-session average.","cadence":"daily"},
+    {"strategy":"VOLATILITY_ADJUSTED_ACCELERATION_BREAKOUT","concept":"Price acceleration is meaningful when unusually large relative to the asset's own recent volatility.","fixed_rules":"Select the strongest sector whose five-session return exceeds two times its 20-session daily volatility scaled to five sessions, closes above its prior 20-session high, and remains above its 200-session mean.","cadence":"daily"},
+    {"strategy":"OVERNIGHT_GAP_CONTINUATION","concept":"A large gap that holds through the session with volume confirmation may continue.","fixed_rules":"Select the strongest sector gapping at least two percent, closing in the upper 30 percent of its daily range, trading at least 1.5 times average 20-session volume, and above its 200-session mean.","cadence":"daily"},
+    {"strategy":"CROSS_SECTIONAL_ABNORMAL_RETURN_BREAKOUT","concept":"An idiosyncratic sector move may contain more information than a market-wide move.","fixed_rules":"Select the strongest positively trending sector whose one-session return exceeds the sector-universe median by at least two percentage points.","cadence":"daily"},
+    {"strategy":"SECTOR_PARTICIPATION_BREAKOUT","concept":"Simultaneous breakouts across multiple sectors confirm broad risk appetite.","fixed_rules":"When at least four sectors close above their prior 20-session highs, hold the strongest breakout; otherwise hold SHY.","cadence":"daily"},
+    {"strategy":"MARKET_CONFIRMED_SECTOR_BREAKOUT","concept":"Sector breakouts are more reliable when confirmed by the broad market or broad sector participation.","fixed_rules":"Select the strongest positively trending sector above its prior 55-session high only when SPY is above its prior 20-session high or 50-session sector breadth is at least 65 percent.","cadence":"daily"}
+  ],
+  "evaluation": {"primary_cost_bps":10.0,"cost_ladder_bps":[1.0,5.0,10.0,20.0],"opportunity_thresholds":[0.03,0.05,0.10],"detection_window_sessions":2,"conditional_gate":"at least 20 state opportunities, five detections, ten-percent recall, sixty-percent profitable captures, fifty-percent capturing at least thirty percent of MFE, and detections in at least three calendar years"},
+  "constraints": {"no_parameter_search":true,"no_strategy_combination":true,"no_router_training":true,"no_live_or_paper_execution":true,"retain_weak_full_sample_strategies_for_conditional_analysis":true,"no_promotion_from_retrospective_results":true}
+}
