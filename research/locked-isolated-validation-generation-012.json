@@ -1,0 +1,11 @@
+{
+  "generation_id":"locked-isolated-validation-generation-012",
+  "declared_at":"2026-09-15T20:00:00-07:00",
+  "retrospective_evidence_end":"2026-09-03",
+  "status":"research_only",
+  "objective":"Validate a fixed shortlist from Generation 011 without reselecting strategies, horizons, states, or transition phases and without constructing a router.",
+  "baseline_evidence_source":"Generation 011 baseline cohort; no redundant rerun.",
+  "gates":["at least 20 events, five state episodes, and three calendar years","episode-cluster bootstrap 95% lower bound above zero","Benjamini-Hochberg adjusted p-value at or below 0.05 within period","positive mean in at least 60% of represented years","positive after an additional conservative 20-basis-point round-trip stress"],
+  "limitations":["All dates through 2026-09-03 were visible before this declaration, so results remain retrospective.","Stable and pending-transition entries are separate hypotheses.","Passing is evidence for forward-shadow testing, not capital routing or promotion."],
+  "constraints":{"strategies_remain_independent":true,"no_strategy_combination":true,"no_router_training":true,"no_live_or_paper_execution":true,"no_promotion_from_retrospective_results":true}
+}

@@ -81,6 +81,12 @@ HYPOTHESES = {
         "data_frequency": "1d", "turnover_expectation": "mixed",
         "point_in_time_equities_required": False,
     },
+    "LOCKED_ISOLATED_VALIDATION_GENERATION_012": {
+        "tier": 2, "status": "active_research",
+        "mechanism": "validate predeclared tactical state, horizon, and transition-phase hypotheses and defensive replacement evidence without training a router",
+        "data_frequency": "1d", "turnover_expectation": "mixed",
+        "point_in_time_equities_required": False,
+    },
     "CURRENT_INTRADAY_FAMILY": {
         "tier": "legacy_challenger", "status": "active_challenger",
         "mechanism": "intraday cross-sectional price ranking and target rotation",

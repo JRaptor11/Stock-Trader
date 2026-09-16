@@ -254,6 +254,7 @@ class Tier1ETFReplayTests(unittest.TestCase):
                 self.assertIn("tier1_event_summary.csv",names)
                 self.assertIn("tier1_event_horizon_summary.csv",names)
                 self.assertIn("tier1_event_condition_summary.csv",names)
+                self.assertIn("tier1_locked_tactical_validation.csv",names)
                 self.assertIn("warm-up excluded",manifest["execution_semantics"])
                 self.assertIn("Benjamini-Hochberg",manifest["market_state_validation"]["multiplicity"])
                 self.assertEqual("none",manifest["market_state_validation"]["routing_effect"])
