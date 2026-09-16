@@ -62,7 +62,8 @@ def merge_role_cohorts(archives, output):
             if manifest["source_sha256"] != source_sha or definition != state_definition:
                 raise ValueError("cohort archives do not share the same data and state definition")
             sources.append({"archive": archive.name, "strategies": manifest["strategies"],
-                            "source_sha256": manifest["source_sha256"]})
+                            "source_sha256": manifest["source_sha256"],
+                            "hypothesis_id": (manifest.get("experiment") or {}).get("hypothesis_id")})
             for name in MERGED_FILES:
                 rows_by_file[name].extend(_read_csv(bundle, name))
     output = Path(output); output.parent.mkdir(parents=True, exist_ok=True)
@@ -77,8 +78,11 @@ def merge_role_cohorts(archives, output):
                 unique.setdefault(key, row)
             _write_csv(bundle, name.replace("tier1_", "unified_"), list(unique.values()))
         bundle.writestr("unified_market_state_definition.json", json.dumps(state_definition, indent=2))
+        hypothesis_ids = sorted({source["hypothesis_id"] for source in sources
+                                 if source["hypothesis_id"]})
         bundle.writestr("unified_manifest.json", json.dumps({
-            "generation": "unified-role-aware-generation-010", "source_sha256": source_sha,
+            "generation": hypothesis_ids[0] if len(hypothesis_ids) == 1 else "mixed",
+            "hypothesis_ids": hypothesis_ids, "source_sha256": source_sha,
             "cohort_archives": sources, "routing_effect": "none",
         }, indent=2))
     return output
