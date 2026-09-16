@@ -14,6 +14,8 @@ MERGED_FILES = (
     "tier1_role_aware_evidence.csv", "tier1_tactical_baseline_comparisons.csv",
     "tier1_tactical_override_summary.csv", "tier1_hypothesis_survival.csv",
     "tier1_market_state_period_scorecard.csv", "tier1_cost_ladder_scorecard.csv",
+    "tier1_baseline_state_leaderboard.csv", "tier1_defensive_baseline_comparisons.csv",
+    "tier1_tactical_horizon_comparisons.csv", "tier1_tactical_horizon_summary.csv",
 )
 ROW_KEYS = {
     "tier1_role_aware_evidence.csv": ("strategy",),
@@ -22,6 +24,10 @@ ROW_KEYS = {
     "tier1_hypothesis_survival.csv": ("strategy", "core_state"),
     "tier1_market_state_period_scorecard.csv": ("period", "strategy", "core_state", "cost_bps"),
     "tier1_cost_ladder_scorecard.csv": ("strategy", "cost_bps"),
+    "tier1_baseline_state_leaderboard.csv": ("period", "core_state", "strategy"),
+    "tier1_defensive_baseline_comparisons.csv": ("period", "core_state", "strategy"),
+    "tier1_tactical_horizon_comparisons.csv": ("strategy", "entry_date", "horizon_sessions"),
+    "tier1_tactical_horizon_summary.csv": ("strategy", "horizon_sessions", "core_state"),
 }
 
 

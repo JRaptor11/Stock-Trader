@@ -1,0 +1,7 @@
+{
+  "generation_id":"isolated-deep-validation-generation-011","declared_at":"2026-09-15T17:00:00-07:00","retrospective_evidence_end":"2026-09-03","status":"research_only",
+  "objective":"Deepen independent evidence for five baseline finalists, all defensive concepts, and all tactical concepts without constructing or training a combined router.",
+  "baseline_finalists":["CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE","CROSS_ASSET_DUAL_MOMENTUM","INDUSTRY_ETF_MOMENTUM","FACTOR_ETF_MOMENTUM","STATIC_MULTI_SLEEVE"],
+  "measurements":{"baseline":"state leaderboard, holdout recurrence, cost survival, default-baseline comparison","defensive":"return and drawdown versus displaced baseline at 10 and 20 basis points","tactical":"incremental return versus displaced baseline over 1, 2, 3, 5, and 10 sessions with causal state age and pending-transition diagnostics"},
+  "constraints":{"strategies_remain_independent":true,"no_strategy_combination":true,"no_router_training":true,"no_live_or_paper_execution":true,"no_promotion_from_retrospective_results":true}
+}

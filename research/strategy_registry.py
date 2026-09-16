@@ -75,6 +75,12 @@ HYPOTHESES = {
         "data_frequency": "1d", "turnover_expectation": "mixed",
         "point_in_time_equities_required": False,
     },
+    "ISOLATED_DEEP_VALIDATION_GENERATION_011": {
+        "tier": 2, "status": "active_research",
+        "mechanism": "deepen independent baseline, defensive, and tactical evidence with baseline-relative defensive outcomes and multi-horizon tactical opportunity cost",
+        "data_frequency": "1d", "turnover_expectation": "mixed",
+        "point_in_time_equities_required": False,
+    },
     "CURRENT_INTRADAY_FAMILY": {
         "tier": "legacy_challenger", "status": "active_challenger",
         "mechanism": "intraday cross-sectional price ranking and target rotation",
