@@ -1,0 +1,22 @@
+{
+  "generation_id":"forward-recurrence-generation-013",
+  "declared_at":"2026-09-16T00:00:00-07:00",
+  "forward_start":"2026-09-16",
+  "evidence_observed_through":"2026-09-15",
+  "status":"research_only",
+  "objective":"Collect genuinely forward tactical evidence, identify duplicate defensive behavior, and measure baseline-state recurrence across fixed non-overlapping eras without building a router.",
+  "benchmark_strategy":"CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+  "forward_tactical_hypotheses":[
+    {"hypothesis_id":"participation-bear-recovery-2d-pending","strategy":"SECTOR_PARTICIPATION_BREAKOUT","core_state":"BEAR_RECOVERING__HIGH_VOL__BROAD_BREADTH","horizon_sessions":2,"transition_phase":"pending"},
+    {"hypothesis_id":"price-bear-recovery-5d-stable","strategy":"SECTOR_PRICE_BREAKOUT_20D","core_state":"BEAR_RECOVERING__HIGH_VOL__BROAD_BREADTH","horizon_sessions":5,"transition_phase":"stable"},
+    {"hypothesis_id":"acceleration-bull-normal-3d-stable","strategy":"SECTOR_MOMENTUM_ACCELERATION","core_state":"BULL_ACCELERATING__NORMAL_VOL__BROAD_BREADTH","horizon_sessions":3,"transition_phase":"stable"}
+  ],
+  "independent_discovery_lane":[
+    {"concept":"multi-speed time-series trend","status":"design_only","reason":"materially different trend horizons may respond differently around reversals"},
+    {"concept":"cross-sectional mean reversion with liquidity controls","status":"blocked_on_point_in_time_equity_universe","reason":"requires survivorship-safe constituents and capacity controls"},
+    {"concept":"overnight versus intraday return decomposition","status":"blocked_on_intraday_history","reason":"cannot be inferred faithfully from daily adjusted bars"},
+    {"concept":"calendar and seasonal effects","status":"design_only","reason":"distinct mechanism requiring multiple-testing-aware declarations"},
+    {"concept":"volatility carry or convexity proxy","status":"blocked_on_instrument_data","reason":"ETF OHLCV alone cannot represent option carry faithfully"}
+  ],
+  "constraints":{"no_parameter_retuning":true,"no_strategy_combination":true,"no_router_training":true,"no_live_or_paper_execution":true,"no_promotion_from_retrospective_results":true}
+}

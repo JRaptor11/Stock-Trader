@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import statistics
 from collections import defaultdict
 
@@ -246,3 +247,107 @@ def build_locked_tactical_validation(config, comparisons, hypotheses):
             and row["additional_20bps_round_trip_stress"] > 0
         )
     return output
+
+
+def build_defensive_distinctness(config, daily, trades, state_labels):
+    """Measure whether defensive names actually create distinct behavior."""
+    primary = float(config.primary_cost_bps)
+    defensive = sorted(name for name in config.strategy_names
+                       if strategy_role(name) == "defensive_override")
+    labels = {row["date"]: row["core_state"] for row in state_labels}
+    equity = defaultdict(dict)
+    for row in daily:
+        if float(row["cost_bps"]) == primary and row["strategy"] in defensive:
+            equity[row["strategy"]][row["date"]] = float(row["equity"])
+    returns = defaultdict(dict)
+    for strategy, values in equity.items():
+        previous = None
+        for day, value in sorted(values.items()):
+            if previous not in (None, 0.0):
+                returns[strategy][day] = value / previous - 1
+            previous = value
+    trade_days = defaultdict(set)
+    for row in trades:
+        if float(row["cost_bps"]) == primary and row["strategy"] in defensive:
+            trade_days[row["strategy"]].add(row["date"])
+    output = []
+    for left_index, left in enumerate(defensive):
+        for right in defensive[left_index + 1:]:
+            common = sorted(set(returns[left]).intersection(returns[right]))
+            for state in ["ALL", *sorted(set(labels.values()))]:
+                dates = [day for day in common if state == "ALL" or labels.get(day) == state]
+                if not dates:
+                    continue
+                left_values = [returns[left][day] for day in dates]
+                right_values = [returns[right][day] for day in dates]
+                differences = [abs(a - b) for a, b in zip(left_values, right_values)]
+                union = (trade_days[left] | trade_days[right]) & set(dates)
+                intersection = trade_days[left] & trade_days[right] & set(dates)
+                correlation = None
+                if len(dates) > 1 and statistics.stdev(left_values) and statistics.stdev(right_values):
+                    correlation = statistics.correlation(left_values, right_values)
+                identical_rate = sum(value <= 1e-12 for value in differences) / len(differences)
+                output.append({
+                    "core_state": state, "left_strategy": left, "right_strategy": right,
+                    "sessions": len(dates), "return_correlation": correlation,
+                    "identical_daily_return_rate": identical_rate,
+                    "mean_absolute_daily_return_difference": statistics.fmean(differences),
+                    "shared_trade_day_jaccard": len(intersection) / len(union) if union else 1.0,
+                    "behaviorally_indistinguishable": identical_rate >= .98,
+                })
+    return output
+
+
+def build_baseline_era_recurrence(config, daily, state_labels, benchmark_strategy="SPY_BUY_HOLD"):
+    """Evaluate baseline-state relationships in fixed, non-overlapping eras."""
+    primary = float(config.primary_cost_bps)
+    eras = (("2019_2020", "2019-01-01", "2020-12-31"),
+            ("2021_2022", "2021-01-01", "2022-12-31"),
+            ("2023_2024", "2023-01-01", "2024-12-31"),
+            ("2025_plus", "2025-01-01", "9999-12-31"))
+    labels = {row["date"]: row["core_state"] for row in state_labels}
+    returns = defaultdict(dict)
+    for strategy in config.strategy_names:
+        rows = sorted((row for row in daily if row["strategy"] == strategy
+                       and float(row["cost_bps"]) == primary), key=lambda row: row["date"])
+        previous = None
+        for row in rows:
+            value = float(row["equity"])
+            if previous not in (None, 0.0):
+                returns[strategy][row["date"]] = value / previous - 1
+            previous = value
+    details = []
+    baselines = [name for name in config.strategy_names if strategy_role(name) == "baseline_candidate"]
+    for era, start, end in eras:
+        for state in sorted(set(labels.values())):
+            dates = [day for day, value in labels.items() if value == state and start <= day <= end]
+            for strategy in baselines:
+                usable = [day for day in dates if day in returns[strategy] and day in returns[benchmark_strategy]]
+                if not usable:
+                    continue
+                strategy_return = math.prod(1 + returns[strategy][day] for day in usable) - 1
+                benchmark_return = math.prod(1 + returns[benchmark_strategy][day] for day in usable) - 1
+                details.append({
+                    "era": era, "core_state": state, "strategy": strategy,
+                    "sessions": len(usable), "strategy_compounded_return": strategy_return,
+                    "benchmark_compounded_return": benchmark_return,
+                    "relative_wealth_vs_benchmark": (1 + strategy_return) / (1 + benchmark_return) - 1,
+                    "era_eligible": len(usable) >= 20,
+                })
+    grouped = defaultdict(list)
+    for row in details:
+        if row["era_eligible"]:
+            grouped[(row["strategy"], row["core_state"])].append(row)
+    summary = []
+    for (strategy, state), rows in sorted(grouped.items()):
+        values = [row["relative_wealth_vs_benchmark"] for row in rows]
+        summary.append({
+            "strategy": strategy, "core_state": state, "eligible_eras": len(rows),
+            "positive_eras": sum(value > 0 for value in values),
+            "era_win_rate": sum(value > 0 for value in values) / len(values),
+            "mean_era_relative_wealth": statistics.fmean(values),
+            "median_era_relative_wealth": statistics.median(values),
+            "worst_era_relative_wealth": min(values),
+            "recurs_across_eras": len(rows) >= 3 and sum(value > 0 for value in values) / len(values) >= 2 / 3,
+        })
+    return details, summary

@@ -1,7 +1,8 @@
 import unittest
 
 from research.isolated_strategy_diagnostics import (
-    build_defensive_baseline_comparisons, build_locked_tactical_validation,
+    build_baseline_era_recurrence, build_defensive_baseline_comparisons,
+    build_defensive_distinctness, build_locked_tactical_validation,
     build_tactical_horizon_comparisons,
 )
 
@@ -57,6 +58,32 @@ class IsolatedDiagnosticsTests(unittest.TestCase):
         full=[row for row in output if row["period"]=="full"]
         self.assertEqual(2,len(full)); self.assertEqual({12},{row["events"] for row in full})
         self.assertTrue(all(row["additional_20bps_round_trip_stress"] > 0 for row in full))
+
+    def test_defensive_distinctness_detects_duplicate_return_paths(self):
+        class DefensiveConfig:
+            primary_cost_bps=10.0
+            strategy_names=("DRAWDOWN_BRAKE","VOLATILITY_SHOCK_DEFENSIVE")
+        daily=[]
+        for strategy in DefensiveConfig.strategy_names:
+            daily += [{"strategy":strategy,"cost_bps":10,"date":"2025-01-01","equity":100},
+                      {"strategy":strategy,"cost_bps":10,"date":"2025-01-02","equity":101}]
+        labels=[{"date":"2025-01-01","core_state":"BULL"},{"date":"2025-01-02","core_state":"BULL"}]
+        rows=build_defensive_distinctness(DefensiveConfig,daily,[],labels)
+        self.assertTrue(next(row for row in rows if row["core_state"]=="ALL")["behaviorally_indistinguishable"])
+
+    def test_baseline_era_recurrence_uses_fixed_nonoverlapping_eras(self):
+        class BaselineConfig:
+            primary_cost_bps=10.0
+            strategy_names=("SPY_BUY_HOLD","CROSS_ASSET_DUAL_MOMENTUM")
+        daily=[]; labels=[]
+        for year in (2019,2021,2023):
+            for index in range(22):
+                day=f"{year}-01-{index+1:02d}"; labels.append({"date":day,"core_state":"BULL"})
+                daily.extend([{"strategy":"SPY_BUY_HOLD","cost_bps":10,"date":day,"equity":100+index},
+                              {"strategy":"CROSS_ASSET_DUAL_MOMENTUM","cost_bps":10,"date":day,"equity":100+index*2}])
+        _,summary=build_baseline_era_recurrence(BaselineConfig,daily,labels)
+        row=next(row for row in summary if row["strategy"]=="CROSS_ASSET_DUAL_MOMENTUM")
+        self.assertEqual(3,row["eligible_eras"]); self.assertTrue(row["recurs_across_eras"])
 
 
 if __name__ == "__main__": unittest.main()
