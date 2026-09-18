@@ -39,6 +39,8 @@ LEGACY_STRATEGIES = (
     "SECTOR_ETF_ROTATION",
 )
 STRATEGIES = LEGACY_STRATEGIES + (
+    "GLOBAL_EQUITY_STATIC", "VALUE_QUALITY_STATIC", "MULTIFACTOR_STATIC",
+    "LOW_VOLATILITY_EQUITY", "STATIC_INFLATION_AWARE",
     "CROSS_ASSET_DUAL_MOMENTUM",
     "DIVERSIFIED_TREND", "REGIME_BALANCED",
     "SECTOR_ROTATION_CONCENTRATED", "SECTOR_ROTATION_INV_VOL",
@@ -79,6 +81,11 @@ INDUSTRY_ETFS = ("XBI", "XRT", "XHB", "XME", "XOP", "KRE", "SMH", "IYT")
 DEFENSIVE_ETFS = ("BIL", "IEF", "GLD")
 BALANCED_ASSETS = ("SPY", "IEF", "GLD")
 STRATEGY_REBALANCE_FREQUENCIES = {
+    "GLOBAL_EQUITY_STATIC": "annual",
+    "VALUE_QUALITY_STATIC": "quarterly",
+    "MULTIFACTOR_STATIC": "quarterly",
+    "LOW_VOLATILITY_EQUITY": "quarterly",
+    "STATIC_INFLATION_AWARE": "quarterly",
     "SECTOR_SHORT_TERM_REVERSAL": "weekly",
     "SECTOR_PRICE_BREAKOUT_20D": "daily",
     "MARKET_DIP_REBOUND_1D": "daily",
@@ -297,7 +304,16 @@ def _rebalance_day(day: str, previous_day: str | None, frequency: str) -> bool:
     if previous_day is None: return True
     if frequency == "daily": return True
     prior = datetime.fromisoformat(previous_day).date()
-    return ((date.isocalendar().year, date.isocalendar().week) != (prior.isocalendar().year, prior.isocalendar().week)) if frequency == "weekly" else (date.year, date.month) != (prior.year, prior.month)
+    if frequency == "weekly":
+        return ((date.isocalendar().year, date.isocalendar().week) !=
+                (prior.isocalendar().year, prior.isocalendar().week))
+    if frequency == "monthly":
+        return (date.year, date.month) != (prior.year, prior.month)
+    if frequency == "quarterly":
+        return (date.year, (date.month - 1) // 3) != (prior.year, (prior.month - 1) // 3)
+    if frequency == "annual":
+        return date.year != prior.year
+    raise ValueError(f"unsupported rebalance frequency: {frequency}")
 
 
 def _strategy_rebalance_frequency(name: str, config: Tier1Config) -> str:
@@ -348,6 +364,29 @@ def _breadth(histories: dict[str, list[float]], offset: int = 0, lookback: int =
 def _legacy_targets(name: str, histories: dict[str, list[float]], config: Tier1Config) -> dict[str, float]:
     spy = histories.get(config.benchmark_symbol, [])
     if name == "SPY_BUY_HOLD": return {config.benchmark_symbol: 1.0}
+    if name == "GLOBAL_EQUITY_STATIC":
+        required = ("SPY", "EFA", "EEM")
+        return ({"SPY": 0.60, "EFA": 0.30, "EEM": 0.10}
+                if all(histories.get(symbol) for symbol in required)
+                else {config.cash_proxy_symbol: 1.0})
+    if name == "VALUE_QUALITY_STATIC":
+        required = ("VLUE", "QUAL")
+        return ({symbol: 0.50 for symbol in required}
+                if all(histories.get(symbol) for symbol in required)
+                else {config.cash_proxy_symbol: 1.0})
+    if name == "MULTIFACTOR_STATIC":
+        required = ("VLUE", "QUAL", "MTUM", "USMV")
+        return ({symbol: 0.25 for symbol in required}
+                if all(histories.get(symbol) for symbol in required)
+                else {config.cash_proxy_symbol: 1.0})
+    if name == "LOW_VOLATILITY_EQUITY":
+        return ({"USMV": 1.0} if histories.get("USMV")
+                else {config.cash_proxy_symbol: 1.0})
+    if name == "STATIC_INFLATION_AWARE":
+        required = ("SPY", "IEF", "GLD", "DBC")
+        return ({"SPY": 0.50, "IEF": 0.20, "GLD": 0.15, "DBC": 0.15}
+                if all(histories.get(symbol) for symbol in required)
+                else {config.cash_proxy_symbol: 1.0})
     if name == "STATIC_60_30_10":
         required = {symbol for symbol in BALANCED_ASSETS if histories.get(symbol)}
         return ({"SPY": 0.60, "IEF": 0.30, "GLD": 0.10}
@@ -796,6 +835,11 @@ def _legacy_targets(name: str, histories: dict[str, list[float]], config: Tier1C
 
 STRATEGY_CONCEPT_FAMILIES = {
     "SPY_BUY_HOLD": "passive_equity_benchmark",
+    "GLOBAL_EQUITY_STATIC": "global_passive_equity",
+    "VALUE_QUALITY_STATIC": "fixed_value_quality_equity",
+    "MULTIFACTOR_STATIC": "fixed_value_quality_momentum_low_volatility",
+    "LOW_VOLATILITY_EQUITY": "minimum_volatility_equity",
+    "STATIC_INFLATION_AWARE": "strategic_inflation_aware_allocation",
     "STATIC_MULTI_SLEEVE": "static_multi_sleeve_momentum",
     "STATIC_60_30_10": "static_balanced_allocation",
     "INVERSE_VOLATILITY_BALANCED": "risk_balanced_allocation",

@@ -1,0 +1,53 @@
+{
+  "study_id": "long-term-engine-study-001",
+  "declared_at": "2026-09-18T00:00:00-07:00",
+  "status": "research_only",
+  "relationship_to_generation_015": "separate research line; Generation 015 remains frozen and paused",
+  "objective": "Compare simple canonical long-term portfolio engines independently under identical causal data, execution, cost, and attribution rules before considering any state-aware combination.",
+  "benchmark_strategy": "SPY_BUY_HOLD",
+  "candidate_strategies": [
+    {"strategy": "SPY_BUY_HOLD", "family": "us_passive_equity", "cadence": "buy_and_hold"},
+    {"strategy": "GLOBAL_EQUITY_STATIC", "family": "global_passive_equity", "cadence": "annual"},
+    {"strategy": "STATIC_60_30_10", "family": "strategic_multi_asset", "cadence": "monthly"},
+    {"strategy": "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE", "family": "relative_momentum_defensive", "cadence": "monthly"},
+    {"strategy": "CROSS_ASSET_DUAL_MOMENTUM", "family": "dual_momentum", "cadence": "monthly"},
+    {"strategy": "SECTOR_ETF_ROTATION", "family": "sector_relative_momentum", "cadence": "monthly"},
+    {"strategy": "INDUSTRY_ETF_MOMENTUM", "family": "industry_relative_momentum", "cadence": "monthly"},
+    {"strategy": "DIVERSIFIED_TREND", "family": "diversified_time_series_trend", "cadence": "monthly"},
+    {"strategy": "VALUE_QUALITY_STATIC", "family": "value_quality_equity", "cadence": "quarterly"},
+    {"strategy": "MULTIFACTOR_STATIC", "family": "fixed_multi_factor_equity", "cadence": "quarterly"},
+    {"strategy": "LOW_VOLATILITY_EQUITY", "family": "low_volatility_equity", "cadence": "quarterly"},
+    {"strategy": "VOL_MANAGED_SPY", "family": "volatility_targeted_equity", "cadence": "monthly"},
+    {"strategy": "INVERSE_VOLATILITY_BALANCED", "family": "unlevered_risk_balanced", "cadence": "monthly"},
+    {"strategy": "STATIC_INFLATION_AWARE", "family": "inflation_aware_allocation", "cadence": "quarterly"}
+  ],
+  "evaluation": {
+    "primary_cost_bps": 10.0,
+    "cost_ladder_bps": [1.0, 5.0, 10.0, 20.0],
+    "rolling_window_sessions": 1260,
+    "walk_forward_train_sessions": 756,
+    "walk_forward_test_sessions": 252,
+    "required_reports": [
+      "full and holdout return, CAGR, volatility, Sharpe, Calmar, and drawdown",
+      "rolling five-year performance",
+      "fixed-era and walk-forward recurrence",
+      "turnover, trade count, and cost sensitivity",
+      "causal market-state attribution by independent episode",
+      "nearby-parameter robustness without selecting the winner"
+    ]
+  },
+  "constraints": {
+    "canonical_definitions_frozen_before_results": true,
+    "identical_timeline_and_costs": true,
+    "no_router_training": true,
+    "no_tactical_interrupts": true,
+    "no_live_or_paper_execution": true,
+    "no_promotion_from_retrospective_results": true,
+    "generation_015_unchanged": true
+  },
+  "limitations": [
+    "The shared ETF history begins after the latest required fund inception, limiting the number of full market cycles.",
+    "ETF proxies contain fund and index methodology effects and are not pure academic factors.",
+    "The first run is retrospective research, not untouched confirmation."
+  ]
+}

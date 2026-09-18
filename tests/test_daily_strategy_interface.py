@@ -3,7 +3,8 @@ from datetime import date, timedelta
 
 from research.daily_strategy_interface import DailyStrategyRegistry, DailyStrategySpec
 from research.tier1_etf_replay import (
-    Tier1Config, _legacy_targets, _simulate, _strategy_rebalance_frequency, _targets,
+    Tier1Config, _legacy_targets, _rebalance_day, _simulate,
+    _strategy_rebalance_frequency, _targets,
 )
 from research.universes import resolve_universe
 
@@ -41,6 +42,38 @@ class DailyStrategyInterfaceTests(unittest.TestCase):
         self.assertEqual("monthly", _strategy_rebalance_frequency(
             "STATIC_MULTI_SLEEVE", config
         ))
+
+    def test_long_term_engine_cadences_are_explicit(self):
+        config = Tier1Config(rebalance_frequency="monthly")
+        self.assertEqual("annual", _strategy_rebalance_frequency(
+            "GLOBAL_EQUITY_STATIC", config
+        ))
+        for strategy in (
+            "VALUE_QUALITY_STATIC", "MULTIFACTOR_STATIC",
+            "LOW_VOLATILITY_EQUITY", "STATIC_INFLATION_AWARE",
+        ):
+            self.assertEqual("quarterly", _strategy_rebalance_frequency(strategy, config))
+        self.assertTrue(_rebalance_day("2026-04-01", "2026-03-31", "quarterly"))
+        self.assertFalse(_rebalance_day("2026-04-02", "2026-04-01", "quarterly"))
+        self.assertTrue(_rebalance_day("2026-01-02", "2025-12-31", "annual"))
+        self.assertFalse(_rebalance_day("2026-07-01", "2026-06-30", "annual"))
+
+    def test_long_term_static_engines_have_frozen_weights(self):
+        config = Tier1Config(universe_name="ETF_GENERAL_CONCEPTS")
+        histories = {symbol: [100.0] for symbol in resolve_universe(config.universe_name)}
+        expected = {
+            "GLOBAL_EQUITY_STATIC": {"SPY": .60, "EFA": .30, "EEM": .10},
+            "VALUE_QUALITY_STATIC": {"VLUE": .50, "QUAL": .50},
+            "MULTIFACTOR_STATIC": {
+                "VLUE": .25, "QUAL": .25, "MTUM": .25, "USMV": .25,
+            },
+            "LOW_VOLATILITY_EQUITY": {"USMV": 1.0},
+            "STATIC_INFLATION_AWARE": {
+                "SPY": .50, "IEF": .20, "GLD": .15, "DBC": .15,
+            },
+        }
+        for strategy, targets in expected.items():
+            self.assertEqual(targets, _targets(strategy, histories, config), strategy)
 
     def test_six_current_cohort_strategies_have_full_simulation_parity(self):
         config = Tier1Config(

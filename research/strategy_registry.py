@@ -105,6 +105,12 @@ HYPOTHESES = {
         "data_frequency": "1d", "turnover_expectation": "mixed",
         "point_in_time_equities_required": False,
     },
+    "LONG_TERM_ENGINE_STUDY_001": {
+        "tier": 1, "status": "active_research",
+        "mechanism": "compare canonical long-term passive, strategic allocation, momentum, trend, factor, defensive-equity, volatility-managed, risk-balanced, and inflation-aware engines independently before considering any strategy router",
+        "data_frequency": "1d", "turnover_expectation": "low_to_medium",
+        "point_in_time_equities_required": False,
+    },
     "CURRENT_INTRADAY_FAMILY": {
         "tier": "legacy_challenger", "status": "active_challenger",
         "mechanism": "intraday cross-sectional price ranking and target rotation",

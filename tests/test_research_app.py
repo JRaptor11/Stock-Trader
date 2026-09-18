@@ -12,7 +12,10 @@ from unittest.mock import patch
 
 try:
     from fastapi.testclient import TestClient
-    from research.app import app, runtime, _deprioritize_worker, _health_egress_usage, _upload_status_snapshot
+    from research.app import (
+        app, health, runtime, runtime_diagnostics, _deprioritize_worker,
+        _health_egress_usage, _upload_status_snapshot,
+    )
 except ImportError:
     TestClient = None
     app = None
@@ -31,12 +34,30 @@ class _EgressStore:
 
 @unittest.skipIf(_upload_status_snapshot is None, "FastAPI dependencies are not installed")
 class HealthResponsivenessTests(unittest.TestCase):
+    def test_public_health_never_reads_external_egress_storage(self):
+        store=_EgressStore()
+        with patch.object(runtime,"store",store),patch(
+                "research.app._queued_job_count",side_effect=AssertionError("queue scan")):
+            payload=health()
+        self.assertEqual("ok",payload["status"])
+        self.assertNotIn("r2_egress",payload)
+        self.assertNotIn("queued_jobs",payload)
+        self.assertEqual(0,store.calls)
+
     def test_health_egress_usage_is_cached(self):
         store=_EgressStore()
         with patch.object(runtime,"store",store),patch.object(runtime,"_health_egress_cache",None):
             self.assertEqual(123,_health_egress_usage()["used_bytes"])
             self.assertEqual(123,_health_egress_usage()["used_bytes"])
         self.assertEqual(1,store.calls)
+
+    def test_authenticated_runtime_diagnostics_contains_slow_fields(self):
+        store=_EgressStore()
+        with patch.object(runtime,"store",store),patch(
+                "research.app._queued_job_count",return_value=2):
+            payload=runtime_diagnostics()
+        self.assertEqual(2,payload["queued_jobs"])
+        self.assertEqual(123,payload["r2_egress"]["used_bytes"])
 
     def test_posix_worker_is_deprioritized(self):
         process=type("Process",(),{"pid":42})()

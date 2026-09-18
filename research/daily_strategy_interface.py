@@ -26,7 +26,8 @@ class DailyStrategySpec:
     def __post_init__(self):
         if not self.name or not self.concept_family:
             raise ValueError("strategy name and concept family are required")
-        if self.rebalance_frequency not in (None, "daily", "weekly", "monthly"):
+        if self.rebalance_frequency not in (
+                None, "daily", "weekly", "monthly", "quarterly", "annual"):
             raise ValueError("unsupported strategy rebalance frequency")
 
 

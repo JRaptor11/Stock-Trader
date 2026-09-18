@@ -31,6 +31,10 @@ from research.job_queue import (
 from research.worker import _write_json_atomic
 
 
+PROCESS_STARTED_AT = datetime.now(timezone.utc).isoformat()
+PROCESS_STARTED_MONOTONIC = time.monotonic()
+
+
 class StorageBudgetExceeded(RuntimeError):
     pass
 
@@ -56,6 +60,8 @@ class ResearchRuntime:
         self.cleanup_local_artifacts = True
         self._storage_usage_cache: tuple[float, int] | None = None
         self._health_egress_cache: tuple[float, dict] | None = None
+        self.startup_completed_at: str | None = None
+        self.startup_duration_seconds: float | None = None
 
     def initialize(self) -> None:
         validate_service_startup(ServiceMode.HISTORICAL_RESEARCH)
@@ -112,9 +118,21 @@ runtime = ResearchRuntime()
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    startup_started = time.monotonic()
     runtime.initialize()
     _restore_durable_state()
     _recover_interrupted_job()
+    runtime.startup_duration_seconds = round(time.monotonic() - startup_started, 3)
+    runtime.startup_completed_at = datetime.now(timezone.utc).isoformat()
+    logging.info(
+        "Research service startup complete duration_seconds=%s commit=%s branch=%s "
+        "service_id=%s instance_id=%s deploy_id=%s",
+        runtime.startup_duration_seconds,
+        os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT"),
+        os.getenv("RENDER_GIT_BRANCH") or os.getenv("GIT_BRANCH"),
+        os.getenv("RENDER_SERVICE_ID"), os.getenv("RENDER_INSTANCE_ID"),
+        os.getenv("RENDER_DEPLOY_ID"),
+    )
     yield
 
 
@@ -193,6 +211,7 @@ def _upload_status_snapshot(
 @app.api_route("/healthz", methods=["GET", "HEAD"])
 @app.api_route("/api/public/uptime-health", methods=["GET", "HEAD"])
 def health() -> dict:
+    """Constant-time readiness response with no filesystem or network access."""
     return {
         "status": "ok",
         "service_mode": "historical_research",
@@ -200,10 +219,14 @@ def health() -> dict:
         "git_branch": os.getenv("RENDER_GIT_BRANCH") or os.getenv("GIT_BRANCH"),
         "busy": runtime.active_job_id is not None,
         "active_job_id": runtime.active_job_id,
-        "queued_jobs": _queued_job_count(),
         "durable_storage_configured": bool(runtime.store and runtime.store.durable),
-        "storage_budget_bytes": runtime.storage_budget_bytes,
-        "r2_egress": _health_egress_usage(),
+        "process_started_at": PROCESS_STARTED_AT,
+        "process_uptime_seconds": round(time.monotonic() - PROCESS_STARTED_MONOTONIC, 3),
+        "startup_completed_at": runtime.startup_completed_at,
+        "startup_duration_seconds": runtime.startup_duration_seconds,
+        "render_service_id": os.getenv("RENDER_SERVICE_ID"),
+        "render_instance_id": os.getenv("RENDER_INSTANCE_ID"),
+        "render_deploy_id": os.getenv("RENDER_DEPLOY_ID"),
     }
 
 
@@ -220,6 +243,17 @@ def _health_egress_usage() -> dict | None:
     except Exception:
         logging.warning("Could not read the R2 egress ledger", exc_info=True)
         return {"status": "temporarily_unavailable"}
+
+
+@app.get("/api/diagnostics/runtime", dependencies=[Depends(require_token)])
+def runtime_diagnostics() -> dict:
+    """Potentially slower operational diagnostics kept off the health path."""
+    return {
+        **health(),
+        "queued_jobs": _queued_job_count(),
+        "storage_budget_bytes": runtime.storage_budget_bytes,
+        "r2_egress": _health_egress_usage(),
+    }
 
 
 def _deprioritize_worker(process: subprocess.Popen) -> None:

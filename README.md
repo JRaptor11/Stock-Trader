@@ -440,6 +440,13 @@ the next job starts. A failure stops the queue; after the cause is reviewed, an
 authenticated `POST /api/queue/resume` clears the failure block and continues
 with the oldest queued job.
 
+The public health endpoints are deliberately constant-time: they perform no
+object-storage request, dataset access, or queue-directory scan. They report
+only readiness and in-memory deployment/startup metadata so Render's five-second
+health probe cannot be delayed by Cloudflare R2. Authenticated
+`GET /api/diagnostics/runtime` provides queue depth, the storage budget, and
+current R2 egress accounting when deeper operational diagnostics are needed.
+
 Large continuous experiments can remain memory-safe by splitting dates into
 ordered jobs. Every result includes `replay_checkpoint.json`; set the next
 job's top-level `continuation_of` field to the prior job ID. The coordinator
