@@ -283,17 +283,25 @@ def build_defensive_distinctness(config, daily, trades, state_labels):
                 differences = [abs(a - b) for a, b in zip(left_values, right_values)]
                 union = (trade_days[left] | trade_days[right]) & set(dates)
                 intersection = trade_days[left] & trade_days[right] & set(dates)
+                trade_jaccard = len(intersection) / len(union) if union else 1.0
                 correlation = None
                 if len(dates) > 1 and statistics.stdev(left_values) and statistics.stdev(right_values):
                     correlation = statistics.correlation(left_values, right_values)
                 identical_rate = sum(value <= 1e-12 for value in differences) / len(differences)
+                equivalent_rate = sum(value <= .0001 for value in differences) / len(differences)
+                mean_difference = statistics.fmean(differences)
                 output.append({
                     "core_state": state, "left_strategy": left, "right_strategy": right,
                     "sessions": len(dates), "return_correlation": correlation,
                     "identical_daily_return_rate": identical_rate,
-                    "mean_absolute_daily_return_difference": statistics.fmean(differences),
-                    "shared_trade_day_jaccard": len(intersection) / len(union) if union else 1.0,
-                    "behaviorally_indistinguishable": identical_rate >= .98,
+                    "economically_equivalent_daily_return_rate_1bp": equivalent_rate,
+                    "mean_absolute_daily_return_difference": mean_difference,
+                    "shared_trade_day_jaccard": trade_jaccard,
+                    "behaviorally_indistinguishable": bool(
+                        mean_difference <= .0001
+                        and ((correlation is not None and correlation >= .999)
+                             or trade_jaccard >= .95)
+                    ),
                 })
     return output
 

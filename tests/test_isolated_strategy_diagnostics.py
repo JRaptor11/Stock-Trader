@@ -71,6 +71,29 @@ class IsolatedDiagnosticsTests(unittest.TestCase):
         rows=build_defensive_distinctness(DefensiveConfig,daily,[],labels)
         self.assertTrue(next(row for row in rows if row["core_state"]=="ALL")["behaviorally_indistinguishable"])
 
+    def test_defensive_distinctness_uses_economic_tolerance(self):
+        class DefensiveConfig:
+            primary_cost_bps=10.0
+            strategy_names=("DRAWDOWN_BRAKE","VOLATILITY_SHOCK_DEFENSIVE")
+        daily=[]
+        for index, day in enumerate(("2025-01-01", "2025-01-02", "2025-01-03")):
+            daily.extend([
+                {"strategy":"DRAWDOWN_BRAKE","cost_bps":10,"date":day,
+                 "equity":100 * (1.01 ** index)},
+                {"strategy":"VOLATILITY_SHOCK_DEFENSIVE","cost_bps":10,"date":day,
+                 "equity":100 * (1.010002 ** index)},
+            ])
+        labels=[{"date":row["date"],"core_state":"BULL"} for row in daily[:3]]
+        trades=[
+            {"strategy":strategy,"cost_bps":10,"date":"2025-01-02"}
+            for strategy in DefensiveConfig.strategy_names
+        ]
+        row=next(row for row in build_defensive_distinctness(
+            DefensiveConfig,daily,trades,labels) if row["core_state"]=="ALL")
+        self.assertLess(row["identical_daily_return_rate"], .98)
+        self.assertEqual(1.0,row["economically_equivalent_daily_return_rate_1bp"])
+        self.assertTrue(row["behaviorally_indistinguishable"])
+
     def test_baseline_era_recurrence_uses_fixed_nonoverlapping_eras(self):
         class BaselineConfig:
             primary_cost_bps=10.0
