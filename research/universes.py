@@ -48,6 +48,26 @@ UNIVERSES = {
         "SPY", "QQQ", "IWM", "SHY", "IEF", "TLT", "GLD", "DBC",
         "EFA", "EEM", "VNQ",
     ),
+    # Long-term validation cohorts keep only symbols required by a frozen
+    # strategy family plus the older sector ETFs used for causal breadth.
+    # This prevents XLC/XLRE inception dates from truncating unrelated engines.
+    "ETF_LONG_TERM_CROSS_ASSET_HISTORY": (
+        "SPY", "QQQ", "IWM", "SHY", "BIL", "IEF", "TLT", "GLD", "DBC",
+        "EFA", "EEM", "VNQ", "XLY", "XLP", "XLE", "XLF", "XLV", "XLI",
+        "XLB", "XLK", "XLU",
+    ),
+    "ETF_LONG_TERM_FACTOR_HISTORY": (
+        "SPY", "SHY", "MTUM", "QUAL", "VLUE", "USMV", "IWF", "IWD",
+        "XLY", "XLP", "XLE", "XLF", "XLV", "XLI", "XLB", "XLK", "XLU",
+    ),
+    "ETF_LONG_TERM_INDUSTRY_HISTORY": (
+        "SPY", "SHY", "XBI", "XRT", "XHB", "XME", "XOP", "KRE", "SMH", "IYT",
+        "XLY", "XLP", "XLE", "XLF", "XLV", "XLI", "XLB", "XLK", "XLU",
+    ),
+    "ETF_LONG_TERM_SECTOR_HISTORY": (
+        "SPY", "SHY", "XLC", "XLY", "XLP", "XLE", "XLF", "XLV",
+        "XLI", "XLB", "XLRE", "XLK", "XLU",
+    ),
     "ETF_TIER2_MULTI_SLEEVE": (
         "SPY", "SHY", "BIL", "IEF", "GLD",
         "XLC", "XLY", "XLP", "XLE", "XLF", "XLV", "XLI", "XLB", "XLRE", "XLK", "XLU",

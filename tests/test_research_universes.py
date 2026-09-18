@@ -55,6 +55,17 @@ class ResearchUniverseTests(unittest.TestCase):
         )
         self.assertNotIn("XLC", universe)
 
+    def test_long_term_validation_cohorts_do_not_share_late_inception_symbols(self):
+        cross_asset = set(resolve_universe("ETF_LONG_TERM_CROSS_ASSET_HISTORY"))
+        factor = set(resolve_universe("ETF_LONG_TERM_FACTOR_HISTORY"))
+        industry = set(resolve_universe("ETF_LONG_TERM_INDUSTRY_HISTORY"))
+        sector = set(resolve_universe("ETF_LONG_TERM_SECTOR_HISTORY"))
+        self.assertNotIn("XLC", cross_asset)
+        self.assertNotIn("XLRE", factor)
+        self.assertNotIn("XLC", industry)
+        self.assertIn("XLC", sector)
+        self.assertTrue({"SPY", "SHY"} <= cross_asset & factor & industry & sector)
+
     def test_selection_diagnostics_group_by_strategy_symbol_and_sector(self):
         rows = _universe_selection_diagnostics([
             {"strategy_name": "S", "symbol": "AAPL", "selected": True, "raw_target_weight": 0.2},

@@ -1,0 +1,33 @@
+{
+  "study_id": "LONG_TERM_VALIDATION_PHASE_001",
+  "status": "ready_for_historical_validation",
+  "parent_study": "LONG_TERM_ENGINE_STUDY_001",
+  "generation_015_status": "paused_and_unchanged",
+  "purpose": "Validate the frozen long-term engines over the longest compatible history without allowing newer ETF inception dates to truncate unrelated strategy families.",
+  "design": {
+    "router": false,
+    "tactical_overrides": false,
+    "parameter_retuning": false,
+    "cohorts": [
+      "cross_asset_and_strategic_allocation",
+      "factor_equity",
+      "industry_momentum",
+      "sector_momentum"
+    ],
+    "rolling_window_sessions": 756,
+    "walk_forward_train_sessions": 756,
+    "walk_forward_test_sessions": 126,
+    "walk_forward_step_sessions": 126,
+    "cost_ladder_bps": [1.0, 5.0, 10.0, 20.0],
+    "primary_cost_bps": 10.0,
+    "cost_path_audit": true
+  },
+  "frozen_forward_shadow_candidates": [
+    "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+    "INDUSTRY_ETF_MOMENTUM",
+    "VALUE_QUALITY_STATIC",
+    "SECTOR_ETF_ROTATION",
+    "STATIC_INFLATION_AWARE"
+  ],
+  "promotion_effect": "none"
+}

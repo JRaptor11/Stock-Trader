@@ -7,7 +7,8 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from research.tier1_etf_replay import (
-    LEGACY_STRATEGIES, STRATEGIES, Tier1Config, _causal_market_regimes, _targets, _validated_calendar,
+    LEGACY_STRATEGIES, STRATEGIES, Tier1Config, _causal_market_regimes, _cost_path_audit,
+    _targets, _validated_calendar,
     _strategy_rebalance_frequency,
     config_from_job, load_daily_bars,
     run_tier1_job,
@@ -32,6 +33,26 @@ def write_bars(path: Path, sessions: int = 280):
 
 
 class Tier1ETFReplayTests(unittest.TestCase):
+    def test_cost_path_audit_flags_nonmonotonic_path_dependent_results(self):
+        config = Tier1Config(
+            strategy_names=("SPY_BUY_HOLD",), cost_ladder_bps=(1.0, 10.0)
+        )
+        scorecards = [
+            {"strategy": "SPY_BUY_HOLD", "cost_bps": 1.0, "total_return": 0.10},
+            {"strategy": "SPY_BUY_HOLD", "cost_bps": 10.0, "total_return": 0.11},
+        ]
+        trades = [
+            {"date": "2026-01-02", "strategy": "SPY_BUY_HOLD", "symbol": "SPY",
+             "notional": 100.0, "cost_bps": 1.0},
+            {"date": "2026-01-03", "strategy": "SPY_BUY_HOLD", "symbol": "SPY",
+             "notional": 100.0, "cost_bps": 10.0},
+        ]
+        rows = _cost_path_audit(scorecards, trades, config)
+        high_cost = rows[-1]
+        self.assertTrue(high_cost["decision_path_changed_vs_lowest_cost"])
+        self.assertTrue(high_cost["return_increased_vs_lower_cost"])
+        self.assertTrue(high_cost["cost_path_audit_required"])
+
     def test_independent_families_are_long_only_and_normalized(self):
         config = Tier1Config(universe_name="ETF_TIER2_MULTI_SLEEVE")
         histories = {
@@ -235,7 +256,9 @@ class Tier1ETFReplayTests(unittest.TestCase):
                 names=set(bundle.namelist()); manifest=json.loads(bundle.read("tier1_manifest.json")); summary=json.loads(bundle.read("tier1_summary.json"))
                 self.assertIn("tier1_cost_ladder_scorecard.csv",names); self.assertIn("tier1_promotion_gates.csv",names)
                 self.assertIn("tier1_period_scorecard.csv",names)
-                self.assertIn("tier1_rolling_3y_scorecard.csv",names)
+                self.assertIn("tier1_rolling_window_scorecard.csv",names)
+                self.assertNotIn("tier1_rolling_3y_scorecard.csv",names)
+                self.assertIn("tier1_cost_path_audit.csv",names)
                 self.assertIn("tier1_walk_forward_scorecard.csv",names)
                 self.assertIn("tier1_regime_scorecard.csv",names)
                 self.assertIn("tier1_market_conditions.csv",names)

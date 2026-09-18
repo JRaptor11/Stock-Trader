@@ -495,6 +495,16 @@ readiness. Results should be validated against recorded paper sessions and
 evaluated chronologically across multiple market regimes before model training
 or strategy promotion.
 
+Long-term validation jobs are split into history-compatible cross-asset,
+factor, industry, and sector cohorts. This prevents a newer ETF such as XLC or
+XLRE from truncating the history of an unrelated strategy. Cohort definitions
+remain fixed before execution, keep SPY in every job, and do not alter the
+strategy parameters. Daily archives write `tier1_rolling_window_scorecard.csv`;
+the exact session count is recorded in every row rather than implied by the
+filename. `tier1_cost_path_audit.csv` identifies cases where independently
+simulated transaction costs change a later no-trade-band decision, so a
+non-monotonic cost result cannot pass unnoticed.
+
 Intraday isolation archives also contain standardized daily portfolio and SPY
 benchmark series, calendar-year attribution, cash and SPY excess returns,
 drawdown and recovery diagnostics, turnover, a 1/5/10/20-basis-point cost

@@ -1003,6 +1003,59 @@ def _rolling_scorecards(daily: list[dict], config: Tier1Config) -> list[dict]:
     return rows
 
 
+def _cost_path_audit(scorecards: list[dict], trades: list[dict],
+                     config: Tier1Config) -> list[dict]:
+    """Explain cost-ladder path dependence instead of assuming monotonicity.
+
+    Each cost level is a full independent portfolio simulation. Transaction
+    costs can therefore move a later rebalance across the no-trade band. The
+    audit records whether the sequence of trade decisions changed and flags a
+    return increase at a higher cost for explicit review.
+    """
+    returns = {
+        (row["strategy"], float(row["cost_bps"])): row["total_return"]
+        for row in scorecards
+    }
+    decisions: dict[tuple[str, float], tuple[tuple[str, str, int], ...]] = {}
+    for strategy in config.strategy_names:
+        for cost in config.cost_ladder_bps:
+            selected = [
+                row for row in trades
+                if row["strategy"] == strategy and float(row["cost_bps"]) == float(cost)
+            ]
+            decisions[(strategy, float(cost))] = tuple(
+                (row["date"], row["symbol"], 1 if float(row["notional"]) > 0 else -1)
+                for row in selected
+            )
+    rows = []
+    for strategy in config.strategy_names:
+        costs = sorted(float(value) for value in config.cost_ladder_bps)
+        reference = decisions[(strategy, costs[0])]
+        previous_return = None
+        for cost in costs:
+            total_return = returns[(strategy, cost)]
+            path = decisions[(strategy, cost)]
+            violation = (
+                previous_return is not None and total_return > previous_return + 1e-12
+            )
+            rows.append({
+                "strategy": strategy,
+                "cost_bps": cost,
+                "total_return": total_return,
+                "trade_decisions": len(path),
+                "decision_path_changed_vs_lowest_cost": path != reference,
+                "return_increased_vs_lower_cost": violation,
+                "cost_path_audit_required": violation or path != reference,
+                "interpretation": (
+                    "higher cost changed later no-trade-band decisions"
+                    if path != reference else
+                    "fixed trade-decision path across tested costs"
+                ),
+            })
+            previous_return = total_return
+    return rows
+
+
 def _walk_forward_scorecards(daily: list[dict], config: Tier1Config) -> list[dict]:
     selected = [row for row in daily if row["cost_bps"] == config.primary_cost_bps]
     by_strategy = {name: [r for r in selected if r["strategy"] == name]
@@ -1177,6 +1230,7 @@ def run_tier1_job(job: dict, bars_path: Path, archive_path: Path, source_sha256:
         risk_improves=row["max_drawdown"]>benchmark["max_drawdown"] or row["sharpe"]>benchmark["sharpe"]
         promotions.append({"strategy":strategy,"benchmark":"SPY_BUY_HOLD","evaluation_period":promotion_period,"net_excess_return":row["total_return"]-benchmark["total_return"],"return_gate":beats,"risk_gate":risk_improves,"eligible_for_further_validation":beats and risk_improves,"paper_trading_approved":False})
     rolling_scorecards=_rolling_scorecards(all_daily,config)
+    cost_path_audit=_cost_path_audit(scorecards,all_trades,config)
     walk_forward_scorecards=_walk_forward_scorecards(all_daily,config)
     regime_scorecards=_regime_scorecards(all_daily,dates,bars,config)
     market_conditions=causal_market_conditions(
@@ -1251,7 +1305,7 @@ def run_tier1_job(job: dict, bars_path: Path, archive_path: Path, source_sha256:
     manifest={"created_at":datetime.now(UTC).isoformat(),"engine":"tier1_etf_daily","source_path":str(bars_path),"source_sha256":source_sha256,"config":asdict(config),"coverage":coverage,"universe":universe_metadata(config.universe_name,tuple(sorted(symbols))),"hypothesis_registry":registry_snapshot(),"experiment":declaration,"execution_semantics":"warm-up excluded; signal at close and fill at next available open on validated common sessions","strategies":list(config.strategy_names),"daily_strategy_interface":{"version":1,"validation":"long-only finite weights, no leverage, universe membership","specifications":_daily_strategy_registry().snapshot(config.strategy_names)},"market_state_validation":{"version":3,"periods":"full, discovery, and untouched chronological holdout","fold_sessions":config.walk_forward_test_sessions,"uncertainty":"deterministic 2,000-draw whole-episode bootstrap","multiplicity":"Benjamini-Hochberg false-discovery-rate correction within each period or transition horizon","transition_definition":"causally pending or newly confirmed state change; confirmation sensitivity at 1, 3, 5, and 10 sessions; post-confirmation horizons are 1, 2, 3, 5, and 10 sessions","confirmation_sensitivity_sessions":list(CONFIRMATION_WINDOWS),"cost_sensitivity_bps":list(config.cost_ladder_bps),"candidate_map_effect":"retains challengers and summarizes evidence only","survival_statuses":"insufficient, failed gates, historically promising, chronologically recurring, or cost robust awaiting forward validation","routing_effect":"none"},"promotion_policy":"diagnostic gate only; shadow approval requires untouched holdout and stability tests"}
     archive_path.parent.mkdir(parents=True,exist_ok=True)
     with zipfile.ZipFile(archive_path,"w",zipfile.ZIP_DEFLATED,compresslevel=1) as bundle:
-        _write_csv(bundle,"tier1_daily.csv",all_daily); _write_csv(bundle,"tier1_trades.csv",all_trades); _write_csv(bundle,"tier1_cost_ladder_scorecard.csv",scorecards); _write_csv(bundle,"tier1_period_scorecard.csv",period_scorecards); _write_csv(bundle,"tier1_promotion_gates.csv",promotions); _write_csv(bundle,"tier1_rolling_3y_scorecard.csv",rolling_scorecards); _write_csv(bundle,"tier1_walk_forward_scorecard.csv",walk_forward_scorecards); _write_csv(bundle,"tier1_regime_scorecard.csv",regime_scorecards); _write_csv(bundle,"tier1_market_conditions.csv",list(market_conditions.values())); _write_csv(bundle,"tier1_condition_scorecard.csv",condition_rows); _write_csv(bundle,"tier1_condition_pair_scorecard.csv",condition_pair_rows); _write_csv(bundle,"tier1_market_state_labels.csv",state_labels); _write_csv(bundle,"tier1_market_state_episodes.csv",state_episodes); _write_csv(bundle,"tier1_market_state_attribution.csv",state_attribution); _write_csv(bundle,"tier1_market_state_episode_returns.csv",state_episode_returns); _write_csv(bundle,"tier1_market_state_period_scorecard.csv",state_periods); _write_csv(bundle,"tier1_market_state_inference.csv",state_inference); _write_csv(bundle,"tier1_market_state_cost_sensitivity.csv",state_costs); _write_csv(bundle,"tier1_market_state_transition_scorecard.csv",state_transitions); _write_csv(bundle,"tier1_market_state_chronological_folds.csv",state_folds); _write_csv(bundle,"tier1_market_state_fold_recurrence.csv",state_fold_recurrence); _write_csv(bundle,"tier1_market_state_transition_horizons.csv",state_transition_horizons); _write_csv(bundle,"tier1_hypothesis_survival.csv",state_survival); _write_csv(bundle,"tier1_pairwise_summary.csv",pairwise_summary); _write_csv(bundle,"tier1_event_diagnostics.csv",event_rows); _write_csv(bundle,"tier1_event_summary.csv",event_summary); _write_csv(bundle,"tier1_event_horizon_summary.csv",event_horizons); _write_csv(bundle,"tier1_event_condition_summary.csv",event_conditions); _write_csv(bundle,"tier1_breakout_opportunities.csv",breakout_opportunities); _write_csv(bundle,"tier1_breakout_opportunity_summary.csv",breakout_opportunity_summary); _write_csv(bundle,"tier1_role_aware_evidence.csv",evidence_matrix); _write_csv(bundle,"tier1_tactical_baseline_comparisons.csv",tactical_comparisons); _write_csv(bundle,"tier1_tactical_override_summary.csv",tactical_summary); _write_csv(bundle,"tier1_baseline_state_leaderboard.csv",baseline_leaderboard); _write_csv(bundle,"tier1_defensive_baseline_comparisons.csv",defensive_comparisons); _write_csv(bundle,"tier1_tactical_horizon_comparisons.csv",tactical_horizon_comparisons); _write_csv(bundle,"tier1_tactical_horizon_summary.csv",tactical_horizon_summary); _write_csv(bundle,"tier1_locked_tactical_validation.csv",locked_tactical_validation); _write_csv(bundle,"tier1_defensive_distinctness.csv",defensive_distinctness); _write_csv(bundle,"tier1_baseline_era_details.csv",baseline_era_details); _write_csv(bundle,"tier1_baseline_era_recurrence.csv",baseline_era_recurrence); _write_csv(bundle,"tier1_baseline_confirmation_sensitivity.csv",baseline_confirmation_sensitivity); _write_csv(bundle,"tier1_state_transition_timing.csv",state_transition_timing); _write_csv(bundle,"tier1_generation_candidate_map.csv",generation_candidate_map)
+        _write_csv(bundle,"tier1_daily.csv",all_daily); _write_csv(bundle,"tier1_trades.csv",all_trades); _write_csv(bundle,"tier1_cost_ladder_scorecard.csv",scorecards); _write_csv(bundle,"tier1_cost_path_audit.csv",cost_path_audit); _write_csv(bundle,"tier1_period_scorecard.csv",period_scorecards); _write_csv(bundle,"tier1_promotion_gates.csv",promotions); _write_csv(bundle,"tier1_rolling_window_scorecard.csv",rolling_scorecards); _write_csv(bundle,"tier1_walk_forward_scorecard.csv",walk_forward_scorecards); _write_csv(bundle,"tier1_regime_scorecard.csv",regime_scorecards); _write_csv(bundle,"tier1_market_conditions.csv",list(market_conditions.values())); _write_csv(bundle,"tier1_condition_scorecard.csv",condition_rows); _write_csv(bundle,"tier1_condition_pair_scorecard.csv",condition_pair_rows); _write_csv(bundle,"tier1_market_state_labels.csv",state_labels); _write_csv(bundle,"tier1_market_state_episodes.csv",state_episodes); _write_csv(bundle,"tier1_market_state_attribution.csv",state_attribution); _write_csv(bundle,"tier1_market_state_episode_returns.csv",state_episode_returns); _write_csv(bundle,"tier1_market_state_period_scorecard.csv",state_periods); _write_csv(bundle,"tier1_market_state_inference.csv",state_inference); _write_csv(bundle,"tier1_market_state_cost_sensitivity.csv",state_costs); _write_csv(bundle,"tier1_market_state_transition_scorecard.csv",state_transitions); _write_csv(bundle,"tier1_market_state_chronological_folds.csv",state_folds); _write_csv(bundle,"tier1_market_state_fold_recurrence.csv",state_fold_recurrence); _write_csv(bundle,"tier1_market_state_transition_horizons.csv",state_transition_horizons); _write_csv(bundle,"tier1_hypothesis_survival.csv",state_survival); _write_csv(bundle,"tier1_pairwise_summary.csv",pairwise_summary); _write_csv(bundle,"tier1_event_diagnostics.csv",event_rows); _write_csv(bundle,"tier1_event_summary.csv",event_summary); _write_csv(bundle,"tier1_event_horizon_summary.csv",event_horizons); _write_csv(bundle,"tier1_event_condition_summary.csv",event_conditions); _write_csv(bundle,"tier1_breakout_opportunities.csv",breakout_opportunities); _write_csv(bundle,"tier1_breakout_opportunity_summary.csv",breakout_opportunity_summary); _write_csv(bundle,"tier1_role_aware_evidence.csv",evidence_matrix); _write_csv(bundle,"tier1_tactical_baseline_comparisons.csv",tactical_comparisons); _write_csv(bundle,"tier1_tactical_override_summary.csv",tactical_summary); _write_csv(bundle,"tier1_baseline_state_leaderboard.csv",baseline_leaderboard); _write_csv(bundle,"tier1_defensive_baseline_comparisons.csv",defensive_comparisons); _write_csv(bundle,"tier1_tactical_horizon_comparisons.csv",tactical_horizon_comparisons); _write_csv(bundle,"tier1_tactical_horizon_summary.csv",tactical_horizon_summary); _write_csv(bundle,"tier1_locked_tactical_validation.csv",locked_tactical_validation); _write_csv(bundle,"tier1_defensive_distinctness.csv",defensive_distinctness); _write_csv(bundle,"tier1_baseline_era_details.csv",baseline_era_details); _write_csv(bundle,"tier1_baseline_era_recurrence.csv",baseline_era_recurrence); _write_csv(bundle,"tier1_baseline_confirmation_sensitivity.csv",baseline_confirmation_sensitivity); _write_csv(bundle,"tier1_state_transition_timing.csv",state_transition_timing); _write_csv(bundle,"tier1_generation_candidate_map.csv",generation_candidate_map)
         bundle.writestr("tier1_market_state_definition.json",json.dumps(STATE_DEFINITION,indent=2))
         bundle.writestr("tier1_manifest.json",json.dumps(manifest,indent=2,default=list)); bundle.writestr("tier1_summary.json",json.dumps({"primary_cost_bps":config.primary_cost_bps,"promotion_period":promotion_period,"scorecards":list(primary.values()),"promotion_gates":promotions},indent=2))
     return archive_path
