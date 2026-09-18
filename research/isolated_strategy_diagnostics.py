@@ -9,10 +9,12 @@ from collections import defaultdict
 from research.market_state_validation import (
     _benjamini_hochberg, _episode_bootstrap, _mean_test,
 )
+from research.market_state_episodes import causal_state_labels, state_episodes
 from research.role_aware_evidence import strategy_role
 
 
 HORIZONS = (1, 2, 3, 5, 10)
+CONFIRMATION_WINDOWS = (1, 3, 5, 10)
 
 
 def _f(value):
@@ -359,3 +361,184 @@ def build_baseline_era_recurrence(config, daily, state_labels, benchmark_strateg
             "recurs_across_eras": len(rows) >= 3 and sum(value > 0 for value in values) / len(values) >= 2 / 3,
         })
     return details, summary
+
+
+def _daily_returns(daily, cost_bps):
+    equity = defaultdict(dict)
+    for row in daily:
+        if float(row["cost_bps"]) == float(cost_bps):
+            equity[row["strategy"]][row["date"]] = float(row["equity"])
+    returns = defaultdict(dict)
+    for strategy, values in equity.items():
+        previous = None
+        for day, value in sorted(values.items()):
+            if previous not in (None, 0.0):
+                returns[strategy][day] = value / previous - 1.0
+            previous = value
+    return returns
+
+
+def build_baseline_confirmation_sensitivity(
+    config, daily, conditions, benchmark_strategy="SPY_BUY_HOLD",
+    confirmation_windows=CONFIRMATION_WINDOWS,
+):
+    """Re-label the same history with fixed causal confirmation delays.
+
+    This is a diagnostic sensitivity analysis. It never selects a delay or
+    authorizes routing. Whole episodes remain the independent evidence unit.
+    """
+    returns = _daily_returns(daily, config.primary_cost_bps)
+    baselines = [name for name in config.strategy_names
+                 if strategy_role(name) == "baseline_candidate"]
+    output = []
+    for confirmation in confirmation_windows:
+        labels = causal_state_labels(conditions, confirmation_sessions=confirmation)
+        episodes, episode_map = state_episodes(labels)
+        states = sorted({row["core_state"] for row in labels.values()})
+        for state in states:
+            state_dates = [day for day, row in labels.items() if row["core_state"] == state]
+            for strategy in baselines:
+                usable = [day for day in state_dates
+                          if day in returns[strategy] and day in returns[benchmark_strategy]]
+                if not usable:
+                    continue
+                episode_values = defaultdict(list)
+                for day in usable:
+                    episode_values[episode_map[day]].append(
+                        (1.0 + returns[strategy][day])
+                        / (1.0 + returns[benchmark_strategy][day]) - 1.0
+                    )
+                episode_relative = [math.prod(1.0 + value for value in values) - 1.0
+                                    for values in episode_values.values()]
+                relative = math.prod(
+                    (1.0 + returns[strategy][day])
+                    / (1.0 + returns[benchmark_strategy][day]) for day in usable
+                ) - 1.0
+                boot = _episode_bootstrap(episode_relative)
+                pending = sum(bool(labels[day].get("pending_core_state")) for day in usable)
+                output.append({
+                    "confirmation_sessions": confirmation, "core_state": state,
+                    "strategy": strategy, "benchmark_strategy": benchmark_strategy,
+                    "sessions": len(usable), "episodes": len(episode_relative),
+                    "pending_sessions": pending,
+                    "relative_wealth_vs_benchmark": relative,
+                    "mean_episode_relative_wealth": statistics.fmean(episode_relative),
+                    "median_episode_relative_wealth": statistics.median(episode_relative),
+                    "worst_episode_relative_wealth": min(episode_relative),
+                    "positive_episode_rate": sum(value > 0 for value in episode_relative)
+                                             / len(episode_relative),
+                    "episode_ci_95_low": boot["ci_low"],
+                    "episode_ci_95_high": boot["ci_high"],
+                    "sample_sufficient": len(usable) >= 30 and len(episode_relative) >= 5,
+                    "diagnostic_only": True,
+                })
+    return output
+
+
+def build_state_transition_timing(
+    config, daily, conditions, benchmark_strategy="SPY_BUY_HOLD",
+    confirmation_windows=CONFIRMATION_WINDOWS,
+):
+    """Measure false raw transitions and performance after causal confirmation."""
+    returns = _daily_returns(daily, config.primary_cost_bps)
+    baselines = [name for name in config.strategy_names
+                 if strategy_role(name) == "baseline_candidate"]
+    raw = causal_state_labels(conditions, confirmation_sessions=1)
+    days = sorted(raw)
+    runs = []
+    start = 0
+    for index in range(1, len(days) + 1):
+        if index == len(days) or raw[days[index]]["core_state"] != raw[days[start]]["core_state"]:
+            runs.append((start, index - 1, raw[days[start]]["core_state"]))
+            start = index
+    output = []
+    for confirmation in confirmation_windows:
+        for run_index, (start, end, state) in enumerate(runs):
+            if run_index == 0:
+                continue
+            prior_state = runs[run_index - 1][2]
+            length = end - start + 1
+            confirmed = length >= confirmation
+            confirmation_index = start + confirmation - 1 if confirmed else None
+            for strategy in baselines:
+                for horizon in HORIZONS:
+                    relative = None
+                    end_day = None
+                    if confirmed and confirmation_index + horizon < len(days):
+                        window = days[confirmation_index + 1:confirmation_index + horizon + 1]
+                        usable = [day for day in window
+                                  if day in returns[strategy] and day in returns[benchmark_strategy]]
+                        if len(usable) == horizon:
+                            relative = math.prod(
+                                (1.0 + returns[strategy][day])
+                                / (1.0 + returns[benchmark_strategy][day]) for day in usable
+                            ) - 1.0
+                            end_day = usable[-1]
+                    output.append({
+                        "confirmation_sessions": confirmation,
+                        "transition_id": f"RAW:{run_index:05d}",
+                        "prior_core_state": prior_state, "proposed_core_state": state,
+                        "proposal_date": days[start], "raw_run_sessions": length,
+                        "confirmed": confirmed, "false_transition": not confirmed,
+                        "confirmation_date": days[confirmation_index] if confirmed else None,
+                        "strategy": strategy, "benchmark_strategy": benchmark_strategy,
+                        "horizon_sessions": horizon, "comparison_end_date": end_day,
+                        "relative_wealth_vs_benchmark": relative,
+                        "diagnostic_only": True,
+                    })
+    return output
+
+
+def build_generation_candidate_map(
+    config, confirmation_rows, era_recurrence, tactical_validation,
+    defensive_comparisons,
+):
+    """Create an auditable research map without selecting or routing strategies."""
+    rows = []
+    recurrence = {(row["strategy"], row["core_state"]): row for row in era_recurrence}
+    grouped = defaultdict(list)
+    for row in confirmation_rows:
+        grouped[(row["strategy"], row["core_state"])].append(row)
+    for (strategy, state), values in sorted(grouped.items()):
+        eligible = [row for row in values if row["sample_sufficient"]]
+        positive = [row for row in eligible if row["mean_episode_relative_wealth"] > 0]
+        recurring = recurrence.get((strategy, state), {})
+        rows.append({
+            "evidence_role": "baseline_candidate", "core_state_or_event": state,
+            "strategy": strategy, "challenger_retained": True,
+            "confirmation_windows_tested": len(values),
+            "eligible_confirmation_windows": len(eligible),
+            "positive_confirmation_windows": len(positive),
+            "confirmation_robust": bool(eligible and len(positive) == len(eligible)),
+            "recurs_across_fixed_eras": bool(recurring.get("recurs_across_eras", False)),
+            "status": "RESEARCH_CANDIDATE",
+            "routing_or_promotion_authorized": False,
+        })
+    for row in tactical_validation:
+        if row["period"] != "full":
+            continue
+        rows.append({
+            "evidence_role": "tactical_opportunity",
+            "core_state_or_event": row["core_state"], "strategy": row["strategy"],
+            "challenger_retained": True, "confirmation_windows_tested": None,
+            "eligible_confirmation_windows": None, "positive_confirmation_windows": None,
+            "confirmation_robust": None, "recurs_across_fixed_eras": None,
+            "status": "LOCKED_GATE_PASS" if row["passes_locked_gate"] else "INSUFFICIENT_OR_FAILED_LOCKED_GATE",
+            "routing_or_promotion_authorized": False,
+        })
+    seen_defensive = set()
+    for row in defensive_comparisons:
+        key = (row["strategy"], row["core_state"])
+        if row["period"] != "full" or key in seen_defensive:
+            continue
+        seen_defensive.add(key)
+        rows.append({
+            "evidence_role": "defensive_override", "core_state_or_event": row["core_state"],
+            "strategy": row["strategy"], "challenger_retained": True,
+            "confirmation_windows_tested": None, "eligible_confirmation_windows": None,
+            "positive_confirmation_windows": None, "confirmation_robust": None,
+            "recurs_across_fixed_eras": None,
+            "status": "BEAT_BASELINE" if row["beat_baseline"] else "DID_NOT_BEAT_BASELINE",
+            "routing_or_promotion_authorized": False,
+        })
+    return rows

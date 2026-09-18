@@ -93,6 +93,12 @@ HYPOTHESES = {
         "data_frequency": "1d", "turnover_expectation": "mixed",
         "point_in_time_equities_required": False,
     },
+    "TRANSITION_EPISODE_VALIDATION_GENERATION_014": {
+        "tier": 2, "status": "active_research",
+        "mechanism": "test baseline candidates across causal confirmation delays, independent state episodes, false transitions, and post-transition horizons while retaining tactical and defensive challengers",
+        "data_frequency": "1d", "turnover_expectation": "mixed",
+        "point_in_time_equities_required": False,
+    },
     "CURRENT_INTRADAY_FAMILY": {
         "tier": "legacy_challenger", "status": "active_challenger",
         "mechanism": "intraday cross-sectional price ranking and target rotation",

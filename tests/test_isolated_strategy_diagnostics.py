@@ -1,9 +1,10 @@
 import unittest
 
 from research.isolated_strategy_diagnostics import (
-    build_baseline_era_recurrence, build_defensive_baseline_comparisons,
-    build_defensive_distinctness, build_locked_tactical_validation,
-    build_tactical_horizon_comparisons,
+    build_baseline_confirmation_sensitivity, build_baseline_era_recurrence,
+    build_defensive_baseline_comparisons, build_defensive_distinctness,
+    build_generation_candidate_map, build_locked_tactical_validation,
+    build_state_transition_timing, build_tactical_horizon_comparisons,
 )
 
 
@@ -15,6 +16,48 @@ class Config:
 
 
 class IsolatedDiagnosticsTests(unittest.TestCase):
+    @staticmethod
+    def _transition_fixture():
+        strategies=("SPY_BUY_HOLD","CROSS_ASSET_DUAL_MOMENTUM")
+        daily=[]; conditions={}
+        for index in range(18):
+            day=f"2025-01-{index + 1:02d}"
+            for strategy in strategies:
+                growth=1.001 if strategy=="SPY_BUY_HOLD" else 1.002
+                daily.append({"strategy":strategy,"cost_bps":10,"date":day,
+                              "equity":100 * growth ** index})
+            bear=6 <= index < 8
+            conditions[day]={
+                "trend_200d_distance":-1 if bear else 1,
+                "trend_63d_return":-1 if bear else 1,
+                "trend_20d_return":-1 if bear else 1,
+                "trend_acceleration_5d":-1 if bear else 1,
+                "volatility_20d_bucket":"Q3",
+                "breadth_50d":.7,
+            }
+        return daily,conditions
+
+    def test_confirmation_sensitivity_keeps_windows_separate(self):
+        class BaselineConfig:
+            primary_cost_bps=10.0
+            strategy_names=("SPY_BUY_HOLD","CROSS_ASSET_DUAL_MOMENTUM")
+        daily,conditions=self._transition_fixture()
+        rows=build_baseline_confirmation_sensitivity(
+            BaselineConfig,daily,conditions,confirmation_windows=(1,3))
+        self.assertEqual({1,3},{row["confirmation_sessions"] for row in rows})
+        self.assertTrue(all(row["diagnostic_only"] for row in rows))
+
+    def test_transition_timing_marks_unconfirmed_short_run(self):
+        class BaselineConfig:
+            primary_cost_bps=10.0
+            strategy_names=("SPY_BUY_HOLD","CROSS_ASSET_DUAL_MOMENTUM")
+        daily,conditions=self._transition_fixture()
+        rows=build_state_transition_timing(
+            BaselineConfig,daily,conditions,confirmation_windows=(3,))
+        bear=[row for row in rows if row["proposed_core_state"].startswith("BEAR")]
+        self.assertTrue(bear)
+        self.assertTrue(all(row["false_transition"] for row in bear))
+
     def test_defensive_comparison_is_relative_to_displaced_baseline(self):
         rows = []
         for cost in (10.0, 20.0):
@@ -107,6 +150,16 @@ class IsolatedDiagnosticsTests(unittest.TestCase):
         _,summary=build_baseline_era_recurrence(BaselineConfig,daily,labels)
         row=next(row for row in summary if row["strategy"]=="CROSS_ASSET_DUAL_MOMENTUM")
         self.assertEqual(3,row["eligible_eras"]); self.assertTrue(row["recurs_across_eras"])
+
+    def test_candidate_map_never_authorizes_routing(self):
+        confirmation=[{"strategy":"CROSS_ASSET_DUAL_MOMENTUM","core_state":"BULL",
+                       "sample_sufficient":True,"mean_episode_relative_wealth":.01}]
+        recurrence=[{"strategy":"CROSS_ASSET_DUAL_MOMENTUM","core_state":"BULL",
+                     "recurs_across_eras":True}]
+        rows=build_generation_candidate_map(Config,confirmation,recurrence,[],[])
+        self.assertEqual(1,len(rows))
+        self.assertFalse(rows[0]["routing_or_promotion_authorized"])
+        self.assertTrue(rows[0]["challenger_retained"])
 
 
 if __name__ == "__main__": unittest.main()
