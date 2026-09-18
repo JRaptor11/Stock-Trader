@@ -1,0 +1,50 @@
+{
+  "generation_id": "frozen-forward-validation-generation-015",
+  "declared_at": "2026-09-17T00:00:00-07:00",
+  "forward_start": "2026-09-18",
+  "evidence_observed_through": "2026-09-17",
+  "status": "research_only",
+  "objective": "Collect untouched forward evidence for the Generation 014 baseline and tactical candidates under a fixed three-session causal state definition without constructing a router.",
+  "benchmark_strategy": "SPY_BUY_HOLD",
+  "tactical_baseline_strategy": "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+  "primary_cost_bps": 10.0,
+  "state_confirmation_sessions": 3,
+  "forward_baseline_hypotheses": [
+    {"hypothesis_id": "decelerating-cross-asset-relative", "strategy": "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE", "core_state": "BULL_DECELERATING__LOW_VOL__BROAD_BREADTH"},
+    {"hypothesis_id": "decelerating-factor", "strategy": "FACTOR_ETF_MOMENTUM", "core_state": "BULL_DECELERATING__LOW_VOL__BROAD_BREADTH"},
+    {"hypothesis_id": "decelerating-static", "strategy": "STATIC_MULTI_SLEEVE", "core_state": "BULL_DECELERATING__LOW_VOL__BROAD_BREADTH"},
+    {"hypothesis_id": "decelerating-industry", "strategy": "INDUSTRY_ETF_MOMENTUM", "core_state": "BULL_DECELERATING__LOW_VOL__BROAD_BREADTH"},
+    {"hypothesis_id": "decelerating-dual", "strategy": "CROSS_ASSET_DUAL_MOMENTUM", "core_state": "BULL_DECELERATING__LOW_VOL__BROAD_BREADTH"},
+    {"hypothesis_id": "accelerating-factor", "strategy": "FACTOR_ETF_MOMENTUM", "core_state": "BULL_ACCELERATING__LOW_VOL__BROAD_BREADTH"},
+    {"hypothesis_id": "accelerating-industry", "strategy": "INDUSTRY_ETF_MOMENTUM", "core_state": "BULL_ACCELERATING__LOW_VOL__BROAD_BREADTH"},
+    {"hypothesis_id": "accelerating-static", "strategy": "STATIC_MULTI_SLEEVE", "core_state": "BULL_ACCELERATING__LOW_VOL__BROAD_BREADTH"},
+    {"hypothesis_id": "accelerating-cross-asset-relative", "strategy": "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE", "core_state": "BULL_ACCELERATING__LOW_VOL__BROAD_BREADTH"},
+    {"hypothesis_id": "accelerating-dual", "strategy": "CROSS_ASSET_DUAL_MOMENTUM", "core_state": "BULL_ACCELERATING__LOW_VOL__BROAD_BREADTH"}
+  ],
+  "forward_tactical_hypotheses": [
+    {"hypothesis_id": "participation-bear-recovery-2d-stable-g15", "strategy": "SECTOR_PARTICIPATION_BREAKOUT", "core_state": "BEAR_RECOVERING__HIGH_VOL__BROAD_BREADTH", "horizon_sessions": 2, "transition_phase": "stable"},
+    {"hypothesis_id": "participation-bear-recovery-2d-pending-g15", "strategy": "SECTOR_PARTICIPATION_BREAKOUT", "core_state": "BEAR_RECOVERING__HIGH_VOL__BROAD_BREADTH", "horizon_sessions": 2, "transition_phase": "pending"},
+    {"hypothesis_id": "participation-bear-recovery-3d-stable-g15", "strategy": "SECTOR_PARTICIPATION_BREAKOUT", "core_state": "BEAR_RECOVERING__HIGH_VOL__BROAD_BREADTH", "horizon_sessions": 3, "transition_phase": "stable"},
+    {"hypothesis_id": "participation-bear-recovery-3d-pending-g15", "strategy": "SECTOR_PARTICIPATION_BREAKOUT", "core_state": "BEAR_RECOVERING__HIGH_VOL__BROAD_BREADTH", "horizon_sessions": 3, "transition_phase": "pending"},
+    {"hypothesis_id": "price-decelerating-high-vol-mixed-5d-stable-g15", "strategy": "SECTOR_PRICE_BREAKOUT_20D", "core_state": "BULL_DECELERATING__HIGH_VOL__MIXED_BREADTH", "horizon_sessions": 5, "transition_phase": "stable"},
+    {"hypothesis_id": "price-decelerating-high-vol-mixed-5d-pending-g15", "strategy": "SECTOR_PRICE_BREAKOUT_20D", "core_state": "BULL_DECELERATING__HIGH_VOL__MIXED_BREADTH", "horizon_sessions": 5, "transition_phase": "pending"},
+    {"hypothesis_id": "price-decelerating-high-vol-mixed-10d-stable-g15", "strategy": "SECTOR_PRICE_BREAKOUT_20D", "core_state": "BULL_DECELERATING__HIGH_VOL__MIXED_BREADTH", "horizon_sessions": 10, "transition_phase": "stable"},
+    {"hypothesis_id": "price-decelerating-high-vol-mixed-10d-pending-g15", "strategy": "SECTOR_PRICE_BREAKOUT_20D", "core_state": "BULL_DECELERATING__HIGH_VOL__MIXED_BREADTH", "horizon_sessions": 10, "transition_phase": "pending"}
+  ],
+  "forward_evidence_policy": {
+    "baseline_unit": "one completed market session per frozen strategy-state hypothesis",
+    "tactical_unit": "one matured event at its predeclared holding horizon",
+    "minimum_baseline_active_sessions_before_review": 20,
+    "minimum_tactical_events_before_review": 20,
+    "minimum_distinct_state_episodes": 5,
+    "minimum_calendar_years": 3
+  },
+  "constraints": {
+    "retain_all_challengers": true,
+    "no_parameter_retuning": true,
+    "no_strategy_combination": true,
+    "no_router_training": true,
+    "no_live_or_paper_execution": true,
+    "no_promotion_from_retrospective_results": true
+  }
+}

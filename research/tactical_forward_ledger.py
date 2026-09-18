@@ -43,6 +43,11 @@ def append_observations(archive: Path, declaration_path: Path, ledger: Path) -> 
     archive_hash = hashlib.sha256(archive.read_bytes()).hexdigest()
     with zipfile.ZipFile(archive) as bundle:
         manifest = json.loads(bundle.read("tier1_manifest.json"))
+        if declaration.get("state_confirmation_sessions") is not None:
+            definition = json.loads(bundle.read("tier1_market_state_definition.json"))
+            if int(definition["state_change_confirmation_sessions"]) != int(
+                    declaration["state_confirmation_sessions"]):
+                raise ValueError("archive state confirmation differs from frozen declaration")
         comparisons = list(csv.DictReader(io.TextIOWrapper(
             bundle.open("tier1_tactical_horizon_comparisons.csv"), encoding="utf-8-sig"
         )))

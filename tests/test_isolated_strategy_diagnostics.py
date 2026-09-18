@@ -111,8 +111,26 @@ class IsolatedDiagnosticsTests(unittest.TestCase):
             daily += [{"strategy":strategy,"cost_bps":10,"date":"2025-01-01","equity":100},
                       {"strategy":strategy,"cost_bps":10,"date":"2025-01-02","equity":101}]
         labels=[{"date":"2025-01-01","core_state":"BULL"},{"date":"2025-01-02","core_state":"BULL"}]
-        rows=build_defensive_distinctness(DefensiveConfig,daily,[],labels)
+        trades=[{"strategy":strategy,"cost_bps":10,"date":"2025-01-02"}
+                for strategy in DefensiveConfig.strategy_names]
+        rows=build_defensive_distinctness(DefensiveConfig,daily,trades,labels)
         self.assertTrue(next(row for row in rows if row["core_state"]=="ALL")["behaviorally_indistinguishable"])
+
+    def test_defensive_distinctness_does_not_call_inactivity_a_signal_duplicate(self):
+        class DefensiveConfig:
+            primary_cost_bps=10.0
+            strategy_names=("DRAWDOWN_BRAKE","VOLATILITY_SHOCK_DEFENSIVE")
+        daily=[]
+        for strategy in DefensiveConfig.strategy_names:
+            daily += [{"strategy":strategy,"cost_bps":10,"date":"2025-01-01","equity":100},
+                      {"strategy":strategy,"cost_bps":10,"date":"2025-01-02","equity":101}]
+        labels=[{"date":"2025-01-01","core_state":"BULL"},
+                {"date":"2025-01-02","core_state":"BULL"}]
+        row=next(row for row in build_defensive_distinctness(
+            DefensiveConfig,daily,[],labels) if row["core_state"]=="ALL")
+        self.assertTrue(row["inactive_or_carried_exposure_equivalence"])
+        self.assertFalse(row["active_signal_comparison"])
+        self.assertFalse(row["behaviorally_indistinguishable"])
 
     def test_defensive_distinctness_uses_economic_tolerance(self):
         class DefensiveConfig:

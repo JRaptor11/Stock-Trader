@@ -99,6 +99,12 @@ HYPOTHESES = {
         "data_frequency": "1d", "turnover_expectation": "mixed",
         "point_in_time_equities_required": False,
     },
+    "FROZEN_FORWARD_VALIDATION_GENERATION_015": {
+        "tier": 2, "status": "active_research",
+        "mechanism": "collect untouched forward baseline-state and tactical-event evidence using the frozen three-session causal state definition",
+        "data_frequency": "1d", "turnover_expectation": "mixed",
+        "point_in_time_equities_required": False,
+    },
     "CURRENT_INTRADAY_FAMILY": {
         "tier": "legacy_challenger", "status": "active_challenger",
         "mechanism": "intraday cross-sectional price ranking and target rotation",

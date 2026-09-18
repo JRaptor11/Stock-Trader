@@ -285,7 +285,7 @@ def build_defensive_distinctness(config, daily, trades, state_labels):
                 differences = [abs(a - b) for a, b in zip(left_values, right_values)]
                 union = (trade_days[left] | trade_days[right]) & set(dates)
                 intersection = trade_days[left] & trade_days[right] & set(dates)
-                trade_jaccard = len(intersection) / len(union) if union else 1.0
+                trade_jaccard = len(intersection) / len(union) if union else None
                 correlation = None
                 if len(dates) > 1 and statistics.stdev(left_values) and statistics.stdev(right_values):
                     correlation = statistics.correlation(left_values, right_values)
@@ -299,8 +299,13 @@ def build_defensive_distinctness(config, daily, trades, state_labels):
                     "economically_equivalent_daily_return_rate_1bp": equivalent_rate,
                     "mean_absolute_daily_return_difference": mean_difference,
                     "shared_trade_day_jaccard": trade_jaccard,
+                    "in_state_trade_union_days": len(union),
+                    "active_signal_comparison": bool(union),
+                    "inactive_or_carried_exposure_equivalence": bool(
+                        not union and mean_difference <= .0001
+                    ),
                     "behaviorally_indistinguishable": bool(
-                        mean_difference <= .0001
+                        union and mean_difference <= .0001
                         and ((correlation is not None and correlation >= .999)
                              or trade_jaccard >= .95)
                     ),
