@@ -6,6 +6,7 @@ import math
 import random
 import statistics
 from collections import defaultdict
+from collections.abc import Callable
 
 from research.market_state_episodes import market_state_scorecards
 
@@ -177,6 +178,7 @@ def state_validation_outputs(
     primary_cost_bps: float, discovery_end: str | None, holdout_start: str | None,
     benchmark_strategy: str = "SPY_BUY_HOLD", fold_sessions: int = 252,
     progress_callback=None,
+    daily_for_cost: Callable[[float], list[dict]] | None = None,
 ) -> tuple[list[dict], list[dict], list[dict], list[dict], list[dict], list[dict], list[dict], list[dict]]:
     """Build period, episode-inference, transition, and chronological-fold evidence."""
     periods = [("full", None, None)]
@@ -231,14 +233,21 @@ def state_validation_outputs(
 
     cost_rows = []
     for cost_number, cost in enumerate(cost_ladder_bps, 1):
+        cost_daily = daily if float(cost) == float(primary_cost_bps) else (
+            daily_for_cost(float(cost)) if daily_for_cost else daily
+        )
         for period, start, end in periods:
             _, _, states, _ = market_state_scorecards(
-                daily, conditions, cost, benchmark_strategy,
+                cost_daily, conditions, cost, benchmark_strategy,
                 period_start=start, period_end=end,
             )
             for row in states:
                 cost_rows.append({"period": period, **row,
                                   "is_primary_cost": float(cost) == float(primary_cost_bps)})
+        # A non-primary cost path may contain tens of thousands of dictionaries.
+        # Keep only its compact scorecard rows before loading the next path.
+        if cost_daily is not daily:
+            del cost_daily
         if progress_callback:
             progress_callback({"stage": "market_state_cost_sensitivity",
                                "stage_completed_rows": cost_number,

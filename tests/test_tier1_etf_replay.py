@@ -1,4 +1,5 @@
 import csv
+import io
 import json
 import tempfile
 import unittest
@@ -254,6 +255,7 @@ class Tier1ETFReplayTests(unittest.TestCase):
             run_tier1_job(job,bars,archive,"abc123")
             with zipfile.ZipFile(archive) as bundle:
                 names=set(bundle.namelist()); manifest=json.loads(bundle.read("tier1_manifest.json")); summary=json.loads(bundle.read("tier1_summary.json"))
+                daily_rows=list(csv.DictReader(io.StringIO(bundle.read("tier1_daily.csv").decode("utf-8"))))
                 self.assertIn("tier1_cost_ladder_scorecard.csv",names); self.assertIn("tier1_promotion_gates.csv",names)
                 self.assertIn("tier1_period_scorecard.csv",names)
                 self.assertIn("tier1_rolling_window_scorecard.csv",names)
@@ -289,6 +291,7 @@ class Tier1ETFReplayTests(unittest.TestCase):
                 self.assertEqual("none",manifest["market_state_validation"]["routing_effect"])
                 self.assertEqual(253,manifest["coverage"]["warmup_sessions"])
                 self.assertEqual(set(LEGACY_STRATEGIES),{row["strategy"] for row in summary["scorecards"]})
+                self.assertEqual({"1.0","10.0"},{row["cost_bps"] for row in daily_rows})
                 self.assertEqual("holdout",summary["promotion_period"])
                 self.assertTrue(all(not row["paper_trading_approved"] for row in summary["promotion_gates"]))
 

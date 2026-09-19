@@ -61,6 +61,24 @@ class MarketStateValidationTests(unittest.TestCase):
         self.assertIn("market_state_cost_sensitivity", stages)
         self.assertIn("market_state_validation_complete", stages)
 
+    def test_non_primary_cost_paths_can_be_loaded_one_at_a_time(self):
+        daily, conditions = self._fixture()
+        primary = [row for row in daily if row["cost_bps"] == 10.0]
+        calls = []
+
+        def load_cost(cost):
+            calls.append(cost)
+            return [row for row in daily if row["cost_bps"] == cost]
+
+        outputs = state_validation_outputs(
+            primary, conditions, (1.0, 10.0), 10.0,
+            "2026-01-06", "2026-01-07", fold_sessions=6,
+            daily_for_cost=load_cost,
+        )
+
+        self.assertEqual([1.0], calls)
+        self.assertEqual({1.0, 10.0}, {row["cost_bps"] for row in outputs[2]})
+
     def test_fold_recurrence_requires_three_folds_and_sixty_percent_wins(self):
         rows = [{"strategy": "CANDIDATE", "core_state": "STATE", "sample_sufficient": True,
                  "relative_wealth_vs_spy": value} for value in (.03, .02, -.01)]
