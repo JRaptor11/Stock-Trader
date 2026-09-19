@@ -14,7 +14,7 @@ try:
     from fastapi.testclient import TestClient
     from research.app import (
         app, health, runtime, runtime_diagnostics, _deprioritize_worker,
-        _health_egress_usage, _upload_status_snapshot,
+        _health_egress_usage, _upload_status_snapshot, require_coordinator_ready,
     )
 except ImportError:
     TestClient = None
@@ -34,6 +34,18 @@ class _EgressStore:
 
 @unittest.skipIf(_upload_status_snapshot is None, "FastAPI dependencies are not installed")
 class HealthResponsivenessTests(unittest.TestCase):
+    def test_mutations_wait_for_durable_recovery(self):
+        with patch.object(runtime, "coordinator_ready", False), patch.object(
+            runtime, "restore_error", None
+        ):
+            with self.assertRaisesRegex(Exception, "recovery is still in progress") as raised:
+                require_coordinator_ready()
+            self.assertEqual(503, raised.exception.status_code)
+            self.assertEqual("10", raised.exception.headers["Retry-After"])
+
+        with patch.object(runtime, "coordinator_ready", True):
+            require_coordinator_ready()
+
     def test_public_health_never_reads_external_egress_storage(self):
         store=_EgressStore()
         with patch.object(runtime,"store",store),patch(

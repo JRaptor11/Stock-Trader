@@ -20,7 +20,10 @@ class ResearchJobQueuePolicyTests(unittest.TestCase):
         )
 
     def test_deterministic_failures_do_not_retry(self):
-        for error_type in ("ValueError", "FileNotFoundError", "UnicodeDecodeError"):
+        for error_type in (
+            "ValueError", "FileNotFoundError", "UnicodeDecodeError",
+            "ResearchMemoryLimitExceeded",
+        ):
             with self.subTest(error_type=error_type):
                 self.assertEqual(
                     classify_failure(error_type),

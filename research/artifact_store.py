@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,6 +47,22 @@ class EgressBudgetExceeded(RuntimeError):
     """Raised before an R2 upload would exceed the configured monthly ceiling."""
 
 
+@contextmanager
+def _cross_process_upload_lock():
+    """Serialize coordinator/worker reservations on the shared Render instance."""
+    if os.name != "posix":
+        yield
+        return
+    import fcntl
+    lock_path = os.getenv("RESEARCH_EGRESS_LOCK_PATH", "/tmp/research-r2-egress.lock")
+    with open(lock_path, "a+b") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 class LocalOnlyArtifactStore(ArtifactStore):
     """Explicit no-op store used when durable storage is not configured."""
 
@@ -58,7 +75,7 @@ class S3ArtifactStore(ArtifactStore):
     region: str
     access_key: str
     secret_key: str
-    monthly_egress_budget_bytes: int = 5 * 1024**3
+    monthly_egress_budget_bytes: int = 1 * 1024**3
     durable = True
     _egress_categories = ("checkpoints", "datasets", "jobs", "results", "status", "other")
 
@@ -83,7 +100,7 @@ class S3ArtifactStore(ArtifactStore):
         category = key.lstrip("/").split("/", 1)[0]
         if category not in self._egress_categories:
             category = "other"
-        with self._egress_lock:
+        with self._egress_lock, _cross_process_upload_lock():
             usage = self._load_egress_usage()
             projected = sum(usage["categories"].values()) + size
             if projected > self.monthly_egress_budget_bytes:
@@ -237,6 +254,6 @@ def artifact_store_from_env() -> ArtifactStore:
         secret_key=str(required["RESEARCH_S3_SECRET_KEY"]),
         monthly_egress_budget_bytes=max(
             1024**2,
-            int(os.getenv("RESEARCH_R2_MONTHLY_EGRESS_BUDGET_BYTES", str(5 * 1024**3))),
+            int(os.getenv("RESEARCH_R2_MONTHLY_EGRESS_BUDGET_BYTES", str(1 * 1024**3))),
         ),
     )

@@ -23,12 +23,11 @@ from fastapi.responses import FileResponse, RedirectResponse
 
 from config.service_mode import ServiceMode, validate_service_startup
 from research.artifact_store import EgressBudgetExceeded, artifact_store_from_env
-from research.historical_replay import _drop_file_cache
 from research.job_queue import (
     classify_failure, progress_aware_restart_state, queued_in_fifo_order,
     retry_delay_seconds,
 )
-from research.worker import _write_json_atomic
+from research.runtime_io import cgroup_memory_snapshot, drop_file_cache, write_json_atomic
 
 
 PROCESS_STARTED_AT = datetime.now(timezone.utc).isoformat()
@@ -62,6 +61,8 @@ class ResearchRuntime:
         self._health_egress_cache: tuple[float, dict] | None = None
         self.startup_completed_at: str | None = None
         self.startup_duration_seconds: float | None = None
+        self.coordinator_ready = False
+        self.restore_error: str | None = None
 
     def initialize(self) -> None:
         validate_service_startup(ServiceMode.HISTORICAL_RESEARCH)
@@ -88,6 +89,8 @@ class ResearchRuntime:
         ).strip().lower() in {"1", "true", "yes", "on"}
         self._storage_usage_cache = None
         self._health_egress_cache = None
+        self.coordinator_ready = False
+        self.restore_error = None
         if len(self.api_token) < 24:
             raise RuntimeError("RESEARCH_API_TOKEN must contain at least 24 characters")
         for path in (self.data_root, self.job_root, self.results_root):
@@ -120,19 +123,36 @@ runtime = ResearchRuntime()
 async def lifespan(_app: FastAPI):
     startup_started = time.monotonic()
     runtime.initialize()
-    _restore_durable_state()
-    _recover_interrupted_job()
-    runtime.startup_duration_seconds = round(time.monotonic() - startup_started, 3)
-    runtime.startup_completed_at = datetime.now(timezone.utc).isoformat()
-    logging.info(
-        "Research service startup complete duration_seconds=%s commit=%s branch=%s "
-        "service_id=%s instance_id=%s deploy_id=%s",
-        runtime.startup_duration_seconds,
-        os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT"),
-        os.getenv("RENDER_GIT_BRANCH") or os.getenv("GIT_BRANCH"),
-        os.getenv("RENDER_SERVICE_ID"), os.getenv("RENDER_INSTANCE_ID"),
-        os.getenv("RENDER_DEPLOY_ID"),
-    )
+    def restore_and_recover() -> None:
+        try:
+            _restore_durable_state()
+            _recover_interrupted_job()
+            runtime.coordinator_ready = True
+        except Exception as exc:
+            runtime.restore_error = f"{type(exc).__name__}: {exc}"
+            logging.exception("Research durable-state recovery failed")
+        finally:
+            runtime.startup_duration_seconds = round(
+                time.monotonic() - startup_started, 3
+            )
+            runtime.startup_completed_at = datetime.now(timezone.utc).isoformat()
+            logging.info(
+                "Research state recovery finished duration_seconds=%s ready=%s "
+                "commit=%s branch=%s service_id=%s instance_id=%s deploy_id=%s",
+                runtime.startup_duration_seconds, runtime.coordinator_ready,
+                os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT"),
+                os.getenv("RENDER_GIT_BRANCH") or os.getenv("GIT_BRANCH"),
+                os.getenv("RENDER_SERVICE_ID"), os.getenv("RENDER_INSTANCE_ID"),
+                os.getenv("RENDER_DEPLOY_ID"),
+            )
+
+    # R2 recovery previously blocked the ASGI lifespan for roughly 100 seconds,
+    # producing false failed-deploy alerts.  Bind the health endpoint first;
+    # mutation routes remain closed until recovery is complete.
+    if runtime.store.durable:
+        threading.Thread(target=restore_and_recover, daemon=True).start()
+    else:
+        restore_and_recover()
     yield
 
 
@@ -143,6 +163,18 @@ def require_token(authorization: str | None = Header(default=None)) -> None:
     expected = f"Bearer {runtime.api_token}"
     if not authorization or not hmac.compare_digest(authorization, expected):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid research API token")
+
+
+def require_coordinator_ready() -> None:
+    if not runtime.coordinator_ready:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "durable-state recovery failed" if runtime.restore_error
+                else "durable-state recovery is still in progress"
+            ),
+            headers={"Retry-After": "10"},
+        )
 
 
 def _safe_name(value: str, suffix: str | None = None) -> str:
@@ -220,6 +252,8 @@ def health() -> dict:
         "busy": runtime.active_job_id is not None,
         "active_job_id": runtime.active_job_id,
         "durable_storage_configured": bool(runtime.store and runtime.store.durable),
+        "coordinator_ready": runtime.coordinator_ready,
+        "restore_error": runtime.restore_error,
         "process_started_at": PROCESS_STARTED_AT,
         "process_uptime_seconds": round(time.monotonic() - PROCESS_STARTED_MONOTONIC, 3),
         "startup_completed_at": runtime.startup_completed_at,
@@ -253,6 +287,7 @@ def runtime_diagnostics() -> dict:
         "queued_jobs": _queued_job_count(),
         "storage_budget_bytes": runtime.storage_budget_bytes,
         "r2_egress": _health_egress_usage(),
+        **cgroup_memory_snapshot(),
     }
 
 
@@ -266,7 +301,7 @@ def _deprioritize_worker(process: subprocess.Popen) -> None:
         logging.warning("Could not lower research worker CPU priority",exc_info=True)
 
 
-@app.put("/api/datasets/{filename}", dependencies=[Depends(require_token)])
+@app.put("/api/datasets/{filename}", dependencies=[Depends(require_token), Depends(require_coordinator_ready)])
 async def upload_dataset(filename: str, request: Request) -> dict:
     filename = _safe_name(filename, ".csv")
     destination = runtime.data_root / filename
@@ -352,14 +387,14 @@ def _run_job(job_id: str, job_path: Path) -> None:
         result_uri = runtime.store.upload_file_if_missing(
             archive, f"results/{archive.name}"
         )
-        _drop_file_cache(archive)
+        drop_file_cache(archive)
         runtime.record_storage_write(archive.stat().st_size)
         status_payload = _status(job_id)
         status_payload.update({
             "status": "complete", "archive": str(archive), "durable_uri": result_uri,
             "completed_at": status_payload.get("completed_at") or datetime.now(timezone.utc).isoformat(),
         })
-        _write_json_atomic(runtime.results_root / f"{job_id}.status.json", status_payload)
+        write_json_atomic(runtime.results_root / f"{job_id}.status.json", status_payload)
         succeeded = True
     except Exception as exc:
         logging.exception("Historical research job failed: %s", job_id)
@@ -383,7 +418,7 @@ def _run_job(job_id: str, job_path: Path) -> None:
                 maximum_seconds=runtime.retry_max_seconds,
             )
             next_retry = datetime.now(timezone.utc) + timedelta(seconds=retry_delay)
-            _write_json_atomic(status_path, {
+            write_json_atomic(status_path, {
                 **previous, **retry_state, "job_id": job_id, "status": "retry_wait",
                 "failed_at": datetime.now(timezone.utc).isoformat(),
                 "error": str(exc), "failure_class": failure_class,
@@ -395,7 +430,7 @@ def _run_job(job_id: str, job_path: Path) -> None:
                 "blocks_queue": False,
             })
         else:
-            _write_json_atomic(status_path, {
+            write_json_atomic(status_path, {
                 **previous, **retry_state, "job_id": job_id, "status": "failed",
                 "failed_at": datetime.now(timezone.utc).isoformat(),
                 "error": str(exc), "failure_class": failure_class,
@@ -517,7 +552,7 @@ def _launch_job(job_id: str, job_path: Path) -> bool:
     status_path = runtime.results_root / f"{job_id}.status.json"
     previous = json.loads(status_path.read_text(encoding="utf-8")) if status_path.is_file() else {}
     durable_checkpoint = int(previous.get("checkpoint_completed_timestamps") or 0)
-    _write_json_atomic(status_path, {
+    write_json_atomic(status_path, {
         **previous, "job_id": job_id, "status": "starting",
         "started_by_coordinator_at": datetime.now(timezone.utc).isoformat(),
         "attempt_count": int(previous.get("attempt_count") or 0) + 1,
@@ -565,7 +600,7 @@ def _start_next_job() -> None:
             job_path = runtime.job_root / f"{job_id}.json"
             if not job_path.is_file():
                 status_path = runtime.results_root / f"{job_id}.status.json"
-                _write_json_atomic(status_path, {
+                write_json_atomic(status_path, {
                     **payload, "status": "failed", "blocks_queue": True,
                     "failed_at": datetime.now(timezone.utc).isoformat(),
                     "error": "durable job definition is missing",
@@ -574,7 +609,7 @@ def _start_next_job() -> None:
             if _launch_job(job_id, job_path):
                 return
             status_path = runtime.results_root / f"{job_id}.status.json"
-            _write_json_atomic(status_path, {
+            write_json_atomic(status_path, {
                 **payload, "status": "failed", "blocks_queue": True,
                 "failed_at": datetime.now(timezone.utc).isoformat(),
                 "error": "referenced dataset could not be restored",
@@ -603,7 +638,7 @@ def _recover_interrupted_job() -> None:
         maximum_lifetime=runtime.maximum_lifetime_restarts,
     )
     if not retry_state["retry_allowed"]:
-        _write_json_atomic(status_path, {
+        write_json_atomic(status_path, {
             **payload, **retry_state, "status": "failed", "blocks_queue": True,
             "failed_at": datetime.now(timezone.utc).isoformat(),
             "failure_class": "interrupted_service_restart",
@@ -619,7 +654,7 @@ def _recover_interrupted_job() -> None:
         base_seconds=runtime.retry_base_seconds,
         maximum_seconds=runtime.retry_max_seconds,
     )
-    _write_json_atomic(status_path, {
+    write_json_atomic(status_path, {
         **payload, **retry_state, "status": "retry_wait", "blocks_queue": False,
         "failure_class": "interrupted_service_restart", "retryable": True,
         "next_retry_at": (datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat(),
@@ -632,7 +667,7 @@ def _recover_interrupted_job() -> None:
     _start_next_job()
 
 
-@app.post("/api/jobs", status_code=202, dependencies=[Depends(require_token)])
+@app.post("/api/jobs", status_code=202, dependencies=[Depends(require_token), Depends(require_coordinator_ready)])
 async def submit_job(job: dict) -> dict:
     job_id = _safe_name(str(job.get("job_id") or ""))
     bars_csv = _safe_name(str(job.get("bars_csv") or ""), ".csv")
@@ -657,11 +692,11 @@ async def submit_job(job: dict) -> dict:
         if (runtime.results_root / job_id).exists() or (runtime.job_root / f"{job_id}.json").exists():
             raise HTTPException(status_code=409, detail="job id already exists")
         job_path = runtime.job_root / f"{job_id}.json"
-        _write_json_atomic(job_path, job)
+        write_json_atomic(job_path, job)
         job_uri = runtime.store.upload_file(job_path, f"jobs/{job_path.name}")
         queued_at = datetime.now(timezone.utc).isoformat()
         status_path = runtime.results_root / f"{job_id}.status.json"
-        _write_json_atomic(status_path, {
+        write_json_atomic(status_path, {
             "job_id": job_id, "status": "queued", "queued_at": queued_at,
             "bars_csv": bars_csv, "security_master_csv": security_master_csv,
             "market_events_csv": market_events_csv,
@@ -677,7 +712,7 @@ async def submit_job(job: dict) -> dict:
     }
 
 
-@app.post("/api/queue/resume", dependencies=[Depends(require_token)])
+@app.post("/api/queue/resume", dependencies=[Depends(require_token), Depends(require_coordinator_ready)])
 def resume_queue() -> dict:
     cleared = []
     with runtime.queue_lock:
@@ -686,14 +721,14 @@ def resume_queue() -> dict:
             if not payload.pop("blocks_queue", None):
                 continue
             payload["queue_block_cleared_at"] = datetime.now(timezone.utc).isoformat()
-            _write_json_atomic(path, payload)
+            write_json_atomic(path, payload)
             runtime.store.upload_file(path, f"status/{path.name}")
             cleared.append(str(payload.get("job_id") or path.stem))
         _start_next_job()
     return {"status": "resumed", "cleared_failures": cleared, "active_job_id": runtime.active_job_id}
 
 
-@app.post("/api/jobs/{job_id}/retry", dependencies=[Depends(require_token)])
+@app.post("/api/jobs/{job_id}/retry", dependencies=[Depends(require_token), Depends(require_coordinator_ready)])
 def retry_failed_job(job_id: str) -> dict:
     """Requeue a failed job under the same ID so its checkpoint remains addressable."""
     job_id = _safe_name(job_id)
@@ -736,7 +771,7 @@ def retry_failed_job(job_id: str) -> dict:
         })
         for stale_key in ("error", "error_type", "failure_class", "failed_at"):
             payload.pop(stale_key, None)
-        _write_json_atomic(status_path, payload)
+        write_json_atomic(status_path, payload)
         runtime.store.upload_file(status_path, f"status/{status_path.name}")
         _start_next_job()
     return {
@@ -748,7 +783,7 @@ def retry_failed_job(job_id: str) -> dict:
     }
 
 
-@app.post("/api/jobs/{job_id}/supersede", dependencies=[Depends(require_token)])
+@app.post("/api/jobs/{job_id}/supersede", dependencies=[Depends(require_token), Depends(require_coordinator_ready)])
 def supersede_job(job_id: str) -> dict:
     """Retire obsolete queued/retry work without deleting its audit history."""
     job_id = _safe_name(job_id)
@@ -770,7 +805,7 @@ def supersede_job(job_id: str) -> dict:
             "next_retry_at": None,
             "superseded_at": datetime.now(timezone.utc).isoformat(),
         })
-        _write_json_atomic(status_path, payload)
+        write_json_atomic(status_path, payload)
         runtime.store.upload_file(status_path, f"status/{status_path.name}")
         _start_next_job()
     return {"job_id": job_id, "status": "superseded", "active_job_id": runtime.active_job_id}

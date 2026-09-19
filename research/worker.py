@@ -7,6 +7,7 @@ imports the trading application, startup lifecycle, or Alpaca trading client.
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
 import io
 import json
@@ -35,6 +36,12 @@ from research.intraday_strategy_replay import run_tournament as run_intraday_tou
 
 
 UTC = timezone.utc
+
+
+class ResearchMemoryLimitExceeded(RuntimeError):
+    """Raised before the kernel OOM killer can restart the whole service."""
+
+
 CHECKPOINT_ENGINE_SCHEMA = 2
 LEGACY_CHECKPOINT_COMMITS = {"61688bd5b95e414f788c721a6d994ea4c608916d"}
 COMPATIBLE_CHECKPOINT_ENGINE_HASHES = {
@@ -472,11 +479,30 @@ def execute_job(job_path: str | Path, data_root: str | Path, results_root: str |
 
         def update_progress(progress: dict) -> None:
             latest_status.update(progress)
+            snapshot = _resource_snapshot(results_root)
             latest_status.update({
                 "heartbeat_at": datetime.now(UTC).isoformat(),
-                **_resource_snapshot(results_root),
+                **snapshot,
             })
             _write_json_atomic(status_path, latest_status)
+            limit_pct = max(
+                50.0,
+                min(99.0, float(os.getenv("RESEARCH_MAX_MEMORY_PCT", "90"))),
+            )
+            if float(snapshot.get("service_memory_pct") or 0.0) >= limit_pct:
+                gc.collect()
+                confirmed = _resource_snapshot(results_root)
+                if float(confirmed.get("service_memory_pct") or 0.0) >= limit_pct:
+                    latest_status.update({
+                        **confirmed,
+                        "memory_guard_triggered": True,
+                        "memory_guard_limit_pct": limit_pct,
+                    })
+                    _write_json_atomic(status_path, latest_status)
+                    raise ResearchMemoryLimitExceeded(
+                        "research memory safety ceiling reached: "
+                        f"{confirmed.get('service_memory_pct')}% >= {limit_pct}%"
+                    )
 
         engine = str(job.get("engine") or "intraday_replay").strip().lower()
         if engine == "tier1_etf_daily":

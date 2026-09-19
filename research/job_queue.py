@@ -12,6 +12,7 @@ DETERMINISTIC_ERROR_TYPES = frozenset({
     "UnicodeDecodeError",
     "CSVError",
     "PermissionError",
+    "ResearchMemoryLimitExceeded",
 })
 
 
