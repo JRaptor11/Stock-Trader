@@ -3,7 +3,7 @@ from datetime import date, timedelta
 
 from research.daily_strategy_interface import DailyStrategyRegistry, DailyStrategySpec
 from research.tier1_etf_replay import (
-    Tier1Config, _legacy_targets, _rebalance_day, _simulate,
+    ALLOCATION_BENCHMARK_SYMBOLS, Tier1Config, _legacy_targets, _rebalance_day, _simulate,
     _strategy_rebalance_frequency, _targets,
 )
 from research.universes import resolve_universe
@@ -74,6 +74,14 @@ class DailyStrategyInterfaceTests(unittest.TestCase):
         }
         for strategy, targets in expected.items():
             self.assertEqual(targets, _targets(strategy, histories, config), strategy)
+
+    def test_defensive_opportunity_benchmarks_hold_one_declared_asset(self):
+        config = Tier1Config(universe_name="ETF_LONG_TERM_RESEARCH_EXPANDED")
+        histories = {symbol: [100.0] for symbol in resolve_universe(config.universe_name)}
+        for symbol in ALLOCATION_BENCHMARK_SYMBOLS:
+            self.assertEqual(
+                {symbol: 1.0}, _targets(f"{symbol}_BUY_HOLD", histories, config)
+            )
 
     def test_six_current_cohort_strategies_have_full_simulation_parity(self):
         config = Tier1Config(

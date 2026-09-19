@@ -15,7 +15,8 @@ from pathlib import Path
 UTC = timezone.utc
 
 FROZEN_STRATEGY_FIELDS = (
-    "initial_cash", "universe_name", "benchmark_symbol", "cash_proxy_symbol",
+    "initial_cash", "universe_name", "market_state_universe_name",
+    "benchmark_symbol", "cash_proxy_symbol",
     "rebalance_frequency", "volatility_lookback_days",
     "volatility_target_annualized", "trend_lookback_days",
     "momentum_lookbacks_days", "sector_holdings", "no_trade_band",

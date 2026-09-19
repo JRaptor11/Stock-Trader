@@ -117,6 +117,12 @@ HYPOTHESES = {
         "data_frequency": "1d", "turnover_expectation": "low_to_medium",
         "point_in_time_equities_required": False,
     },
+    "LONG_TERM_CONDITION_MAPPING_PHASE_002": {
+        "tier": 1, "status": "active_research",
+        "mechanism": "rank long-term allocation concepts within one canonical causal market-state timeline using direct synchronized comparisons and explicit stable-asset benchmarks",
+        "data_frequency": "1d", "turnover_expectation": "low_to_medium",
+        "point_in_time_equities_required": False,
+    },
     "CURRENT_INTRADAY_FAMILY": {
         "tier": "legacy_challenger", "status": "active_challenger",
         "mechanism": "intraday cross-sectional price ranking and target rotation",

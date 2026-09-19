@@ -4,6 +4,7 @@ from pathlib import Path
 
 from research.strategy_registry import validate_experiment_declaration
 from research.tier1_etf_replay import config_from_job
+from research.universes import resolve_universe
 
 
 ROOT = Path(__file__).resolve().parents[1] / "research"
@@ -33,6 +34,27 @@ class LongTermValidationPhase001Tests(unittest.TestCase):
             self.assertFalse(seen & challengers)
             seen |= challengers
         self.assertEqual(expected - {"SPY_BUY_HOLD"}, seen)
+
+    def test_phase_002_direct_job_has_stable_allocations_and_shared_state_roster(self):
+        path = ROOT / "long-term-condition-mapping-phase-002-direct-job.json"
+        job = json.loads(path.read_text(encoding="utf-8"))
+        validate_experiment_declaration(job["experiment"])
+        config = config_from_job(job)
+        self.assertEqual("ETF_LONG_TERM_STATE_CANONICAL", config.market_state_universe_name)
+        self.assertGreater(len(resolve_universe(config.universe_name)), 30)
+        self.assertEqual(30, len(resolve_universe("ETF_LONG_TERM_LIVE_30")))
+        self.assertTrue(
+            set(resolve_universe(config.market_state_universe_name)).issubset(
+                resolve_universe(config.universe_name)
+            )
+        )
+        live_symbols = set(resolve_universe("ETF_LONG_TERM_LIVE_30")) - {"SPY"}
+        benchmark_symbols = {
+            name.removesuffix("_BUY_HOLD") for name in config.strategy_names
+            if name.endswith("_BUY_HOLD")
+        }
+        self.assertTrue(live_symbols.issubset(benchmark_symbols))
+        self.assertTrue({"VIG", "SPLV"}.issubset(benchmark_symbols))
 
 
 if __name__ == "__main__":

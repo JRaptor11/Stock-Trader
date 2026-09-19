@@ -1,0 +1,26 @@
+{
+  "study_id": "LONG_TERM_CONDITION_MAPPING_PHASE_002",
+  "status": "ready_for_data_acquisition",
+  "parent_study": "LONG_TERM_VALIDATION_PHASE_001",
+  "generation_015_status": "paused_and_unchanged",
+  "purpose": "Directly rank long-term allocation strategies within identical causal market states, dates, costs, and benchmark observations.",
+  "design": {
+    "router": false,
+    "promotion": false,
+    "parameter_retuning": false,
+    "canonical_market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+    "expanded_research_universe": "ETF_LONG_TERM_RESEARCH_EXPANDED",
+    "free_live_watch_universe": "ETF_LONG_TERM_LIVE_30",
+    "primary_cost_bps": 10.0,
+    "cost_ladder_bps": [1.0, 5.0, 10.0, 20.0],
+    "minimum_state_sessions": 30,
+    "minimum_state_episodes": 5,
+    "comparison_rule": "Every strategy-condition pair uses the same canonical causal label for the same session. SPY is a condition-specific benchmark and may legitimately win a condition."
+  },
+  "allocation_roles": [
+    "broad_equity", "global_equity", "factor_equity", "sector", "industry",
+    "cash_equivalent", "short_treasury", "intermediate_treasury", "long_treasury",
+    "inflation_protected_treasury", "gold", "commodities", "real_estate",
+    "low_volatility_equity", "dividend_growth_equity"
+  ]
+}

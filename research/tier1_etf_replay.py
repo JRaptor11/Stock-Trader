@@ -38,6 +38,15 @@ LEGACY_STRATEGIES = (
     "SPY_BUY_HOLD", "VOL_MANAGED_SPY", "ETF_DUAL_MOMENTUM",
     "SECTOR_ETF_ROTATION",
 )
+ALLOCATION_BENCHMARK_SYMBOLS = (
+    "QQQ", "IWM", "BIL", "SHY", "IEF", "TLT", "TIP", "GLD", "DBC",
+    "VNQ", "EFA", "EEM", "XLC", "XLY", "XLP", "XLE", "XLF", "XLV",
+    "XLI", "XLB", "XLRE", "XLK", "XLU", "MTUM", "QUAL", "VLUE",
+    "USMV", "IWF", "IWD", "VIG", "SPLV",
+)
+ALLOCATION_BENCHMARK_STRATEGIES = tuple(
+    f"{symbol}_BUY_HOLD" for symbol in ALLOCATION_BENCHMARK_SYMBOLS
+)
 STRATEGIES = LEGACY_STRATEGIES + (
     "GLOBAL_EQUITY_STATIC", "VALUE_QUALITY_STATIC", "MULTIFACTOR_STATIC",
     "LOW_VOLATILITY_EQUITY", "STATIC_INFLATION_AWARE",
@@ -74,7 +83,7 @@ STRATEGIES = LEGACY_STRATEGIES + (
     "CROSS_SECTIONAL_ABNORMAL_RETURN_BREAKOUT",
     "SECTOR_PARTICIPATION_BREAKOUT",
     "MARKET_CONFIRMED_SECTOR_BREAKOUT",
-)
+) + ALLOCATION_BENCHMARK_STRATEGIES
 CROSS_ASSET_RISK = ("SPY", "QQQ", "IWM", "TLT", "IEF", "GLD", "DBC", "EFA", "EEM", "VNQ")
 FACTOR_ETFS = ("MTUM", "QUAL", "VLUE", "USMV", "IWF", "IWD")
 INDUSTRY_ETFS = ("XBI", "XRT", "XHB", "XME", "XOP", "KRE", "SMH", "IYT")
@@ -128,6 +137,7 @@ class MarketHistories(dict):
 class Tier1Config:
     initial_cash: float = 100000.0
     universe_name: str = "ETF_TIER1_RESEARCH"
+    market_state_universe_name: str | None = None
     benchmark_symbol: str = "SPY"
     cash_proxy_symbol: str = "SHY"
     rebalance_frequency: str = "monthly"
@@ -166,6 +176,8 @@ class Tier1Config:
         if self.regime_high_volatility_annualized <= 0:
             raise ValueError("regime high-volatility threshold must be positive")
         resolve_universe(self.universe_name)
+        if self.market_state_universe_name:
+            resolve_universe(self.market_state_universe_name)
         if bool(self.discovery_end_date) != bool(self.holdout_start_date):
             raise ValueError("discovery_end_date and holdout_start_date must be set together")
         if self.discovery_end_date and self.discovery_end_date >= self.holdout_start_date:
@@ -381,6 +393,10 @@ def _legacy_targets(name: str, histories: dict[str, list[float]], config: Tier1C
                 else {config.cash_proxy_symbol: 1.0})
     if name == "LOW_VOLATILITY_EQUITY":
         return ({"USMV": 1.0} if histories.get("USMV")
+                else {config.cash_proxy_symbol: 1.0})
+    if name in ALLOCATION_BENCHMARK_STRATEGIES:
+        symbol = name.removesuffix("_BUY_HOLD")
+        return ({symbol: 1.0} if histories.get(symbol)
                 else {config.cash_proxy_symbol: 1.0})
     if name == "STATIC_INFLATION_AWARE":
         required = ("SPY", "IEF", "GLD", "DBC")
@@ -882,6 +898,10 @@ STRATEGY_CONCEPT_FAMILIES = {
     "REGIME_MULTI_SLEEVE": "rule_based_regime_multi_sleeve",
     "SECTOR_SHORT_TERM_REVERSAL": "cross_sectional_mean_reversion",
     "SECTOR_ETF_ROTATION": "sector_momentum",
+    **{
+        f"{symbol}_BUY_HOLD": f"single_sleeve_{symbol.lower()}_benchmark"
+        for symbol in ALLOCATION_BENCHMARK_SYMBOLS
+    },
 }
 
 
@@ -1233,8 +1253,17 @@ def run_tier1_job(job: dict, bars_path: Path, archive_path: Path, source_sha256:
     cost_path_audit=_cost_path_audit(scorecards,all_trades,config)
     walk_forward_scorecards=_walk_forward_scorecards(all_daily,config)
     regime_scorecards=_regime_scorecards(all_daily,dates,bars,config)
+    state_universe = resolve_universe(
+        config.market_state_universe_name or config.universe_name
+    )
+    missing_state_symbols = sorted(set(state_universe) - set(universe))
+    if missing_state_symbols:
+        raise ValueError(
+            "market-state universe must be contained in the strategy data universe: "
+            f"{missing_state_symbols}"
+        )
     market_conditions=causal_market_conditions(
-        dates, bars, universe, benchmark=config.benchmark_symbol
+        dates, bars, state_universe, benchmark=config.benchmark_symbol
     )
     condition_rows,condition_pair_rows=condition_scorecards(
         all_daily,market_conditions,config.primary_cost_bps
@@ -1302,7 +1331,7 @@ def run_tier1_job(job: dict, bars_path: Path, archive_path: Path, source_sha256:
         locked_tactical_validation,defensive_comparisons
     )
     declaration=validate_experiment_declaration(job.get("experiment"))
-    manifest={"created_at":datetime.now(UTC).isoformat(),"engine":"tier1_etf_daily","source_path":str(bars_path),"source_sha256":source_sha256,"config":asdict(config),"coverage":coverage,"universe":universe_metadata(config.universe_name,tuple(sorted(symbols))),"hypothesis_registry":registry_snapshot(),"experiment":declaration,"execution_semantics":"warm-up excluded; signal at close and fill at next available open on validated common sessions","strategies":list(config.strategy_names),"daily_strategy_interface":{"version":1,"validation":"long-only finite weights, no leverage, universe membership","specifications":_daily_strategy_registry().snapshot(config.strategy_names)},"market_state_validation":{"version":3,"periods":"full, discovery, and untouched chronological holdout","fold_sessions":config.walk_forward_test_sessions,"uncertainty":"deterministic 2,000-draw whole-episode bootstrap","multiplicity":"Benjamini-Hochberg false-discovery-rate correction within each period or transition horizon","transition_definition":"causally pending or newly confirmed state change; confirmation sensitivity at 1, 3, 5, and 10 sessions; post-confirmation horizons are 1, 2, 3, 5, and 10 sessions","confirmation_sensitivity_sessions":list(CONFIRMATION_WINDOWS),"cost_sensitivity_bps":list(config.cost_ladder_bps),"candidate_map_effect":"retains challengers and summarizes evidence only","survival_statuses":"insufficient, failed gates, historically promising, chronologically recurring, or cost robust awaiting forward validation","routing_effect":"none"},"promotion_policy":"diagnostic gate only; shadow approval requires untouched holdout and stability tests"}
+    manifest={"created_at":datetime.now(UTC).isoformat(),"engine":"tier1_etf_daily","source_path":str(bars_path),"source_sha256":source_sha256,"config":asdict(config),"coverage":coverage,"universe":universe_metadata(config.universe_name,tuple(sorted(symbols))),"market_state_universe":universe_metadata(config.market_state_universe_name or config.universe_name,state_universe),"hypothesis_registry":registry_snapshot(),"experiment":declaration,"execution_semantics":"warm-up excluded; signal at close and fill at next available open on validated common sessions","strategies":list(config.strategy_names),"daily_strategy_interface":{"version":1,"validation":"long-only finite weights, no leverage, universe membership","specifications":_daily_strategy_registry().snapshot(config.strategy_names)},"market_state_validation":{"version":4,"canonical_universe":config.market_state_universe_name or config.universe_name,"periods":"full, discovery, and untouched chronological holdout","fold_sessions":config.walk_forward_test_sessions,"uncertainty":"deterministic 2,000-draw whole-episode bootstrap","multiplicity":"Benjamini-Hochberg false-discovery-rate correction within each period or transition horizon","transition_definition":"causally pending or newly confirmed state change; confirmation sensitivity at 1, 3, 5, and 10 sessions; post-confirmation horizons are 1, 2, 3, 5, and 10 sessions","confirmation_sensitivity_sessions":list(CONFIRMATION_WINDOWS),"cost_sensitivity_bps":list(config.cost_ladder_bps),"candidate_map_effect":"retains challengers and summarizes evidence only","survival_statuses":"insufficient, failed gates, historically promising, chronologically recurring, or cost robust awaiting forward validation","routing_effect":"none"},"promotion_policy":"diagnostic gate only; shadow approval requires untouched holdout and stability tests"}
     archive_path.parent.mkdir(parents=True,exist_ok=True)
     with zipfile.ZipFile(archive_path,"w",zipfile.ZIP_DEFLATED,compresslevel=1) as bundle:
         _write_csv(bundle,"tier1_daily.csv",all_daily); _write_csv(bundle,"tier1_trades.csv",all_trades); _write_csv(bundle,"tier1_cost_ladder_scorecard.csv",scorecards); _write_csv(bundle,"tier1_cost_path_audit.csv",cost_path_audit); _write_csv(bundle,"tier1_period_scorecard.csv",period_scorecards); _write_csv(bundle,"tier1_promotion_gates.csv",promotions); _write_csv(bundle,"tier1_rolling_window_scorecard.csv",rolling_scorecards); _write_csv(bundle,"tier1_walk_forward_scorecard.csv",walk_forward_scorecards); _write_csv(bundle,"tier1_regime_scorecard.csv",regime_scorecards); _write_csv(bundle,"tier1_market_conditions.csv",list(market_conditions.values())); _write_csv(bundle,"tier1_condition_scorecard.csv",condition_rows); _write_csv(bundle,"tier1_condition_pair_scorecard.csv",condition_pair_rows); _write_csv(bundle,"tier1_market_state_labels.csv",state_labels); _write_csv(bundle,"tier1_market_state_episodes.csv",state_episodes); _write_csv(bundle,"tier1_market_state_attribution.csv",state_attribution); _write_csv(bundle,"tier1_market_state_episode_returns.csv",state_episode_returns); _write_csv(bundle,"tier1_market_state_period_scorecard.csv",state_periods); _write_csv(bundle,"tier1_market_state_inference.csv",state_inference); _write_csv(bundle,"tier1_market_state_cost_sensitivity.csv",state_costs); _write_csv(bundle,"tier1_market_state_transition_scorecard.csv",state_transitions); _write_csv(bundle,"tier1_market_state_chronological_folds.csv",state_folds); _write_csv(bundle,"tier1_market_state_fold_recurrence.csv",state_fold_recurrence); _write_csv(bundle,"tier1_market_state_transition_horizons.csv",state_transition_horizons); _write_csv(bundle,"tier1_hypothesis_survival.csv",state_survival); _write_csv(bundle,"tier1_pairwise_summary.csv",pairwise_summary); _write_csv(bundle,"tier1_event_diagnostics.csv",event_rows); _write_csv(bundle,"tier1_event_summary.csv",event_summary); _write_csv(bundle,"tier1_event_horizon_summary.csv",event_horizons); _write_csv(bundle,"tier1_event_condition_summary.csv",event_conditions); _write_csv(bundle,"tier1_breakout_opportunities.csv",breakout_opportunities); _write_csv(bundle,"tier1_breakout_opportunity_summary.csv",breakout_opportunity_summary); _write_csv(bundle,"tier1_role_aware_evidence.csv",evidence_matrix); _write_csv(bundle,"tier1_tactical_baseline_comparisons.csv",tactical_comparisons); _write_csv(bundle,"tier1_tactical_override_summary.csv",tactical_summary); _write_csv(bundle,"tier1_baseline_state_leaderboard.csv",baseline_leaderboard); _write_csv(bundle,"tier1_defensive_baseline_comparisons.csv",defensive_comparisons); _write_csv(bundle,"tier1_tactical_horizon_comparisons.csv",tactical_horizon_comparisons); _write_csv(bundle,"tier1_tactical_horizon_summary.csv",tactical_horizon_summary); _write_csv(bundle,"tier1_locked_tactical_validation.csv",locked_tactical_validation); _write_csv(bundle,"tier1_defensive_distinctness.csv",defensive_distinctness); _write_csv(bundle,"tier1_baseline_era_details.csv",baseline_era_details); _write_csv(bundle,"tier1_baseline_era_recurrence.csv",baseline_era_recurrence); _write_csv(bundle,"tier1_baseline_confirmation_sensitivity.csv",baseline_confirmation_sensitivity); _write_csv(bundle,"tier1_state_transition_timing.csv",state_transition_timing); _write_csv(bundle,"tier1_generation_candidate_map.csv",generation_candidate_map)

@@ -68,6 +68,37 @@ UNIVERSES = {
         "SPY", "SHY", "XLC", "XLY", "XLP", "XLE", "XLF", "XLV",
         "XLI", "XLB", "XLRE", "XLK", "XLU",
     ),
+    # One immutable market-state roster shared by every long-term cohort.
+    # All members predate the 2013 validation start, so state labels no longer
+    # change merely because a strategy family uses a different asset universe.
+    "ETF_LONG_TERM_STATE_CANONICAL": (
+        "SPY", "XLY", "XLP", "XLE", "XLF", "XLV", "XLI", "XLB", "XLK", "XLU",
+    ),
+    # Exactly 30 liquid ETFs spanning the principal allocation roles. This is
+    # a deployable watch roster under Alpaca Basic's current 30-symbol stream
+    # ceiling, but daily research may use larger offline universes.
+    "ETF_LONG_TERM_LIVE_30": (
+        "SPY", "QQQ", "IWM", "BIL", "SHY", "IEF", "TLT", "TIP", "GLD", "DBC",
+        "VNQ", "EFA", "EEM", "XLC", "XLY", "XLP", "XLE", "XLF", "XLV", "XLI",
+        "XLB", "XLRE", "XLK", "XLU", "MTUM", "QUAL", "VLUE", "USMV", "IWF", "IWD",
+    ),
+    # Research-only defensive opportunity set. Stable allocations are modeled
+    # with diversified ETFs rather than a single supposedly stable company,
+    # avoiding concentrated company and survivorship risk.
+    "ETF_LONG_TERM_DEFENSIVE_OPPORTUNITY": (
+        "SPY", "BIL", "SHY", "IEF", "TLT", "TIP", "GLD", "DBC",
+        "USMV", "VIG", "SPLV", "XLP", "XLV", "XLU",
+        "XLY", "XLE", "XLF", "XLI", "XLB", "XLK",
+    ),
+    # Offline/direct-comparison roster. It intentionally exceeds the live
+    # stream ceiling because historical daily acquisition is batched and does
+    # not require simultaneous WebSocket subscriptions.
+    "ETF_LONG_TERM_RESEARCH_EXPANDED": (
+        "SPY", "QQQ", "IWM", "BIL", "SHY", "IEF", "TLT", "TIP", "GLD", "DBC",
+        "VNQ", "EFA", "EEM", "XLC", "XLY", "XLP", "XLE", "XLF", "XLV", "XLI",
+        "XLB", "XLRE", "XLK", "XLU", "MTUM", "QUAL", "VLUE", "USMV", "IWF", "IWD",
+        "XBI", "XRT", "XHB", "XME", "XOP", "KRE", "SMH", "IYT", "VIG", "SPLV",
+    ),
     "ETF_TIER2_MULTI_SLEEVE": (
         "SPY", "SHY", "BIL", "IEF", "GLD",
         "XLC", "XLY", "XLP", "XLE", "XLF", "XLV", "XLI", "XLB", "XLRE", "XLK", "XLU",
@@ -102,6 +133,8 @@ ETF_METADATA = {
     "XME": "metals_mining_industry", "XOP": "oil_gas_industry",
     "KRE": "regional_banks_industry", "SMH": "semiconductors_industry",
     "IYT": "transportation_industry",
+    "TIP": "inflation_protected_treasury", "VIG": "dividend_growth_equity",
+    "SPLV": "low_volatility_equity",
 }
 
 SECTORS = {

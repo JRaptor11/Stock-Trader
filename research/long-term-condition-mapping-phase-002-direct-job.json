@@ -1,0 +1,59 @@
+{
+  "job_id": "long-term-condition-mapping-phase-002-direct-shared-window",
+  "engine": "tier1_etf_daily",
+  "bars_csv": "long_term_research_expanded_adjusted_daily_2011_current.csv",
+  "data_source": "Adjusted daily OHLCV; frozen direct market-state comparison",
+  "experiment": {
+    "hypothesis_id": "LONG_TERM_CONDITION_MAPPING_PHASE_002",
+    "trial_id": "direct-shared-window"
+  },
+  "research_evaluation": {
+    "cohort": "direct_all_strategy_condition_comparison",
+    "baseline_strategy": "SPY_BUY_HOLD",
+    "preserve_all_strategy_roles": true
+  },
+  "tier1_config": {
+    "initial_cash": 100000.0,
+    "universe_name": "ETF_LONG_TERM_RESEARCH_EXPANDED",
+    "market_state_universe_name": "ETF_LONG_TERM_STATE_CANONICAL",
+    "benchmark_symbol": "SPY",
+    "cash_proxy_symbol": "BIL",
+    "rebalance_frequency": "monthly",
+    "volatility_lookback_days": 60,
+    "volatility_target_annualized": 0.12,
+    "regime_high_volatility_annualized": 0.18,
+    "trend_lookback_days": 200,
+    "momentum_lookbacks_days": [63, 126, 252],
+    "sector_holdings": 3,
+    "cross_asset_holdings": 3,
+    "factor_holdings": 2,
+    "industry_holdings": 3,
+    "no_trade_band": 0.02,
+    "cost_ladder_bps": [1.0, 5.0, 10.0, 20.0],
+    "primary_cost_bps": 10.0,
+    "discovery_end_date": "2024-09-02",
+    "holdout_start_date": "2024-09-03",
+    "required_common_start_date": "2018-06-19",
+    "minimum_common_coverage_pct": 99.0,
+    "minimum_scored_sessions": 1500,
+    "rolling_window_sessions": 756,
+    "walk_forward_train_sessions": 756,
+    "walk_forward_test_sessions": 126,
+    "walk_forward_step_sessions": 126,
+    "strategy_names": [
+      "SPY_BUY_HOLD", "GLOBAL_EQUITY_STATIC", "STATIC_60_30_10",
+      "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE", "CROSS_ASSET_DUAL_MOMENTUM",
+      "DIVERSIFIED_TREND", "VOL_MANAGED_SPY", "INVERSE_VOLATILITY_BALANCED",
+      "STATIC_INFLATION_AWARE", "VALUE_QUALITY_STATIC", "MULTIFACTOR_STATIC",
+      "LOW_VOLATILITY_EQUITY", "INDUSTRY_ETF_MOMENTUM", "SECTOR_ETF_ROTATION",
+      "BIL_BUY_HOLD", "SHY_BUY_HOLD", "IEF_BUY_HOLD", "TLT_BUY_HOLD",
+      "TIP_BUY_HOLD", "GLD_BUY_HOLD", "VIG_BUY_HOLD", "SPLV_BUY_HOLD",
+      "QQQ_BUY_HOLD", "IWM_BUY_HOLD", "DBC_BUY_HOLD", "VNQ_BUY_HOLD",
+      "EFA_BUY_HOLD", "EEM_BUY_HOLD", "XLC_BUY_HOLD", "XLY_BUY_HOLD",
+      "XLP_BUY_HOLD", "XLE_BUY_HOLD", "XLF_BUY_HOLD", "XLV_BUY_HOLD",
+      "XLI_BUY_HOLD", "XLB_BUY_HOLD", "XLRE_BUY_HOLD", "XLK_BUY_HOLD",
+      "XLU_BUY_HOLD", "MTUM_BUY_HOLD", "QUAL_BUY_HOLD", "VLUE_BUY_HOLD",
+      "USMV_BUY_HOLD", "IWF_BUY_HOLD", "IWD_BUY_HOLD"
+    ]
+  }
+}
