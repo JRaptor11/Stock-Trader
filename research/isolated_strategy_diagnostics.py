@@ -440,11 +440,11 @@ def build_baseline_confirmation_sensitivity(
     return output
 
 
-def build_state_transition_timing(
+def iter_state_transition_timing(
     config, daily, conditions, benchmark_strategy="SPY_BUY_HOLD",
-    confirmation_windows=CONFIRMATION_WINDOWS,
+    confirmation_windows=CONFIRMATION_WINDOWS, progress_callback=None,
 ):
-    """Measure false raw transitions and performance after causal confirmation."""
+    """Yield transition diagnostics without retaining the large Cartesian product."""
     returns = _daily_returns(daily, config.primary_cost_bps)
     baselines = [name for name in config.strategy_names
                  if strategy_role(name) == "baseline_candidate"]
@@ -456,7 +456,9 @@ def build_state_transition_timing(
         if index == len(days) or raw[days[index]]["core_state"] != raw[days[start]]["core_state"]:
             runs.append((start, index - 1, raw[days[start]]["core_state"]))
             start = index
-    output = []
+    total = max(0, len(confirmation_windows) * max(0, len(runs) - 1)
+                * len(baselines) * len(HORIZONS))
+    completed = 0
     for confirmation in confirmation_windows:
         for run_index, (start, end, state) in enumerate(runs):
             if run_index == 0:
@@ -479,7 +481,7 @@ def build_state_transition_timing(
                                 / (1.0 + returns[benchmark_strategy][day]) for day in usable
                             ) - 1.0
                             end_day = usable[-1]
-                    output.append({
+                    yield {
                         "confirmation_sessions": confirmation,
                         "transition_id": f"RAW:{run_index:05d}",
                         "prior_core_state": prior_state, "proposed_core_state": state,
@@ -490,8 +492,26 @@ def build_state_transition_timing(
                         "horizon_sessions": horizon, "comparison_end_date": end_day,
                         "relative_wealth_vs_benchmark": relative,
                         "diagnostic_only": True,
-                    })
-    return output
+                    }
+                    completed += 1
+                    if progress_callback and (completed == total or completed % 5_000 == 0):
+                        progress_callback({
+                            "stage": "streaming_state_transition_timing",
+                            "stage_completed_rows": completed,
+                            "stage_total_rows": total,
+                            "stage_percent_complete": round(completed / total * 100, 2)
+                            if total else 100.0,
+                        })
+
+
+def build_state_transition_timing(
+    config, daily, conditions, benchmark_strategy="SPY_BUY_HOLD",
+    confirmation_windows=CONFIRMATION_WINDOWS,
+):
+    """Compatibility wrapper for callers that explicitly need an in-memory list."""
+    return list(iter_state_transition_timing(
+        config, daily, conditions, benchmark_strategy, confirmation_windows,
+    ))
 
 
 def build_generation_candidate_map(

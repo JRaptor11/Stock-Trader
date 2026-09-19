@@ -5,6 +5,7 @@ from research.isolated_strategy_diagnostics import (
     build_defensive_baseline_comparisons, build_defensive_distinctness,
     build_generation_candidate_map, build_locked_tactical_validation,
     build_state_transition_timing, build_tactical_horizon_comparisons,
+    iter_state_transition_timing,
 )
 
 
@@ -57,6 +58,21 @@ class IsolatedDiagnosticsTests(unittest.TestCase):
         bear=[row for row in rows if row["proposed_core_state"].startswith("BEAR")]
         self.assertTrue(bear)
         self.assertTrue(all(row["false_transition"] for row in bear))
+
+    def test_transition_timing_supports_incremental_streaming(self):
+        class BaselineConfig:
+            primary_cost_bps=10.0
+            strategy_names=("SPY_BUY_HOLD","CROSS_ASSET_DUAL_MOMENTUM")
+        daily,conditions=self._transition_fixture()
+        progress=[]
+        rows=iter_state_transition_timing(
+            BaselineConfig,daily,conditions,confirmation_windows=(1,),
+            progress_callback=progress.append,
+        )
+        self.assertFalse(isinstance(rows,list))
+        materialized=list(rows)
+        self.assertTrue(materialized)
+        self.assertEqual(100.0,progress[-1]["stage_percent_complete"])
 
     def test_defensive_comparison_is_relative_to_displaced_baseline(self):
         rows = []
