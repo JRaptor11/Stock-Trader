@@ -8,7 +8,7 @@ import statistics
 from collections import defaultdict
 from collections.abc import Callable
 
-from research.market_state_episodes import market_state_scorecards
+from research.market_state_episodes import HIERARCHY_LEVELS, market_state_scorecards
 
 
 def _mean_test(values: list[float]) -> float | None:
@@ -179,6 +179,8 @@ def state_validation_outputs(
     benchmark_strategy: str = "SPY_BUY_HOLD", fold_sessions: int = 252,
     progress_callback=None,
     daily_for_cost: Callable[[float], list[dict]] | None = None,
+    state_projection: str = "detailed",
+    include_transition_diagnostics: bool = True,
 ) -> tuple[list[dict], list[dict], list[dict], list[dict], list[dict], list[dict], list[dict], list[dict]]:
     """Build period, episode-inference, transition, and chronological-fold evidence."""
     periods = [("full", None, None)]
@@ -189,7 +191,7 @@ def state_validation_outputs(
     for period_number, (period, start, end) in enumerate(periods, 1):
         _, _, states, episodes = market_state_scorecards(
             daily, conditions, primary_cost_bps, benchmark_strategy,
-            period_start=start, period_end=end,
+            period_start=start, period_end=end, state_projection=state_projection,
         )
         period_rows.extend({"period": period, **row} for row in states)
         episode_rows.extend({"period": period, **row} for row in episodes)
@@ -239,7 +241,7 @@ def state_validation_outputs(
         for period, start, end in periods:
             _, _, states, _ = market_state_scorecards(
                 cost_daily, conditions, cost, benchmark_strategy,
-                period_start=start, period_end=end,
+                period_start=start, period_end=end, state_projection=state_projection,
             )
             for row in states:
                 cost_rows.append({"period": period, **row,
@@ -256,28 +258,32 @@ def state_validation_outputs(
 
     # Stable and transition sessions are evaluated separately using the causal
     # state_changed flag. Daily returns are reconstructed before filtering.
-    labels, _, _, _ = market_state_scorecards(daily, conditions, primary_cost_bps, benchmark_strategy)
+    labels, _, _, _ = market_state_scorecards(
+        daily, conditions, primary_cost_bps, benchmark_strategy,
+        state_projection=state_projection,
+    )
     labels_by_date = {row["date"]: row for row in labels}
     selected = sorted((row for row in daily if float(row["cost_bps"]) == float(primary_cost_bps)),
                       key=lambda row: (row["strategy"], row["date"]))
-    transition_groups, prior, daily_returns = defaultdict(list), {}, {}
-    for row in selected:
-        strategy, equity = row["strategy"], float(row["equity"])
-        previous = prior.get(strategy); prior[strategy] = equity
-        label = labels_by_date.get(row["date"])
-        if previous and label:
-            daily_returns[(strategy, row["date"])] = equity / previous - 1.0
-            in_transition = bool(label["state_changed"] or label["pending_core_state"])
-            kind = "transition_state_session" if in_transition else "stable_state_session"
-            transition_groups[(strategy, kind)].append(daily_returns[(strategy, row["date"])])
-    transition_rows = []
-    for (strategy, kind), returns in sorted(transition_groups.items()):
-        transition_rows.append({
-            "strategy": strategy, "session_type": kind, "sessions": len(returns),
-            "compounded_return": math.prod(1 + value for value in returns) - 1,
-            "mean_daily_return": statistics.fmean(returns),
-            "daily_win_rate": sum(value > 0 for value in returns) / len(returns),
-        })
+    daily_returns, transition_rows = {}, []
+    if include_transition_diagnostics:
+        transition_groups, prior = defaultdict(list), {}
+        for row in selected:
+            strategy, equity = row["strategy"], float(row["equity"])
+            previous = prior.get(strategy); prior[strategy] = equity
+            label = labels_by_date.get(row["date"])
+            if previous and label:
+                daily_returns[(strategy, row["date"])] = equity / previous - 1.0
+                in_transition = bool(label["state_changed"] or label["pending_core_state"])
+                kind = "transition_state_session" if in_transition else "stable_state_session"
+                transition_groups[(strategy, kind)].append(daily_returns[(strategy, row["date"])])
+        for (strategy, kind), returns in sorted(transition_groups.items()):
+            transition_rows.append({
+                "strategy": strategy, "session_type": kind, "sessions": len(returns),
+                "compounded_return": math.prod(1 + value for value in returns) - 1,
+                "mean_daily_return": statistics.fmean(returns),
+                "daily_win_rate": sum(value > 0 for value in returns) / len(returns),
+            })
 
     dates = sorted({row["date"] for row in selected if row["date"] in labels_by_date})
     fold_rows = []
@@ -290,6 +296,7 @@ def state_validation_outputs(
             daily, conditions, primary_cost_bps, benchmark_strategy,
             minimum_state_sessions=10, minimum_state_episodes=2,
             period_start=fold_dates[0], period_end=fold_dates[-1],
+            state_projection=state_projection,
         )
         fold_rows.extend({"fold": fold, "fold_start": fold_dates[0], "fold_end": fold_dates[-1], **row}
                          for row in states)
@@ -299,9 +306,9 @@ def state_validation_outputs(
                            "stage_completed_rows": len(fold_rows),
                            "stage_total_rows": len(fold_rows), "stage_percent_complete": 100.0})
     strategies = sorted({row["strategy"] for row in selected})
-    transition_horizons = _transition_horizons(
+    transition_horizons = (_transition_horizons(
         daily_returns, labels_by_date, strategies, benchmark_strategy,
-    )
+    ) if include_transition_diagnostics else [])
     survival = _survival_table(
         period_rows, inference, cost_rows, recurrence, benchmark_strategy,
     ) if holdout_start else []
@@ -309,3 +316,37 @@ def state_validation_outputs(
         progress_callback({"stage": "market_state_validation_complete", "stage_percent_complete": 100.0})
     return (period_rows, inference, cost_rows, transition_rows, fold_rows,
             recurrence, transition_horizons, survival)
+
+
+def hierarchical_state_validation_outputs(
+    daily: list[dict], conditions: dict[str, dict], cost_ladder_bps: tuple[float, ...],
+    primary_cost_bps: float, discovery_end: str | None, holdout_start: str | None,
+    benchmark_strategy: str = "SPY_BUY_HOLD", fold_sessions: int = 252,
+    progress_callback=None,
+    daily_for_cost: Callable[[float], list[dict]] | None = None,
+) -> tuple[list[dict], list[dict], list[dict], list[dict], list[dict], list[dict]]:
+    """Build equivalent validation evidence at every non-detailed parent level."""
+    combined = [[] for _ in range(6)]
+    for level_number, level in enumerate(HIERARCHY_LEVELS, 1):
+        outputs = state_validation_outputs(
+            daily, conditions, cost_ladder_bps, primary_cost_bps,
+            discovery_end, holdout_start, benchmark_strategy, fold_sessions,
+            daily_for_cost=daily_for_cost, state_projection=level,
+            include_transition_diagnostics=False,
+        )
+        selected = (outputs[0], outputs[1], outputs[2], outputs[4], outputs[5], outputs[7])
+        for target, rows in zip(combined, selected):
+            target.extend(
+                {"state_level": level, "state_key": row["core_state"], **row}
+                for row in rows
+            )
+        if progress_callback:
+            progress_callback({
+                "stage": "hierarchical_market_state_validation",
+                "stage_completed_rows": level_number,
+                "stage_total_rows": len(HIERARCHY_LEVELS),
+                "stage_percent_complete": round(
+                    level_number / len(HIERARCHY_LEVELS) * 100, 2
+                ),
+            })
+    return tuple(combined)

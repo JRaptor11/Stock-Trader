@@ -1,6 +1,9 @@
 import unittest
 
-from research.market_state_episodes import causal_state_labels, market_state_scorecards
+from research.market_state_episodes import (
+    causal_state_labels, market_state_scorecards, project_state_labels,
+    state_episodes,
+)
 
 
 class MarketStateEpisodeTests(unittest.TestCase):
@@ -62,6 +65,27 @@ class MarketStateEpisodeTests(unittest.TestCase):
         pooled = [row for row in attribution if row.get("strategy") == "CANDIDATE"]
         self.assertEqual(1, len(pooled))
         self.assertGreater(pooled[0]["strategy_compounded_return"], 0)
+
+    def test_parent_projection_rebuilds_episodes_without_losing_details(self):
+        labels = causal_state_labels(self._conditions(), confirmation_sessions=1)
+        labels["2026-01-03"] = {
+            **labels["2026-01-03"],
+            "breadth_state": "NARROW",
+            "core_state": "BULL_ACCELERATING__LOW_VOL__NARROW_BREADTH",
+        }
+        parent = project_state_labels(labels, "trend_volatility")
+        episodes, _ = state_episodes(parent)
+        self.assertEqual(1, len(episodes))
+        self.assertEqual("BULL_ACCELERATING__LOW_VOL", episodes[0]["core_state"])
+        self.assertEqual("ALL", parent["2026-01-03"]["breadth_state"])
+        self.assertEqual(
+            "BULL_ACCELERATING__LOW_VOL__NARROW_BREADTH",
+            parent["2026-01-03"]["detailed_core_state"],
+        )
+
+    def test_unknown_parent_projection_fails_closed(self):
+        with self.assertRaisesRegex(ValueError, "unknown state projection"):
+            project_state_labels(causal_state_labels(self._conditions()), "invented")
 
 
 if __name__ == "__main__":

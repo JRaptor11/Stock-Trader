@@ -10,6 +10,7 @@ from research.universes import resolve_universe
 ROOT = Path(__file__).resolve().parents[1] / "research"
 JOBS = tuple(sorted(ROOT.glob("long-term-validation-phase-001-*-job.json")))
 CANONICAL_JOBS = tuple(sorted(ROOT.glob("long-term-canonical-state-validation-003-*-job.json")))
+HIERARCHY_JOBS = tuple(sorted(ROOT.glob("long-term-hierarchical-validation-004-*-job.json")))
 
 
 class LongTermValidationPhase001Tests(unittest.TestCase):
@@ -93,6 +94,33 @@ class LongTermValidationPhase001Tests(unittest.TestCase):
                     resolve_universe(config.universe_name)
                 )
             )
+
+    def test_phase_004_is_locked_hierarchical_non_routing_shortlist(self):
+        expected = {
+            "SPY_BUY_HOLD", "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+            "STATIC_60_30_10", "STATIC_INFLATION_AWARE",
+            "VALUE_QUALITY_STATIC", "MULTIFACTOR_STATIC",
+            "LOW_VOLATILITY_EQUITY", "INDUSTRY_ETF_MOMENTUM",
+            "SECTOR_ETF_ROTATION",
+        }
+        seen = set()
+        self.assertEqual(4, len(HIERARCHY_JOBS))
+        for path in HIERARCHY_JOBS:
+            job = json.loads(path.read_text(encoding="utf-8"))
+            declaration = validate_experiment_declaration(job["experiment"])
+            self.assertEqual(
+                "LONG_TERM_HIERARCHICAL_VALIDATION_004",
+                declaration["hypothesis_id"],
+            )
+            self.assertFalse(job["research_evaluation"]["router"])
+            config = config_from_job(job)
+            self.assertTrue(config.hierarchical_state_validation)
+            self.assertEqual(
+                "ETF_LONG_TERM_STATE_CANONICAL",
+                config.market_state_universe_name,
+            )
+            seen.update(config.strategy_names)
+        self.assertEqual(expected, seen)
 
 
 if __name__ == "__main__":

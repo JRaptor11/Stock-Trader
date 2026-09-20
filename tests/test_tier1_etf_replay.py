@@ -251,7 +251,7 @@ class Tier1ETFReplayTests(unittest.TestCase):
     def test_tournament_writes_all_costs_strategies_and_gates(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory); bars=root/"bars.csv"; archive=root/"result.zip"; write_bars(bars)
-            job={"engine":"tier1_etf_daily","experiment":{"hypothesis_id":"ETF_DUAL_MOMENTUM","trial_id":"trial-001"},"tier1_config":{"cost_ladder_bps":[1,10],"primary_cost_bps":10,"discovery_end_date":"2024-09-02","holdout_start_date":"2024-09-03"}}
+            job={"engine":"tier1_etf_daily","experiment":{"hypothesis_id":"ETF_DUAL_MOMENTUM","trial_id":"trial-001"},"tier1_config":{"cost_ladder_bps":[1,10],"primary_cost_bps":10,"discovery_end_date":"2024-09-02","holdout_start_date":"2024-09-03","hierarchical_state_validation":True}}
             run_tier1_job(job,bars,archive,"abc123")
             with zipfile.ZipFile(archive) as bundle:
                 names=set(bundle.namelist()); manifest=json.loads(bundle.read("tier1_manifest.json")); summary=json.loads(bundle.read("tier1_summary.json"))
@@ -274,6 +274,12 @@ class Tier1ETFReplayTests(unittest.TestCase):
                 self.assertIn("tier1_market_state_fold_recurrence.csv",names)
                 self.assertIn("tier1_market_state_transition_horizons.csv",names)
                 self.assertIn("tier1_hypothesis_survival.csv",names)
+                self.assertIn("tier1_market_state_hierarchy_period_scorecard.csv",names)
+                self.assertIn("tier1_market_state_hierarchy_inference.csv",names)
+                self.assertIn("tier1_market_state_hierarchy_cost_sensitivity.csv",names)
+                self.assertIn("tier1_market_state_hierarchy_chronological_folds.csv",names)
+                self.assertIn("tier1_market_state_hierarchy_fold_recurrence.csv",names)
+                self.assertIn("tier1_market_state_hierarchy_survival.csv",names)
                 self.assertIn("tier1_pairwise_summary.csv",names)
                 self.assertIn("tier1_event_diagnostics.csv",names)
                 self.assertIn("tier1_event_summary.csv",names)
@@ -289,6 +295,9 @@ class Tier1ETFReplayTests(unittest.TestCase):
                 self.assertIn("warm-up excluded",manifest["execution_semantics"])
                 self.assertIn("Benjamini-Hochberg",manifest["market_state_validation"]["multiplicity"])
                 self.assertEqual("none",manifest["market_state_validation"]["routing_effect"])
+                self.assertTrue(
+                    manifest["market_state_validation"]["hierarchical_evidence"]["enabled"]
+                )
                 self.assertEqual(253,manifest["coverage"]["warmup_sessions"])
                 self.assertEqual(set(LEGACY_STRATEGIES),{row["strategy"] for row in summary["scorecards"]})
                 self.assertEqual({"1.0","10.0"},{row["cost_bps"] for row in daily_rows})

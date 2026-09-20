@@ -2,7 +2,8 @@ import unittest
 
 from research.market_state_validation import (
     _benjamini_hochberg, _episode_bootstrap, _fold_recurrence,
-    _survival_table, state_validation_outputs,
+    _survival_table, hierarchical_state_validation_outputs,
+    state_validation_outputs,
 )
 
 
@@ -100,6 +101,32 @@ class MarketStateValidationTests(unittest.TestCase):
         self.assertEqual("COST_ROBUST_AWAITING_FORWARD_VALIDATION", result["status"])
         self.assertFalse(result["routing_eligible"])
         self.assertEqual(0, result["forward_observations"])
+
+    def test_hierarchical_outputs_preserve_levels_and_never_route(self):
+        daily, conditions = self._fixture()
+        progress = []
+        periods, inference, costs, folds, recurrence, survival = (
+            hierarchical_state_validation_outputs(
+                daily, conditions, (1.0, 10.0), 10.0,
+                "2026-01-06", "2026-01-07", fold_sessions=6,
+                progress_callback=progress.append,
+            )
+        )
+        levels = {"trend_volatility", "trend_breadth", "trend"}
+        self.assertEqual(levels, {row["state_level"] for row in periods})
+        self.assertTrue(all(row["state_key"] == row["core_state"] for row in periods))
+        self.assertTrue(inference)
+        self.assertEqual({1.0, 10.0}, {row["cost_bps"] for row in costs})
+        self.assertEqual([], folds)
+        self.assertEqual([], recurrence)
+        self.assertTrue(survival)
+        self.assertTrue(all(not row["routing_eligible"] for row in survival))
+        hierarchy_progress = [
+            row for row in progress
+            if row["stage"] == "hierarchical_market_state_validation"
+        ]
+        self.assertEqual(3, len(hierarchy_progress))
+        self.assertEqual(100.0, hierarchy_progress[-1]["stage_percent_complete"])
 
 
 if __name__ == "__main__":

@@ -1,0 +1,41 @@
+{
+  "study_id": "LONG_TERM_HIERARCHICAL_VALIDATION_004",
+  "status": "ready_for_historical_validation",
+  "parent_study": "LONG_TERM_CANONICAL_STATE_VALIDATION_003",
+  "generation_015_status": "paused_and_unchanged",
+  "purpose": "Test whether the predeclared Phase 003 long-term candidates remain useful when detailed market-state evidence is corroborated by larger causal parent-state samples.",
+  "design": {
+    "router": false,
+    "tactical_overrides": false,
+    "parameter_retuning": false,
+    "promotion": false,
+    "hierarchical_state_validation": true,
+    "state_levels": ["detailed", "trend_volatility", "trend_breadth", "trend"],
+    "canonical_market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+    "dataset": "general_daily_concepts_yahoo_2013_2026-09-03.csv",
+    "primary_cost_bps": 10.0,
+    "cost_ladder_bps": [1.0, 5.0, 10.0, 20.0],
+    "minimum_state_sessions": 30,
+    "minimum_state_episodes": 5,
+    "multiplicity_rule": "Benjamini-Hochberg correction is applied independently within each period and hierarchy level.",
+    "selection_rule": "The strategy shortlist was frozen from Phase 003 before Phase 004 results existed."
+  },
+  "locked_shortlist": {
+    "baseline_and_risk_control": [
+      "SPY_BUY_HOLD",
+      "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+      "STATIC_60_30_10",
+      "STATIC_INFLATION_AWARE"
+    ],
+    "factor_equity": [
+      "SPY_BUY_HOLD",
+      "VALUE_QUALITY_STATIC",
+      "MULTIFACTOR_STATIC",
+      "LOW_VOLATILITY_EQUITY"
+    ],
+    "conditional_industry": ["SPY_BUY_HOLD", "INDUSTRY_ETF_MOMENTUM"],
+    "conditional_sector": ["SPY_BUY_HOLD", "SECTOR_ETF_ROTATION"]
+  },
+  "interpretation_rule": "Parent-state support may corroborate a detailed result but never authorizes strategy switching or live allocation.",
+  "promotion_effect": "none"
+}

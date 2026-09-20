@@ -8,7 +8,7 @@ from collections import defaultdict
 
 
 STATE_DEFINITION = {
-    "schema_version": 1,
+    "schema_version": 2,
     "causality": "The label for session t uses only market data available through session t-1.",
     "core_state": "trend_state + volatility_state + breadth_state",
     "trend_state": {
@@ -40,8 +40,17 @@ STATE_DEFINITION = {
     "episode_rule": "A new episode starts after a proposed core state persists for three consecutive sessions. Raw labels remain recorded. Confirmation uses no future observations and prior sessions are not relabeled.",
     "state_change_confirmation_sessions": 3,
     "minimum_evidence": {"pooled_sessions": 30, "distinct_episodes": 5},
+    "hierarchy": {
+        "detailed": "trend_state + volatility_state + breadth_state",
+        "trend_volatility": "trend_state + volatility_state",
+        "trend_breadth": "trend_state + breadth_state",
+        "trend": "trend_state",
+        "episode_rule": "Parent episodes are rebuilt after projecting the confirmed causal detailed labels, so adjacent detailed states with the same parent remain one parent episode.",
+    },
     "interpretation": "State results are descriptive research evidence and never authorize strategy switching or live allocation.",
 }
+
+HIERARCHY_LEVELS = ("trend_volatility", "trend_breadth", "trend")
 
 
 def _compound(values: list[float]) -> float:
@@ -191,14 +200,55 @@ def state_episodes(labels: dict[str, dict]) -> tuple[list[dict], dict[str, str]]
     return episodes, date_to_episode
 
 
+def project_state_labels(labels: dict[str, dict], state_projection: str) -> dict[str, dict]:
+    """Project confirmed causal detailed labels into a coarser state hierarchy."""
+    if state_projection == "detailed":
+        return labels
+    if state_projection not in HIERARCHY_LEVELS:
+        raise ValueError(f"unknown state projection: {state_projection}")
+    projected = {}
+    prior_state = None
+    for day, source in sorted(labels.items()):
+        trend = source["trend_state"]
+        volatility = source["volatility_state"]
+        breadth = source["breadth_state"]
+        if state_projection == "trend_volatility":
+            state = f"{trend}__{volatility}_VOL"
+        elif state_projection == "trend_breadth":
+            state = f"{trend}__{breadth}_BREADTH"
+        else:
+            state = trend
+        projected[day] = {
+            **source,
+            "detailed_core_state": source["core_state"],
+            "detailed_trend_state": trend,
+            "detailed_volatility_state": volatility,
+            "detailed_breadth_state": breadth,
+            "core_state": state,
+            "volatility_state": (
+                volatility if state_projection == "trend_volatility" else "ALL"
+            ),
+            "breadth_state": (
+                breadth if state_projection == "trend_breadth" else "ALL"
+            ),
+            "state_level": state_projection,
+            "state_changed": prior_state is not None and state != prior_state,
+            "pending_core_state": None,
+            "pending_confirmation_sessions": 0,
+        }
+        prior_state = state
+    return projected
+
+
 def market_state_scorecards(
     daily: list[dict], conditions: dict[str, dict], primary_cost_bps: float,
     benchmark_strategy: str = "SPY_BUY_HOLD", minimum_state_sessions: int = 30,
     minimum_state_episodes: int = 5,
     period_start: str | None = None, period_end: str | None = None,
+    state_projection: str = "detailed",
 ) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
     """Attribute every strategy to pooled state sessions and repeated episodes."""
-    labels = causal_state_labels(conditions)
+    labels = project_state_labels(causal_state_labels(conditions), state_projection)
     episodes, episode_map = state_episodes(labels)
     selected = sorted(
         (row for row in daily if float(row["cost_bps"]) == float(primary_cost_bps)),
