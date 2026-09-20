@@ -123,6 +123,12 @@ HYPOTHESES = {
         "data_frequency": "1d", "turnover_expectation": "low_to_medium",
         "point_in_time_equities_required": False,
     },
+    "LONG_TERM_CANONICAL_STATE_VALIDATION_003": {
+        "tier": 1, "status": "active_research",
+        "mechanism": "validate frozen long-term strategy families over their longest compatible histories while holding the causal market-state universe constant across every cohort",
+        "data_frequency": "1d", "turnover_expectation": "low_to_medium",
+        "point_in_time_equities_required": False,
+    },
     "CURRENT_INTRADAY_FAMILY": {
         "tier": "legacy_challenger", "status": "active_challenger",
         "mechanism": "intraday cross-sectional price ranking and target rotation",

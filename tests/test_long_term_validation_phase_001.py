@@ -9,6 +9,7 @@ from research.universes import resolve_universe
 
 ROOT = Path(__file__).resolve().parents[1] / "research"
 JOBS = tuple(sorted(ROOT.glob("long-term-validation-phase-001-*-job.json")))
+CANONICAL_JOBS = tuple(sorted(ROOT.glob("long-term-canonical-state-validation-003-*-job.json")))
 
 
 class LongTermValidationPhase001Tests(unittest.TestCase):
@@ -55,6 +56,43 @@ class LongTermValidationPhase001Tests(unittest.TestCase):
         }
         self.assertTrue(live_symbols.issubset(benchmark_symbols))
         self.assertTrue({"VIG", "SPLV"}.issubset(benchmark_symbols))
+
+    def test_phase_003_preserves_phase_001_families_with_canonical_states(self):
+        phase_001 = {}
+        for path in JOBS:
+            job = json.loads(path.read_text(encoding="utf-8"))
+            phase_001[job["research_evaluation"]["cohort"]] = config_from_job(job)
+
+        self.assertEqual(4, len(CANONICAL_JOBS))
+        self.assertEqual(set(phase_001), {
+            "cross_asset_and_strategic_allocation", "factor_equity",
+            "industry_momentum", "sector_momentum",
+        })
+        for path in CANONICAL_JOBS:
+            job = json.loads(path.read_text(encoding="utf-8"))
+            declaration = validate_experiment_declaration(job["experiment"])
+            self.assertEqual(
+                "LONG_TERM_CANONICAL_STATE_VALIDATION_003",
+                declaration["hypothesis_id"],
+            )
+            config = config_from_job(job)
+            cohort = job["research_evaluation"]["cohort"]
+            original = phase_001[cohort]
+            self.assertEqual(original.universe_name, config.universe_name)
+            self.assertEqual(original.strategy_names, config.strategy_names)
+            self.assertEqual(
+                original.required_common_start_date,
+                config.required_common_start_date,
+            )
+            self.assertEqual(
+                "ETF_LONG_TERM_STATE_CANONICAL",
+                config.market_state_universe_name,
+            )
+            self.assertTrue(
+                set(resolve_universe(config.market_state_universe_name)).issubset(
+                    resolve_universe(config.universe_name)
+                )
+            )
 
 
 if __name__ == "__main__":

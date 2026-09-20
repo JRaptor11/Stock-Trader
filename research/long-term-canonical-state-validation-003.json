@@ -1,0 +1,39 @@
+{
+  "study_id": "LONG_TERM_CANONICAL_STATE_VALIDATION_003",
+  "status": "ready_for_historical_validation",
+  "parent_studies": [
+    "LONG_TERM_VALIDATION_PHASE_001",
+    "LONG_TERM_CONDITION_MAPPING_PHASE_002"
+  ],
+  "generation_015_status": "paused_and_unchanged",
+  "purpose": "Compare isolated long-term strategy families within identical causal market states without sacrificing the longer history available to older ETF cohorts.",
+  "design": {
+    "router": false,
+    "tactical_overrides": false,
+    "parameter_retuning": false,
+    "promotion": false,
+    "canonical_market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+    "dataset": "general_daily_concepts_yahoo_2013_2026-09-03.csv",
+    "cohorts": [
+      "cross_asset_and_strategic_allocation",
+      "factor_equity",
+      "industry_momentum",
+      "sector_momentum"
+    ],
+    "rolling_window_sessions": 756,
+    "walk_forward_train_sessions": 756,
+    "walk_forward_test_sessions": 126,
+    "walk_forward_step_sessions": 126,
+    "primary_cost_bps": 10.0,
+    "cost_ladder_bps": [1.0, 5.0, 10.0, 20.0],
+    "minimum_state_sessions": 30,
+    "minimum_state_episodes": 5,
+    "comparison_rule": "Every cohort uses the same canonical causal state label for a given session. Strategies remain isolated and no result authorizes routing, tuning, promotion, or trading."
+  },
+  "expected_information_gain": [
+    "Separate strategy quality from differences in state-label construction.",
+    "Extend cross-asset, factor, and industry evidence back to 2013 while retaining synchronized state definitions.",
+    "Measure return, drawdown, episode recurrence, chronological recurrence, and cost robustness by long-term market state."
+  ],
+  "promotion_effect": "none"
+}
