@@ -204,64 +204,79 @@ def market_state_scorecards(
         (row for row in daily if float(row["cost_bps"]) == float(primary_cost_bps)),
         key=lambda row: (row["strategy"], row["date"]),
     )
-    observations = []
+    # The former implementation materialized one expanded dictionary per
+    # strategy-session, copying every state-label field on every call. State
+    # validation invokes this function many times and those temporary mappings
+    # were the remaining Render OOM peak. Build the benchmark once, then retain
+    # only the numeric vectors each scorecard actually needs.
+    benchmark = {}
+    prior_benchmark = None
+    for row in selected:
+        if row["strategy"] != benchmark_strategy:
+            continue
+        equity = float(row["equity"])
+        prior = prior_benchmark
+        prior_benchmark = equity
+        in_period = ((period_start is None or row["date"] >= period_start)
+                     and (period_end is None or row["date"] <= period_end))
+        if prior and in_period and row["date"] in labels:
+            benchmark[row["date"]] = equity / prior - 1.0
+
+    episode_groups = defaultdict(list)
+    state_groups = defaultdict(list)
+    state_first_label = {}
+    observed_dates = set()
     prior_equity = {}
     for row in selected:
         strategy = row["strategy"]
         equity = float(row["equity"])
         prior = prior_equity.get(strategy)
         prior_equity[strategy] = equity
-        in_period = ((period_start is None or row["date"] >= period_start)
-                     and (period_end is None or row["date"] <= period_end))
-        if prior and in_period and row["date"] in labels:
-            observations.append({
-                "strategy": strategy, "date": row["date"],
-                "return": equity / prior - 1.0,
-                "episode_id": episode_map[row["date"]], **labels[row["date"]],
-            })
-    benchmark = {
-        row["date"]: row["return"] for row in observations
-        if row["strategy"] == benchmark_strategy
-    }
-    episode_groups = defaultdict(list)
-    for row in observations:
-        episode_groups[(row["strategy"], row["core_state"], row["episode_id"])].append(row)
+        day = row["date"]
+        in_period = ((period_start is None or day >= period_start)
+                     and (period_end is None or day <= period_end))
+        label = labels.get(day)
+        if not prior or not in_period or label is None or day not in benchmark:
+            continue
+        value = equity / prior - 1.0
+        key = (strategy, label["core_state"])
+        state_groups[key].append((value, benchmark[day]))
+        state_first_label.setdefault(key, label)
+        episode_groups[(strategy, label["core_state"], episode_map[day])].append(
+            (day, value, benchmark[day])
+        )
+        observed_dates.add(day)
+
     episode_rows = []
     for (strategy, state, episode_id), rows in sorted(episode_groups.items()):
-        returns = [row["return"] for row in rows]
-        benchmark_returns = [benchmark[row["date"]] for row in rows if row["date"] in benchmark]
-        if len(benchmark_returns) != len(returns):
-            continue
+        returns = [row[1] for row in rows]
+        benchmark_returns = [row[2] for row in rows]
         strategy_return, spy_return = _compound(returns), _compound(benchmark_returns)
         episode_rows.append({
             "strategy": strategy, "core_state": state, "episode_id": episode_id,
-            "start_date": rows[0]["date"], "end_date": rows[-1]["date"],
+            "start_date": rows[0][0], "end_date": rows[-1][0],
             "sessions": len(rows), "strategy_return": strategy_return,
             "spy_return": spy_return,
             "excess_return_vs_spy": (1.0 + strategy_return) / (1.0 + spy_return) - 1.0,
             "maximum_drawdown": _maximum_drawdown(returns),
         })
-    state_groups = defaultdict(list)
-    for row in observations:
-        state_groups[(row["strategy"], row["core_state"])].append(row)
     episode_lookup = defaultdict(list)
     for row in episode_rows:
         episode_lookup[(row["strategy"], row["core_state"])].append(row)
-    total_sessions = len({row["date"] for row in observations})
+    total_sessions = len(observed_dates)
     state_rows = []
     for (strategy, state), rows in sorted(state_groups.items()):
-        returns = [row["return"] for row in rows]
-        benchmark_returns = [benchmark[row["date"]] for row in rows if row["date"] in benchmark]
-        if len(benchmark_returns) != len(returns):
-            continue
+        returns = [row[0] for row in rows]
+        benchmark_returns = [row[1] for row in rows]
         strategy_return, spy_return = _compound(returns), _compound(benchmark_returns)
         occurrences = episode_lookup[(strategy, state)]
         occurrence_returns = [row["strategy_return"] for row in occurrences]
+        first_label = state_first_label[(strategy, state)]
         state_rows.append({
             "strategy": strategy, "core_state": state,
-            "trend_state": rows[0]["trend_state"],
-            "volatility_state": rows[0]["volatility_state"],
-            "breadth_state": rows[0]["breadth_state"],
+            "trend_state": first_label["trend_state"],
+            "volatility_state": first_label["volatility_state"],
+            "breadth_state": first_label["breadth_state"],
             "cost_bps": primary_cost_bps, "sessions": len(rows),
             "occupancy_pct": len(rows) / total_sessions if total_sessions else None,
             "episodes": len(occurrences),
