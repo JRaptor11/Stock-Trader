@@ -205,6 +205,25 @@ class ResearchAppTests(unittest.TestCase):
                 runtime.initialize()
         runtime.active_job_id = None
 
+    def test_shadow_endpoint_is_authenticated_and_broker_free(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = {"SERVICE_MODE": "historical_research",
+                   "BROKER_EXECUTION_ENABLED": "false",
+                   "RESEARCH_API_TOKEN": self.token,
+                   "RESEARCH_DATA_DIR": str(root / "data"),
+                   "RESEARCH_JOB_DIR": str(root / "jobs"),
+                   "RESEARCH_RESULTS_DIR": str(root / "results")}
+            with patch.dict(os.environ, env, clear=False), TestClient(app) as client:
+                self.assertEqual(401, client.get("/api/shadow/status").status_code)
+                headers = {"Authorization": f"Bearer {self.token}"}
+                status_response = client.get("/api/shadow/status", headers=headers)
+                self.assertEqual(200, status_response.status_code)
+                self.assertFalse(status_response.json()["broker_orders_enabled"])
+                bad = client.post("/api/shadow/sessions", headers=headers, json={})
+                self.assertEqual(400, bad.status_code)
+            runtime.shadow_coordinator = None
+
     def test_supersede_retires_nonrunning_job_and_preserves_audit_status(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

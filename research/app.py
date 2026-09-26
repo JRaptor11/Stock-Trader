@@ -28,6 +28,7 @@ from research.job_queue import (
     retry_delay_seconds,
 )
 from research.runtime_io import cgroup_memory_snapshot, drop_file_cache, write_json_atomic
+from research.prospective_shadow_coordinator import ProspectiveShadowCoordinator
 
 
 PROCESS_STARTED_AT = datetime.now(timezone.utc).isoformat()
@@ -63,6 +64,7 @@ class ResearchRuntime:
         self.startup_duration_seconds: float | None = None
         self.coordinator_ready = False
         self.restore_error: str | None = None
+        self.shadow_coordinator = None
 
     def initialize(self) -> None:
         validate_service_startup(ServiceMode.HISTORICAL_RESEARCH)
@@ -91,6 +93,7 @@ class ResearchRuntime:
         self._health_egress_cache = None
         self.coordinator_ready = False
         self.restore_error = None
+        self.shadow_coordinator = None
         if len(self.api_token) < 24:
             raise RuntimeError("RESEARCH_API_TOKEN must contain at least 24 characters")
         for path in (self.data_root, self.job_root, self.results_root):
@@ -289,6 +292,34 @@ def runtime_diagnostics() -> dict:
         "r2_egress": _health_egress_usage(),
         **cgroup_memory_snapshot(),
     }
+
+
+def _shadow_coordinator() -> ProspectiveShadowCoordinator:
+    if runtime.shadow_coordinator is None:
+        runtime.shadow_coordinator = ProspectiveShadowCoordinator(
+            runtime.results_root / "prospective-shadow", runtime.store
+        )
+    return runtime.shadow_coordinator
+
+
+@app.get("/api/shadow/status", dependencies=[Depends(require_token), Depends(require_coordinator_ready)])
+def prospective_shadow_status() -> dict:
+    return _shadow_coordinator().status()
+
+
+@app.post("/api/shadow/sessions", dependencies=[Depends(require_token), Depends(require_coordinator_ready)])
+def process_prospective_shadow_session(payload: dict) -> dict:
+    required = {"session", "next_session", "source_observed_at", "code_revision", "bars"}
+    missing = sorted(required.difference(payload))
+    if missing:
+        raise HTTPException(status_code=400, detail=f"missing shadow fields: {missing}")
+    bars = payload.get("bars")
+    if not isinstance(bars, dict) or not bars or len(bars) > 50:
+        raise HTTPException(status_code=400, detail="shadow bars must contain 1-50 symbols")
+    try:
+        return _shadow_coordinator().process_session(payload)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _deprioritize_worker(process: subprocess.Popen) -> None:
