@@ -152,15 +152,19 @@ class ProspectiveShadowTests(unittest.TestCase):
         folder = Path(".test-prospective-shadow") / uuid.uuid4().hex
         folder.mkdir(parents=True); store = Store()
         try:
-            for session in ("2026-09-25", "2026-09-28", "2026-09-29"):
+            total_bytes = 0
+            for index in range(95):
+                session = f"synthetic-{index:03d}"
                 result = persist_compact_session_bundle(
                     session=session,
                     strategy_records=[{"strategy": "SPY_BUY_HOLD", "value": 1}],
-                    store=store, local_root=folder, retention_sessions=2,
+                    store=store, local_root=folder, retention_sessions=90,
                 )
                 self.assertLess(result["bytes"], 256 * 1024)
-            self.assertEqual(2, len(store.keys))
-            self.assertEqual(1, len(store.deleted))
+                total_bytes += result["bytes"]
+            self.assertEqual(90, len(store.keys))
+            self.assertEqual(5, len(store.deleted))
+            self.assertLess(total_bytes, 95 * 256 * 1024)
         finally:
             for path in folder.iterdir(): path.unlink()
             folder.rmdir()

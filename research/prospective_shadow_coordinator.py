@@ -60,11 +60,12 @@ class ProspectiveShadowCoordinator:
         temporary = self.state_path.with_suffix(".tmp")
         with gzip.open(temporary, "wt", encoding="utf-8", compresslevel=9) as handle:
             json.dump(self.state, handle, sort_keys=True, separators=(",", ":"))
-        temporary.replace(self.state_path)
-        if self.state_path.stat().st_size > 512 * 1024:
+        if temporary.stat().st_size > 512 * 1024:
+            temporary.unlink(missing_ok=True)
             raise ValueError("prospective shadow rolling state exceeds 512 KiB safety limit")
         if self.store.durable:
-            self.store.upload_file(self.state_path, "shadow/prospective-shadow-state.json.gz")
+            self.store.upload_file(temporary, "shadow/prospective-shadow-state.json.gz")
+        temporary.replace(self.state_path)
 
     def process_session(self, payload: dict) -> dict:
         session, next_session = str(payload["session"]), str(payload["next_session"])
