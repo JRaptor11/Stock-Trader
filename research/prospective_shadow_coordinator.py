@@ -11,7 +11,10 @@ from research.prospective_shadow import (
     ShadowPortfolio, build_frozen_plan, execute_shadow_plan, execution_attribution,
     freeze_decision, persist_compact_session_bundle,
 )
-from research.tier1_etf_replay import Tier1Config, _daily_strategy_registry
+from research.tier1_etf_replay import (
+    Tier1Config, _daily_strategy_registry, _rebalance_day,
+    _strategy_rebalance_frequency,
+)
 from research.universes import resolve_universe
 
 
@@ -81,6 +84,7 @@ class ProspectiveShadowCoordinator:
                     raise ValueError("bootstrap history exceeds the rolling-history limit")
                 self.state["histories"][symbol] = [float(value) for value in values]
         bars = payload["bars"]
+        previous_session = self.state["last_session"]
         records = []
         for strategy in STRATEGIES:
             portfolio_data = self.state["portfolios"][strategy]
@@ -100,6 +104,7 @@ class ProspectiveShadowCoordinator:
                 attribution = execution_attribution(
                     prior, outcome, {symbol: float(row["open"]) for symbol, row in bars.items()}
                 )
+                self.state["pending"].pop(strategy, None)
             self.state["portfolios"][strategy] = {
                 "cash": portfolio.cash, "positions": portfolio.positions,
                 "processed_plans": sorted(portfolio.processed_plans),
@@ -113,6 +118,11 @@ class ProspectiveShadowCoordinator:
         registry = _daily_strategy_registry()
         for record in records:
             strategy = record["strategy"]
+            cadence = _strategy_rebalance_frequency(strategy, self.config)
+            if not _rebalance_day(session, previous_session, cadence):
+                record.update({"decision": None, "next_plan": None,
+                               "rebalance": False, "cadence": cadence})
+                continue
             snapshot = freeze_decision(
                 strategy=strategy, signal_session=session, next_session=next_session,
                 histories=self.state["histories"], registry=registry, config=self.config,
@@ -129,7 +139,8 @@ class ProspectiveShadowCoordinator:
             closes = {symbol: float(row["close"]) for symbol, row in bars.items()}
             plan = build_frozen_plan(snapshot, portfolio, closes)
             self.state["pending"][strategy] = plan
-            record.update({"decision": snapshot, "next_plan": plan})
+            record.update({"decision": snapshot, "next_plan": plan,
+                           "rebalance": True, "cadence": cadence})
         self.state["last_session"] = session
         self._save()
         bundle = persist_compact_session_bundle(
