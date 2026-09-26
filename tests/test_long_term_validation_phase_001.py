@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1] / "research"
 JOBS = tuple(sorted(ROOT.glob("long-term-validation-phase-001-*-job.json")))
 CANONICAL_JOBS = tuple(sorted(ROOT.glob("long-term-canonical-state-validation-003-*-job.json")))
 HIERARCHY_JOBS = tuple(sorted(ROOT.glob("long-term-hierarchical-validation-004-*-job.json")))
+LOCKED_JOBS = tuple(sorted(ROOT.glob("long-term-locked-validation-005-*-job.json")))
 
 
 class LongTermValidationPhase001Tests(unittest.TestCase):
@@ -121,6 +122,38 @@ class LongTermValidationPhase001Tests(unittest.TestCase):
             )
             seen.update(config.strategy_names)
         self.assertEqual(expected, seen)
+
+    def test_phase_005_freezes_four_hypotheses_for_source_and_forward_validation(self):
+        study = json.loads(
+            (ROOT / "long-term-locked-validation-005.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual("paused_and_unchanged", study["generation_015_status"])
+        self.assertEqual("2026-09-28", study["design"]["independent_forward_start"])
+        self.assertEqual(4, len(study["locked_hypotheses"]))
+        self.assertIn("not an independent market sample", study["design"]["source_replication_scope"])
+
+        expected = {
+            ("CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE", "trend_breadth", "BULL_DECELERATING__BROAD_BREADTH"),
+            ("VALUE_QUALITY_STATIC", "trend", "BULL_ACCELERATING"),
+            ("INDUSTRY_ETF_MOMENTUM", "trend_volatility", "BULL_DECELERATING__HIGH_VOL"),
+            ("MULTIFACTOR_STATIC", "trend_volatility", "BULL_ACCELERATING__LOW_VOL_OR_NORMAL_VOL"),
+        }
+        actual = set()
+        self.assertEqual(3, len(LOCKED_JOBS))
+        for path in LOCKED_JOBS:
+            job = json.loads(path.read_text(encoding="utf-8"))
+            declaration = validate_experiment_declaration(job["experiment"])
+            self.assertEqual("LONG_TERM_LOCKED_VALIDATION_005", declaration["hypothesis_id"])
+            self.assertFalse(job["research_evaluation"]["router"])
+            self.assertEqual("2026-09-28", job["research_evaluation"]["forward_start_date"])
+            config = config_from_job(job)
+            self.assertTrue(config.hierarchical_state_validation)
+            self.assertEqual(10.0, config.primary_cost_bps)
+            self.assertEqual((1.0, 5.0, 10.0, 20.0), config.cost_ladder_bps)
+            self.assertEqual("ETF_LONG_TERM_STATE_CANONICAL", config.market_state_universe_name)
+            for hypothesis in job["research_evaluation"]["locked_market_state_hypotheses"]:
+                actual.add((hypothesis["strategy"], hypothesis["state_level"], hypothesis["market_state"]))
+        self.assertEqual(expected, actual)
 
 
 if __name__ == "__main__":

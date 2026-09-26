@@ -1,0 +1,52 @@
+{
+  "study_id": "LONG_TERM_LOCKED_VALIDATION_005",
+  "status": "ready_for_source_replication_and_forward_validation",
+  "parent_study": "LONG_TERM_HIERARCHICAL_VALIDATION_004",
+  "generation_015_status": "paused_and_unchanged",
+  "purpose": "Test the four strongest predeclared Phase 004 conditional hypotheses without changing strategy parameters or constructing a router.",
+  "design": {
+    "router": false,
+    "tactical_overrides": false,
+    "parameter_retuning": false,
+    "promotion": false,
+    "source_replication_dataset": "long_term_locked_replication_2016_2026-09-25_1d_iex.csv",
+    "source_replication_scope": "Adjusted Alpaca IEX daily bars available from 2020-07-27 through 2026-09-25. This checks feed sensitivity but is not an independent market sample.",
+    "independent_forward_start": "2026-09-28",
+    "independence_rule": "Only observations from sessions on or after the forward start count as statistically untouched time-sample evidence.",
+    "canonical_market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+    "primary_cost_bps": 10.0,
+    "cost_ladder_bps": [1.0, 5.0, 10.0, 20.0],
+    "minimum_state_sessions": 30,
+    "minimum_state_episodes": 5,
+    "selection_rule": "All hypotheses and directions were frozen from Phase 004 before Phase 005 data were evaluated."
+  },
+  "locked_hypotheses": [
+    {
+      "strategy": "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+      "state_level": "trend_breadth",
+      "market_state": "BULL_DECELERATING__BROAD_BREADTH",
+      "expected_direction": "outperform_SPY"
+    },
+    {
+      "strategy": "VALUE_QUALITY_STATIC",
+      "state_level": "trend",
+      "market_state": "BULL_ACCELERATING",
+      "expected_direction": "outperform_SPY"
+    },
+    {
+      "strategy": "INDUSTRY_ETF_MOMENTUM",
+      "state_level": "trend_volatility",
+      "market_state": "BULL_DECELERATING__HIGH_VOL",
+      "expected_direction": "outperform_SPY"
+    },
+    {
+      "strategy": "MULTIFACTOR_STATIC",
+      "state_level": "trend_volatility",
+      "market_state": "BULL_ACCELERATING__LOW_VOL_OR_NORMAL_VOL",
+      "component_states": ["BULL_ACCELERATING__LOW_VOL", "BULL_ACCELERATING__NORMAL_VOL"],
+      "expected_direction": "outperform_SPY"
+    }
+  ],
+  "interpretation_rule": "Source replication can reject a fragile finding but cannot establish independent recurrence. Forward evidence remains descriptive until adequate sessions and episodes accumulate.",
+  "promotion_effect": "none"
+}

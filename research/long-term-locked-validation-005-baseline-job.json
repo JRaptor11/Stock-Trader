@@ -1,0 +1,33 @@
+{
+  "job_id": "long-term-locked-validation-005-baseline-iex",
+  "engine": "tier1_etf_daily",
+  "bars_csv": "long_term_locked_replication_2016_2026-09-25_1d_iex.csv",
+  "data_source": "Alpaca adjusted 1Day IEX; locked Phase 005 source replication",
+  "experiment": {"hypothesis_id": "LONG_TERM_LOCKED_VALIDATION_005", "trial_id": "baseline-source-replication"},
+  "research_evaluation": {
+    "cohort": "locked_cross_asset",
+    "baseline_strategy": "SPY_BUY_HOLD",
+    "router": false,
+    "forward_start_date": "2026-09-28",
+    "locked_market_state_hypotheses": [
+      {"strategy": "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE", "state_level": "trend_breadth", "market_state": "BULL_DECELERATING__BROAD_BREADTH", "expected_direction": "outperform_SPY"}
+    ]
+  },
+  "tier1_config": {
+    "initial_cash": 100000.0, "universe_name": "ETF_LONG_TERM_CROSS_ASSET_HISTORY",
+    "market_state_universe_name": "ETF_LONG_TERM_STATE_CANONICAL",
+    "benchmark_symbol": "SPY", "cash_proxy_symbol": "SHY", "rebalance_frequency": "monthly",
+    "volatility_lookback_days": 60, "volatility_target_annualized": 0.12,
+    "regime_high_volatility_annualized": 0.18, "trend_lookback_days": 200,
+    "momentum_lookbacks_days": [63, 126, 252], "sector_holdings": 3,
+    "cross_asset_holdings": 3, "factor_holdings": 2, "industry_holdings": 3,
+    "no_trade_band": 0.02, "cost_ladder_bps": [1.0, 5.0, 10.0, 20.0],
+    "primary_cost_bps": 10.0, "discovery_end_date": "2024-09-02",
+    "holdout_start_date": "2024-09-03", "required_common_start_date": "2020-07-27",
+    "minimum_common_coverage_pct": 99.0, "minimum_scored_sessions": 1200,
+    "rolling_window_sessions": 756, "walk_forward_train_sessions": 756,
+    "walk_forward_test_sessions": 126, "walk_forward_step_sessions": 126,
+    "hierarchical_state_validation": true,
+    "strategy_names": ["SPY_BUY_HOLD", "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE"]
+  }
+}
