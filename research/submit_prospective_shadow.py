@@ -7,6 +7,7 @@ import csv
 import json
 import urllib.request
 from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 
 from research.market_conditions import causal_market_conditions
@@ -32,7 +33,9 @@ def build_payload(csv_path: Path, next_session: str, code_revision: str) -> dict
         completed = [row for row in values if row["timestamp"][:10] <= latest][-400:]
         histories[symbol] = [float(row["close"]) for row in completed[:-1]]
         row = completed[-1]
-        bars[symbol] = {key: float(row[key]) for key in ("open", "close", "volume")}
+        bars[symbol] = {
+            key: float(row[key]) for key in ("open", "high", "low", "close", "volume")
+        }
     universe = resolve_universe("ETF_LONG_TERM_RESEARCH_EXPANDED")
     by_date = defaultdict(dict)
     for row in rows:
@@ -47,7 +50,8 @@ def build_payload(csv_path: Path, next_session: str, code_revision: str) -> dict
     latest_label = labels[latest]
     bootstrap_conditions = {day: conditions[day] for day in sorted(conditions)[-10:]}
     return {"session": latest, "next_session": next_session,
-            "source_observed_at": max(row["timestamp"] for row in rows),
+            "market_bar_timestamp": max(row["timestamp"] for row in rows),
+            "source_observed_at": datetime.now(timezone.utc).isoformat(),
             "code_revision": code_revision, "data_source": "alpaca_iex_adjusted_1d",
             "bootstrap_histories": histories, "bars": bars,
             "state_evidence": latest_condition,
@@ -73,7 +77,8 @@ def main() -> None:
     document = build_payload(args.csv, args.next_session, args.code_revision)
     if status.get("last_session") is not None:
         document.pop("bootstrap_histories", None)
-        document.pop("bootstrap_state_evidence", None)
+        if (status.get("market_state") or {}).get("active"):
+            document.pop("bootstrap_state_evidence", None)
     payload = json.dumps(document).encode()
     request = urllib.request.Request(
         args.url.rstrip("/") + "/api/shadow/sessions", data=payload, method="POST",

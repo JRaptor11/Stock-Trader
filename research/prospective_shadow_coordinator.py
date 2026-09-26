@@ -96,6 +96,16 @@ class ProspectiveShadowCoordinator:
         missing_symbols = sorted(required_symbols.difference(bars))
         if missing_symbols:
             raise ValueError(f"incomplete prospective symbol coverage: {missing_symbols}")
+        for symbol, row in bars.items():
+            try:
+                open_price, close = float(row["open"]), float(row["close"])
+                high, low, volume = float(row["high"]), float(row["low"]), float(row["volume"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(f"invalid OHLCV observation for {symbol}") from exc
+            if min(open_price, close, high, low) <= 0 or volume < 0:
+                raise ValueError(f"nonpositive price or negative volume for {symbol}")
+            if high < max(open_price, close) or low > min(open_price, close) or high < low:
+                raise ValueError(f"inconsistent OHLC range for {symbol}")
         evidence = payload.get("state_evidence")
         if not isinstance(evidence, dict):
             raise ValueError("state_evidence is required")

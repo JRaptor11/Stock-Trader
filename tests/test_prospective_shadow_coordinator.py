@@ -27,7 +27,8 @@ class CoordinatorTests(unittest.TestCase):
                         "source_observed_at": session + "T21:05:00Z",
                         "code_revision": "test", "state_evidence": self.evidence,
                         "bars": {
-                            symbol: {"open": price, "close": price, "volume": 1_000_000}
+                            symbol: {"open": price, "high": price, "low": price,
+                                     "close": price, "volume": 1_000_000}
                             for symbol in symbols}}
             first = coordinator.process_session(payload("2026-09-25", "2026-09-28", 100))
             second = coordinator.process_session(payload("2026-09-28", "2026-09-29", 101))
@@ -56,7 +57,8 @@ class CoordinatorTests(unittest.TestCase):
                        "source_observed_at": "2026-09-25T21:05:00Z",
                        "code_revision": "test", "state_evidence": self.evidence,
                        "bootstrap_histories": {symbol: [100.0] * 260 for symbol in symbols},
-                       "bars": {symbol: {"open": 100, "close": 100, "volume": 1000000}
+                       "bars": {symbol: {"open": 100, "high": 100, "low": 100,
+                                        "close": 100, "volume": 1000000}
                                 for symbol in symbols}}
             coordinator.process_session(payload)
             payload["session"], payload["next_session"] = "2026-09-28", "2026-09-29"
@@ -82,7 +84,8 @@ class CoordinatorTests(unittest.TestCase):
                     "session": session, "next_session": next_session,
                     "source_observed_at": session + "T21:05:00Z", "code_revision": "test",
                     "state_evidence": self.evidence,
-                    "bars": {symbol: {"open": 100, "close": 100, "volume": 1_000_000}
+                    "bars": {symbol: {"open": 100, "high": 100, "low": 100,
+                                     "close": 100, "volume": 1_000_000}
                              for symbol in symbols}})
             submit("2026-09-25", "2026-09-28")
             submit("2026-09-28", "2026-09-29")
@@ -109,11 +112,13 @@ class CoordinatorTests(unittest.TestCase):
             payload = {"session": "2026-09-25", "next_session": "2026-09-28",
                        "source_observed_at": "2026-09-25T21:05:00Z", "code_revision": "test",
                        "state_evidence": self.evidence,
-                       "bars": {symbol: {"open": 100, "close": 100, "volume": 1_000_000}
+                       "bars": {symbol: {"open": 100, "high": 100, "low": 100,
+                                        "close": 100, "volume": 1_000_000}
                                 for symbol in symbols[:-1]}}
             with self.assertRaisesRegex(ValueError, "incomplete prospective"):
                 coordinator.process_session(payload)
-            payload["bars"][symbols[-1]] = {"open": 100, "close": 100, "volume": 1_000_000}
+            payload["bars"][symbols[-1]] = {"open": 100, "high": 100, "low": 100,
+                                             "close": 100, "volume": 1_000_000}
             payload["raw_state"] = "BEAR_DETERIORATING__HIGH_VOL__NARROW_BREADTH"
             with self.assertRaisesRegex(ValueError, "disagrees"):
                 coordinator.process_session(payload)
@@ -133,7 +138,8 @@ class CoordinatorTests(unittest.TestCase):
                 return {"session": session, "next_session": next_session,
                         "source_observed_at": session + "T21:05:00Z", "code_revision": "test",
                         "state_evidence": self.evidence,
-                        "bars": {symbol: {"open": 100, "close": 100, "volume": 1_000_000}
+                        "bars": {symbol: {"open": 100, "high": 100, "low": 100,
+                                         "close": 100, "volume": 1_000_000}
                                  for symbol in symbols}}
             coordinator.process_session(payload("2026-09-25", "2026-09-28"))
             with self.assertRaisesRegex(ValueError, "expected 2026-09-28"):
