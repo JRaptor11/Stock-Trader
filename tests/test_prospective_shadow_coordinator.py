@@ -41,5 +41,27 @@ class CoordinatorTests(unittest.TestCase):
                 elif path.is_dir(): path.rmdir()
             root.rmdir()
 
+    def test_bootstrap_is_bounded_and_only_accepted_once(self):
+        root = Path(".test-prospective-coordinator") / uuid.uuid4().hex
+        root.mkdir(parents=True)
+        try:
+            coordinator = ProspectiveShadowCoordinator(root, Store())
+            symbols = tuple(coordinator.state["histories"])
+            payload = {"session": "2026-09-25", "next_session": "2026-09-28",
+                       "source_observed_at": "2026-09-25T21:05:00Z",
+                       "code_revision": "test",
+                       "bootstrap_histories": {symbol: [100.0] * 260 for symbol in symbols},
+                       "bars": {symbol: {"open": 100, "close": 100, "volume": 1000000}
+                                for symbol in symbols}}
+            coordinator.process_session(payload)
+            payload["session"], payload["next_session"] = "2026-09-28", "2026-09-29"
+            with self.assertRaisesRegex(ValueError, "only before the first"):
+                coordinator.process_session(payload)
+        finally:
+            for path in sorted(root.rglob("*"), reverse=True):
+                if path.is_file(): path.unlink()
+                elif path.is_dir(): path.rmdir()
+            root.rmdir()
+
 
 if __name__ == "__main__": unittest.main()

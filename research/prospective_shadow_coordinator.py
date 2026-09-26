@@ -67,6 +67,19 @@ class ProspectiveShadowCoordinator:
             raise ValueError("prospective sessions must be submitted chronologically")
         if session == self.state["last_session"]:
             return {"status": "unchanged", "session": session}
+        bootstrap = payload.get("bootstrap_histories")
+        if bootstrap is not None:
+            if self.state["last_session"] is not None:
+                raise ValueError("bootstrap histories are accepted only before the first session")
+            if not isinstance(bootstrap, dict):
+                raise ValueError("bootstrap_histories must be a symbol mapping")
+            unknown = set(bootstrap).difference(self.state["histories"])
+            if unknown:
+                raise ValueError(f"bootstrap contains unknown symbols: {sorted(unknown)}")
+            for symbol, values in bootstrap.items():
+                if not isinstance(values, list) or len(values) > self.maximum_history:
+                    raise ValueError("bootstrap history exceeds the rolling-history limit")
+                self.state["histories"][symbol] = [float(value) for value in values]
         bars = payload["bars"]
         records = []
         for strategy in STRATEGIES:
