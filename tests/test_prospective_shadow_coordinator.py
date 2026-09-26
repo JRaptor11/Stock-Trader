@@ -87,6 +87,8 @@ class CoordinatorTests(unittest.TestCase):
             submit("2026-09-25", "2026-09-28")
             submit("2026-09-28", "2026-09-29")
             self.assertEqual({}, coordinator.status()["pending_execution_sessions"])
+            submit("2026-09-29", "2026-09-30")
+            submit("2026-09-30", "2026-10-01")
             submit("2026-10-01", "2026-10-02")
             pending = coordinator.status()["pending_execution_sessions"]
             self.assertIn("CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE", pending)
