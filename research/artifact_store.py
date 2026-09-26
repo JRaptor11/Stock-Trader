@@ -77,7 +77,9 @@ class S3ArtifactStore(ArtifactStore):
     secret_key: str
     monthly_egress_budget_bytes: int = 1 * 1024**3
     durable = True
-    _egress_categories = ("checkpoints", "datasets", "jobs", "results", "status", "other")
+    _egress_categories = (
+        "checkpoints", "datasets", "jobs", "results", "status", "shadow", "other"
+    )
 
     def __post_init__(self):
         self._egress_lock = threading.RLock()

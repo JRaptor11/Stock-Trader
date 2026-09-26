@@ -12,6 +12,7 @@ from research.prospective_shadow import (
     execution_attribution,
     freeze_decision,
     load_portfolio,
+    persist_compact_session_bundle,
     save_portfolio,
     write_immutable_snapshot,
 )
@@ -136,6 +137,32 @@ class ProspectiveShadowTests(unittest.TestCase):
         finally:
             for path in folder.iterdir():
                 path.unlink()
+            folder.rmdir()
+
+    def test_compact_bundle_is_immutable_and_retention_is_bounded(self):
+        class Store:
+            durable = True
+            def __init__(self): self.keys = []; self.deleted = []
+            def upload_file_if_missing(self, path, key):
+                if key not in self.keys: self.keys.append(key)
+                return "s3://bucket/" + key
+            def list_keys(self, prefix): return sorted(self.keys)
+            def delete_file(self, key): self.deleted.append(key); self.keys.remove(key)
+
+        folder = Path(".test-prospective-shadow") / uuid.uuid4().hex
+        folder.mkdir(parents=True); store = Store()
+        try:
+            for session in ("2026-09-25", "2026-09-28", "2026-09-29"):
+                result = persist_compact_session_bundle(
+                    session=session,
+                    strategy_records=[{"strategy": "SPY_BUY_HOLD", "value": 1}],
+                    store=store, local_root=folder, retention_sessions=2,
+                )
+                self.assertLess(result["bytes"], 256 * 1024)
+            self.assertEqual(2, len(store.keys))
+            self.assertEqual(1, len(store.deleted))
+        finally:
+            for path in folder.iterdir(): path.unlink()
             folder.rmdir()
 
 

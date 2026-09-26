@@ -8,6 +8,7 @@ against prices which became observable at the next session open.
 from __future__ import annotations
 
 import hashlib
+import gzip
 import json
 import math
 from dataclasses import asdict, dataclass, field, is_dataclass
@@ -297,3 +298,48 @@ def execution_attribution(plan: dict, outcome: dict,
             "divergence_reason": reason or ("partial_fill" if fill and fill["partial"] else "filled"),
         })
     return rows
+
+
+def persist_compact_session_bundle(
+    *, session: str, strategy_records: list[dict], store: Any,
+    local_root: Path, retention_sessions: int = 90,
+    maximum_bundle_bytes: int = 256 * 1024,
+) -> dict:
+    """Persist one compact immutable session bundle with bounded retention.
+
+    Raw bar histories are deliberately excluded. Their hashes and latest
+    observations live in the frozen decisions while the source dataset remains
+    separately durable. This prevents daily retransmission of multi-year CSVs.
+    """
+    if retention_sessions < 1:
+        raise ValueError("retention_sessions must be positive")
+    payload = {
+        "schema_version": 1,
+        "session": session,
+        "strategies": strategy_records,
+    }
+    payload["bundle_sha256"] = _hash(payload)
+    local_root.mkdir(parents=True, exist_ok=True)
+    path = local_root / f"prospective-shadow-{session}.json.gz"
+    with gzip.open(path, "wt", encoding="utf-8", compresslevel=9) as handle:
+        json.dump(payload, handle, sort_keys=True, separators=(",", ":"))
+    size = path.stat().st_size
+    if size > maximum_bundle_bytes:
+        path.unlink(missing_ok=True)
+        raise ValueError(f"prospective shadow bundle exceeds safety limit: {size}")
+    key = f"shadow/prospective-shadow-{session}.json.gz"
+    durable_uri = store.upload_file_if_missing(path, key) if store.durable else None
+    deleted = []
+    if store.durable:
+        keys = sorted(
+            item for item in store.list_keys("shadow/prospective-shadow-")
+            if item.endswith(".json.gz")
+        )
+        for expired in keys[:-retention_sessions]:
+            store.delete_file(expired)
+            deleted.append(expired)
+    return {
+        "path": str(path), "key": key, "durable_uri": durable_uri,
+        "bytes": size, "bundle_sha256": payload["bundle_sha256"],
+        "retention_sessions": retention_sessions, "deleted": deleted,
+    }
