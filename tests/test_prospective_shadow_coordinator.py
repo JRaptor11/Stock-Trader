@@ -121,5 +121,26 @@ class CoordinatorTests(unittest.TestCase):
                 elif path.is_dir(): path.rmdir()
             root.rmdir()
 
+    def test_skipped_expected_session_fails_closed(self):
+        root = Path(".test-prospective-coordinator") / uuid.uuid4().hex
+        root.mkdir(parents=True)
+        try:
+            coordinator = ProspectiveShadowCoordinator(root, Store())
+            symbols = tuple(coordinator.state["histories"])
+            def payload(session, next_session):
+                return {"session": session, "next_session": next_session,
+                        "source_observed_at": session + "T21:05:00Z", "code_revision": "test",
+                        "state_evidence": self.evidence,
+                        "bars": {symbol: {"open": 100, "close": 100, "volume": 1_000_000}
+                                 for symbol in symbols}}
+            coordinator.process_session(payload("2026-09-25", "2026-09-28"))
+            with self.assertRaisesRegex(ValueError, "expected 2026-09-28"):
+                coordinator.process_session(payload("2026-09-29", "2026-09-30"))
+        finally:
+            for path in sorted(root.rglob("*"), reverse=True):
+                if path.is_file(): path.unlink()
+                elif path.is_dir(): path.rmdir()
+            root.rmdir()
+
 
 if __name__ == "__main__": unittest.main()

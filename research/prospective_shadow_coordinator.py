@@ -41,7 +41,7 @@ class ProspectiveShadowCoordinator:
 
     def _empty(self) -> dict:
         symbols = resolve_universe(self.config.universe_name)
-        return {"schema_version": 1, "last_session": None,
+        return {"schema_version": 1, "last_session": None, "expected_next_session": None,
                 "histories": {symbol: [] for symbol in symbols},
                 "pending": {}, "market_state": {"active": None, "pending": None,
                                                     "pending_count": 0}, "portfolios": {
@@ -72,6 +72,11 @@ class ProspectiveShadowCoordinator:
             raise ValueError("prospective sessions must be submitted chronologically")
         if session == self.state["last_session"]:
             return {"status": "unchanged", "session": session}
+        expected_session = self.state.get("expected_next_session")
+        if expected_session and session != expected_session:
+            raise ValueError(
+                f"unexpected prospective session: expected {expected_session}, received {session}"
+            )
         bootstrap = payload.get("bootstrap_histories")
         if bootstrap is not None:
             if self.state["last_session"] is not None:
@@ -192,6 +197,7 @@ class ProspectiveShadowCoordinator:
             record.update({"decision": snapshot, "next_plan": plan,
                            "rebalance": True, "cadence": cadence})
         self.state["last_session"] = session
+        self.state["expected_next_session"] = next_session
         self._save()
         bundle = persist_compact_session_bundle(
             session=session, strategy_records=records, store=self.store,
@@ -205,6 +211,7 @@ class ProspectiveShadowCoordinator:
 
     def status(self) -> dict:
         return {"last_session": self.state["last_session"],
+                "expected_next_session": self.state.get("expected_next_session"),
                 "strategies": list(STRATEGIES),
                 "pending_execution_sessions": {
                     key: value["execution_session"]
