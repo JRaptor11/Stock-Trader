@@ -16,6 +16,7 @@ from research.tier1_etf_replay import (
     _strategy_rebalance_frequency,
 )
 from research.universes import resolve_universe
+from research.market_state_episodes import causal_state_labels
 
 
 STRATEGIES = (
@@ -42,7 +43,8 @@ class ProspectiveShadowCoordinator:
         symbols = resolve_universe(self.config.universe_name)
         return {"schema_version": 1, "last_session": None,
                 "histories": {symbol: [] for symbol in symbols},
-                "pending": {}, "portfolios": {
+                "pending": {}, "market_state": {"active": None, "pending": None,
+                                                    "pending_count": 0}, "portfolios": {
                     name: {"cash": self.initial_cash, "positions": {}, "processed_plans": []}
                     for name in STRATEGIES}}
 
@@ -85,6 +87,48 @@ class ProspectiveShadowCoordinator:
                 self.state["histories"][symbol] = [float(value) for value in values]
         bars = payload["bars"]
         previous_session = self.state["last_session"]
+        required_symbols = set(resolve_universe(self.config.universe_name))
+        missing_symbols = sorted(required_symbols.difference(bars))
+        if missing_symbols:
+            raise ValueError(f"incomplete prospective symbol coverage: {missing_symbols}")
+        evidence = payload.get("state_evidence")
+        if not isinstance(evidence, dict):
+            raise ValueError("state_evidence is required")
+        derived = causal_state_labels({session: {"date": session, **evidence}}, 1).get(session)
+        if not derived:
+            raise ValueError("state_evidence cannot produce a canonical market state")
+        raw_state = derived["raw_core_state"]
+        state = self.state.setdefault("market_state", {
+            "active": None, "pending": None, "pending_count": 0})
+        bootstrap_state_evidence = payload.get("bootstrap_state_evidence")
+        if state["active"] is None and bootstrap_state_evidence:
+            if not isinstance(bootstrap_state_evidence, dict) or len(bootstrap_state_evidence) > 10:
+                raise ValueError("bootstrap_state_evidence must contain at most 10 sessions")
+            labels = causal_state_labels(bootstrap_state_evidence, 3)
+            if labels:
+                state["active"] = labels[sorted(labels)[-1]]["core_state"]
+        if state["active"] is None:
+            state["active"] = raw_state
+        elif raw_state == state["active"]:
+            state["pending"], state["pending_count"] = None, 0
+        elif raw_state == state["pending"]:
+            state["pending_count"] += 1
+        else:
+            state["pending"], state["pending_count"] = raw_state, 1
+        if state["pending_count"] >= 3:
+            state["active"] = state["pending"]
+            state["pending"], state["pending_count"] = None, 0
+        supplied_raw = payload.get("raw_state")
+        supplied_confirmed = payload.get("confirmed_state")
+        if supplied_raw and supplied_raw != raw_state:
+            raise ValueError("supplied raw market state disagrees with causal evidence")
+        if supplied_confirmed and supplied_confirmed != state["active"]:
+            raise ValueError("supplied confirmed market state disagrees with coordinator state")
+        warnings = []
+        stale = sorted(name for name, plan in self.state["pending"].items()
+                       if plan["execution_session"] < session)
+        if stale:
+            raise ValueError(f"stale prospective plans require review: {stale}")
         records = []
         for strategy in STRATEGIES:
             portfolio_data = self.state["portfolios"][strategy]
@@ -104,6 +148,13 @@ class ProspectiveShadowCoordinator:
                 attribution = execution_attribution(
                     prior, outcome, {symbol: float(row["open"]) for symbol, row in bars.items()}
                 )
+                excessive = [row["symbol"] for row in attribution
+                             if row["price_divergence_bps"] is not None
+                             and abs(row["price_divergence_bps"]) > 50]
+                if excessive:
+                    warnings.append({"strategy": strategy,
+                                     "condition": "implementation_shortfall_over_50bps",
+                                     "symbols": excessive})
                 self.state["pending"].pop(strategy, None)
             self.state["portfolios"][strategy] = {
                 "cash": portfolio.cash, "positions": portfolio.positions,
@@ -126,8 +177,7 @@ class ProspectiveShadowCoordinator:
             snapshot = freeze_decision(
                 strategy=strategy, signal_session=session, next_session=next_session,
                 histories=self.state["histories"], registry=registry, config=self.config,
-                raw_state=payload.get("raw_state"),
-                confirmed_state=payload.get("confirmed_state"),
+                raw_state=raw_state, confirmed_state=state["active"],
                 data_source=str(payload.get("data_source") or "alpaca_iex_adjusted_1d"),
                 source_observed_at=str(payload["source_observed_at"]),
                 code_revision=str(payload["code_revision"]),
@@ -149,7 +199,9 @@ class ProspectiveShadowCoordinator:
         )
         return {"status": "processed", "session": session,
                 "next_session": next_session, "strategies": len(records),
-                "bundle": bundle}
+                "raw_market_state": raw_state,
+                "confirmed_market_state": state["active"],
+                "warnings": warnings, "bundle": bundle}
 
     def status(self) -> dict:
         return {"last_session": self.state["last_session"],
@@ -157,4 +209,5 @@ class ProspectiveShadowCoordinator:
                 "pending_execution_sessions": {
                     key: value["execution_session"]
                     for key, value in self.state["pending"].items()},
+                "market_state": self.state.get("market_state"),
                 "broker_orders_enabled": False}
