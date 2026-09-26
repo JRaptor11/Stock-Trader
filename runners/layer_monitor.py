@@ -6129,7 +6129,24 @@ async def run_layer_monitor(
         interval_seconds,
     )
 
+    monitor_state = app_state.setdefault("layers", {}).setdefault("monitor", {})
+    started_at = datetime.now(timezone.utc).isoformat()
+    monitor_state.update({
+        "status": "running",
+        "started_at": started_at,
+        "heartbeat_at": started_at,
+        "last_phase": "started",
+        "last_error": None,
+    })
+
     while not app_state["stream"]["shutdown_event"].is_set():
+        cycle_started_at = datetime.now(timezone.utc).isoformat()
+        monitor_state.update({
+            "status": "running",
+            "heartbeat_at": cycle_started_at,
+            "last_cycle_started_at": cycle_started_at,
+            "last_phase": "cycle_started",
+        })
         try:
             layer_engine = app_state.get("layers", {}).get("engine")
 
@@ -6810,6 +6827,11 @@ async def run_layer_monitor(
                         )
 
         except asyncio.CancelledError:
+            monitor_state.update({
+                "status": "cancelled",
+                "heartbeat_at": datetime.now(timezone.utc).isoformat(),
+                "last_phase": "cancelled",
+            })
             logging.info("[Layers] Layer monitor cancelled.")
 
             append_layer_cycle_row(
@@ -6819,7 +6841,13 @@ async def run_layer_monitor(
 
             raise
 
-        except Exception:
+        except Exception as exc:
+            monitor_state.update({
+                "status": "cycle_error",
+                "heartbeat_at": datetime.now(timezone.utc).isoformat(),
+                "last_phase": "cycle_error",
+                "last_error": f"{type(exc).__name__}: {exc}",
+            })
             logging.exception("[Layers] Layer monitor evaluation failed.")
 
             append_layer_cycle_row(
@@ -6828,6 +6856,12 @@ async def run_layer_monitor(
             )
 
         finally:
+            finished_at = datetime.now(timezone.utc).isoformat()
+            monitor_state.update({
+                "heartbeat_at": finished_at,
+                "last_cycle_finished_at": finished_at,
+                "last_phase": "waiting_for_boundary",
+            })
             if not app_state["stream"]["shutdown_event"].is_set():
                 await sleep_until_next_layer_boundary(
                     shutdown_event=app_state["stream"]["shutdown_event"],
@@ -6835,4 +6869,9 @@ async def run_layer_monitor(
                     min_spacing_seconds=0.0,
                 )
 
+    monitor_state.update({
+        "status": "stopped",
+        "heartbeat_at": datetime.now(timezone.utc).isoformat(),
+        "last_phase": "stopped",
+    })
     logging.info("[Layers] Layer monitor exited cleanly.")

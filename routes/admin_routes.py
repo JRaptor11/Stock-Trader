@@ -286,7 +286,44 @@ async def health_check(credentials: str = Depends(verify_credentials)):
         for name, svc in services.items()
     }
 
-    summary_status = "OK" if all(v["running"] for v in status.values()) else "DEGRADED"
+    monitor = app_state.get("layers", {}).get("monitor", {})
+    monitor_task = app_state.get("main", {}).get("layer_monitor_task")
+    heartbeat = monitor.get("heartbeat_at")
+    heartbeat_age_seconds = None
+    try:
+        parsed = datetime.fromisoformat(str(heartbeat).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        heartbeat_age_seconds = max(
+            0.0, (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds()
+        )
+    except (TypeError, ValueError):
+        pass
+    run_24_7 = bool(
+        app_state.get("execution", {}).get("layer_monitor_run_24_7", True)
+    )
+    market_is_open = bool(
+        app_state.get("layers", {}).get("rebalance", {}).get("market_is_open", False)
+    )
+    monitor_running = bool(monitor_task is not None and not monitor_task.done())
+    monitor_stalled = bool(
+        (run_24_7 or market_is_open)
+        and (heartbeat_age_seconds is None or heartbeat_age_seconds > 900)
+    )
+    status["layer_monitor"] = {
+        "running": monitor_running,
+        "heartbeat": not monitor_stalled,
+        "last_update": heartbeat,
+        "heartbeat_age_seconds": heartbeat_age_seconds,
+        "phase": monitor.get("last_phase"),
+        "restart_count": monitor.get("restart_count", 0),
+        "last_restart_reason": monitor.get("last_restart_reason"),
+    }
+
+    summary_status = "OK" if all(
+        value["running"] and value.get("heartbeat") is not False
+        for value in status.values()
+    ) else "DEGRADED"
     return {"status": summary_status, "services": status}
 
 
@@ -311,6 +348,7 @@ async def layer_status(credentials: str = Depends(verify_credentials)):
     layer4_execution = layers.get("layer4_execution", {})
     active_plan = layers.get("active_execution_plan")
     bar_freshness = layers.get("bar_freshness", {})
+    monitor = layers.get("monitor", {})
 
     if not isinstance(latest, dict):
         latest = {}
@@ -447,6 +485,31 @@ async def layer_status(credentials: str = Depends(verify_credentials)):
     if compact_layer4_result and compact_layer4_result.get("count_integrity_ok") is False:
         issues.append("layer4_count_integrity_failed")
 
+    monitor_task = main.get("layer_monitor_task")
+    if monitor_task is None or monitor_task.done():
+        issues.append("layer_monitor_not_running")
+    heartbeat_age_seconds = None
+    try:
+        heartbeat = datetime.fromisoformat(
+            str(monitor.get("heartbeat_at")).replace("Z", "+00:00")
+        )
+        if heartbeat.tzinfo is None:
+            heartbeat = heartbeat.replace(tzinfo=timezone.utc)
+        heartbeat_age_seconds = max(
+            0.0,
+            (datetime.now(timezone.utc) - heartbeat.astimezone(timezone.utc)).total_seconds(),
+        )
+    except (TypeError, ValueError):
+        pass
+    should_be_advancing = bool(
+        execution.get("layer_monitor_run_24_7", True)
+        or rebalance.get("market_is_open", False)
+    )
+    if should_be_advancing and (
+        heartbeat_age_seconds is None or heartbeat_age_seconds > 900
+    ):
+        issues.append("layer_monitor_stalled")
+
     status = "ok" if not issues else "degraded"
 
     return {
@@ -470,6 +533,20 @@ async def layer_status(credentials: str = Depends(verify_credentials)):
         },
         "market_data": {
             "tick_counts": tick_counts,
+        },
+        "monitor": {
+            "status": monitor.get("status"),
+            "task_running": bool(monitor_task is not None and not monitor_task.done()),
+            "started_at": monitor.get("started_at"),
+            "heartbeat_at": monitor.get("heartbeat_at"),
+            "heartbeat_age_seconds": heartbeat_age_seconds,
+            "last_cycle_started_at": monitor.get("last_cycle_started_at"),
+            "last_cycle_finished_at": monitor.get("last_cycle_finished_at"),
+            "last_phase": monitor.get("last_phase"),
+            "last_error": monitor.get("last_error"),
+            "restart_count": monitor.get("restart_count", 0),
+            "last_restart_at": monitor.get("last_restart_at"),
+            "last_restart_reason": monitor.get("last_restart_reason"),
         },
         "latest_layer12": {
             "timestamp": latest.get("timestamp"),

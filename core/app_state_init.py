@@ -19,6 +19,8 @@ def ensure_app_state_structure() -> None:
     main.setdefault("starting_equity", None)
     main.setdefault("threads", [])
     main.setdefault("startup_background_task", None)
+    main.setdefault("layer_monitor_supervisor_task", None)
+    main.setdefault("layer_monitor_task", None)
 
     app_state.setdefault("paths", {})
     app_state.setdefault("secrets", {})
@@ -130,6 +132,7 @@ def ensure_app_state_structure() -> None:
     layers.setdefault("layer4_shadow", {})
     layers.setdefault("layer4_execution", {})  # temporary backward-compatible bucket
     layers.setdefault("layer5_execution", {})
+    layers.setdefault("monitor", {})
     layers.setdefault("active_execution_plan", None)
     layers.setdefault("execution_plan_history", [])
 
@@ -223,7 +226,11 @@ def initialize_layer_state(top_n: int = 5, force_recreate_engine: bool = False) 
 
     layers = app_state.setdefault("layers", {})
 
-    layers.setdefault("paper_portfolio", PaperPortfolio())
+    # ``ensure_app_state_structure`` intentionally creates this key with a
+    # None placeholder.  setdefault() does not replace an existing None, so
+    # the old code left every production process permanently uninitialized.
+    if layers.get("paper_portfolio") is None:
+        layers["paper_portfolio"] = PaperPortfolio()
 
     if force_recreate_engine or layers.get("engine") is None:
         layers["engine"] = Layer2PortfolioEngine(
@@ -255,6 +262,18 @@ def initialize_layer_state(top_n: int = 5, force_recreate_engine: bool = False) 
     rebalance.setdefault("restart_recovery_baseline_symbols", [])
 
     layers.setdefault("restart_recovery", {})
+
+    monitor = layers.setdefault("monitor", {})
+    monitor.setdefault("status", "initialized")
+    monitor.setdefault("started_at", None)
+    monitor.setdefault("heartbeat_at", None)
+    monitor.setdefault("last_cycle_started_at", None)
+    monitor.setdefault("last_cycle_finished_at", None)
+    monitor.setdefault("last_phase", None)
+    monitor.setdefault("last_error", None)
+    monitor.setdefault("restart_count", 0)
+    monitor.setdefault("last_restart_at", None)
+    monitor.setdefault("last_restart_reason", None)
 
     # Layer 4 active-plan metadata.
     layer4 = layers.setdefault("layer4", {})

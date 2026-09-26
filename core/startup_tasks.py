@@ -22,6 +22,7 @@ from strategies.strategy import AtrNoiseFilter, VolatilityScorer
 
 from runners.layer_monitor import run_layer_monitor
 from core.app_state_init import initialize_layer_state
+from core.layer_monitor_supervisor import run_layer_monitor_supervisor
 from trading.portfolio_reconciler import run_portfolio_reconciler
 
 from config import runtime_config as config
@@ -164,9 +165,13 @@ async def background_startup_after_bind() -> None:
         initialize_layer_state(top_n=5)
 
         layer_task = asyncio.create_task(
-            run_layer_monitor(),
-            name="layer-monitor-task",
+            run_layer_monitor_supervisor(
+                run_layer_monitor,
+                safe_send_startup_alert,
+            ),
+            name="layer-monitor-supervisor-task",
         )
+        app_state["main"]["layer_monitor_supervisor_task"] = layer_task
         app_state["main"]["async_tasks"].add(layer_task)
 
         logging.info("[Layers] Layer engine initialized and monitor task scheduled.")
