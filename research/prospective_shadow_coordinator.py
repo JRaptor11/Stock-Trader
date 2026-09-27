@@ -58,7 +58,32 @@ class ProspectiveShadowCoordinator:
             self.store.download_file("shadow/prospective-shadow-state.json.gz", self.state_path)
         if not self.state_path.exists(): return self._empty()
         with gzip.open(self.state_path, "rt", encoding="utf-8") as handle:
-            return json.load(handle)
+            state = json.load(handle)
+        return self._migrate_state(state)
+
+    def _migrate_state(self, state: dict) -> dict:
+        """Upgrade older durable shadow state without changing frozen plans."""
+        pending = state.get("pending") or {}
+        if state.get("expected_next_session") is None and pending:
+            execution_sessions = {
+                str(plan.get("execution_session") or "") for plan in pending.values()
+            }
+            execution_sessions.discard("")
+            if len(execution_sessions) != 1:
+                raise ValueError(
+                    "cannot infer expected next session from ambiguous pending plans"
+                )
+            state["expected_next_session"] = execution_sessions.pop()
+        if not isinstance(state.get("market_state"), dict):
+            state["market_state"] = {
+                "active": None, "pending": None, "pending_count": 0,
+            }
+        else:
+            state["market_state"].setdefault("active", None)
+            state["market_state"].setdefault("pending", None)
+            state["market_state"].setdefault("pending_count", 0)
+        state.setdefault("schema_version", 1)
+        return state
 
     def _save(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)

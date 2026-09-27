@@ -1,4 +1,5 @@
 import json
+import gzip
 import unittest
 import uuid
 from pathlib import Path
@@ -240,6 +241,43 @@ class CoordinatorTests(unittest.TestCase):
                 if path.is_file(): path.unlink()
                 elif path.is_dir(): path.rmdir()
             root.rmdir()
+
+    def test_legacy_state_infers_one_unambiguous_pending_session(self):
+        root = Path(".test-prospective-coordinator") / uuid.uuid4().hex
+        root.mkdir(parents=True)
+        try:
+            seed = ProspectiveShadowCoordinator(root, Store())._empty()
+            seed.pop("expected_next_session")
+            seed["market_state"] = None
+            seed["last_session"] = "2026-09-25"
+            seed["pending"] = {
+                name: {"execution_session": "2026-09-28"} for name in STRATEGIES
+            }
+            with gzip.open(root / "prospective-shadow-state.json.gz", "wt") as handle:
+                json.dump(seed, handle)
+            restored = ProspectiveShadowCoordinator(root, Store())
+            self.assertEqual("2026-09-28", restored.state["expected_next_session"])
+            self.assertEqual(
+                {"active": None, "pending": None, "pending_count": 0},
+                restored.state["market_state"],
+            )
+        finally:
+            for path in sorted(root.rglob("*"), reverse=True):
+                if path.is_file(): path.unlink()
+                elif path.is_dir(): path.rmdir()
+            root.rmdir()
+
+    def test_legacy_state_rejects_ambiguous_pending_sessions(self):
+        coordinator = ProspectiveShadowCoordinator(
+            Path(".test-prospective-coordinator") / uuid.uuid4().hex, Store()
+        )
+        state = coordinator._empty()
+        state["pending"] = {
+            "SPY_BUY_HOLD": {"execution_session": "2026-09-28"},
+            "VALUE_QUALITY_STATIC": {"execution_session": "2026-09-29"},
+        }
+        with self.assertRaisesRegex(ValueError, "ambiguous pending plans"):
+            coordinator._migrate_state(state)
 
 
 if __name__ == "__main__": unittest.main()
