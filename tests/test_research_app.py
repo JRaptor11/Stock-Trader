@@ -220,6 +220,11 @@ class ResearchAppTests(unittest.TestCase):
                 status_response = client.get("/api/shadow/status", headers=headers)
                 self.assertEqual(200, status_response.status_code)
                 self.assertFalse(status_response.json()["broker_orders_enabled"])
+                self.assertEqual(
+                    401, client.post("/api/shadow/readiness", json={}).status_code
+                )
+                readiness = client.post("/api/shadow/readiness", headers=headers, json={})
+                self.assertEqual(400, readiness.status_code)
                 bad = client.post("/api/shadow/sessions", headers=headers, json={})
                 self.assertEqual(400, bad.status_code)
             runtime.shadow_coordinator = None

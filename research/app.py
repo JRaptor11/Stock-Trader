@@ -307,6 +307,17 @@ def prospective_shadow_status() -> dict:
     return _shadow_coordinator().status()
 
 
+@app.post("/api/shadow/readiness", dependencies=[Depends(require_token), Depends(require_coordinator_ready)])
+def create_prospective_shadow_readiness(payload: dict) -> dict:
+    expected_session = str(payload.get("expected_session") or "")
+    if not expected_session:
+        raise HTTPException(status_code=400, detail="expected_session is required")
+    try:
+        return _shadow_coordinator().create_readiness_manifest(expected_session)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/api/shadow/sessions", dependencies=[Depends(require_token), Depends(require_coordinator_ready)])
 def process_prospective_shadow_session(payload: dict) -> dict:
     required = {"session", "next_session", "source_observed_at", "code_revision", "bars"}
@@ -316,6 +327,12 @@ def process_prospective_shadow_session(payload: dict) -> dict:
     bars = payload.get("bars")
     if not isinstance(bars, dict) or not bars or len(bars) > 50:
         raise HTTPException(status_code=400, detail="shadow bars must contain 1-50 symbols")
+    quotes = payload.get("opening_quote_diagnostics")
+    if quotes is not None and (not isinstance(quotes, dict) or len(quotes) > 50):
+        raise HTTPException(
+            status_code=400,
+            detail="opening_quote_diagnostics must contain at most 50 symbols",
+        )
     try:
         return _shadow_coordinator().process_session(payload)
     except (KeyError, TypeError, ValueError) as exc:

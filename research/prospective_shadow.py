@@ -300,10 +300,107 @@ def execution_attribution(plan: dict, outcome: dict,
     return rows
 
 
+def opening_quote_diagnostics(
+    bars: Mapping[str, Mapping[str, float]],
+    quotes: Mapping[str, Mapping[str, Any]] | None,
+) -> list[dict]:
+    """Compare optional first-observed quotes with official research opens.
+
+    These observations are evidence only. They never alter shadow fills.
+    """
+    rows = []
+    for symbol, quote in sorted((quotes or {}).items()):
+        if symbol not in bars:
+            raise ValueError(f"opening quote contains unknown symbol: {symbol}")
+        try:
+            bid, ask = float(quote["bid"]), float(quote["ask"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"invalid opening quote for {symbol}") from exc
+        if bid <= 0 or ask <= 0 or ask < bid:
+            raise ValueError(f"invalid opening quote spread for {symbol}")
+        midpoint = (bid + ask) / 2.0
+        official_open = float(bars[symbol]["open"])
+        rows.append({
+            "symbol": symbol,
+            "observed_at": str(quote.get("observed_at") or ""),
+            "bid": bid,
+            "ask": ask,
+            "midpoint": midpoint,
+            "spread_bps": (ask / midpoint - bid / midpoint) * 10000.0,
+            "official_daily_open": official_open,
+            "midpoint_vs_daily_open_bps": (midpoint / official_open - 1.0) * 10000.0,
+            "used_for_execution": False,
+        })
+    return rows
+
+
+def execution_reconciliation(
+    *, plan: dict | None, outcome: dict | None,
+    starting_portfolio: ShadowPortfolio,
+    ending_portfolio: ShadowPortfolio,
+    prior_closes: Mapping[str, float],
+    bars: Mapping[str, Mapping[str, float]],
+) -> dict:
+    """Reconcile overnight, execution, intraday, cash, and portfolio values."""
+    start_prior_close = starting_portfolio.cash + sum(
+        quantity * float(prior_closes.get(symbol, 0.0))
+        for symbol, quantity in starting_portfolio.positions.items()
+    )
+    start_at_open = starting_portfolio.cash + sum(
+        quantity * float(bars.get(symbol, {}).get("open", 0.0))
+        for symbol, quantity in starting_portfolio.positions.items()
+    )
+    end_at_open = ending_portfolio.cash + sum(
+        quantity * float(bars.get(symbol, {}).get("open", 0.0))
+        for symbol, quantity in ending_portfolio.positions.items()
+    )
+    end_at_close = ending_portfolio.cash + sum(
+        quantity * float(bars.get(symbol, {}).get("close", 0.0))
+        for symbol, quantity in ending_portfolio.positions.items()
+    )
+    fills = (outcome or {}).get("fills", [])
+    modeled_cost = sum(
+        abs(float(row["quantity"]))
+        * abs(float(row["fill_price"]) - float(row["open"]))
+        for row in fills
+    )
+    requested = sum(abs(float(row["notional"])) for row in (plan or {}).get("orders", []))
+    filled = sum(abs(float(row["filled_notional"])) for row in fills)
+    result = {
+        "starting_value_at_prior_close": start_prior_close,
+        "starting_value_at_official_open": start_at_open,
+        "overnight_market_pnl": start_at_open - start_prior_close,
+        "requested_gross_notional": requested,
+        "filled_gross_notional": filled,
+        "unfilled_gross_notional": max(0.0, requested - filled),
+        "modeled_execution_cost": modeled_cost,
+        "ending_value_at_official_open": end_at_open,
+        "execution_value_change": end_at_open - start_at_open,
+        "intraday_holding_pnl": end_at_close - end_at_open,
+        "ending_value_at_close": end_at_close,
+        "ending_cash": ending_portfolio.cash,
+        "residual_cash_weight": (
+            ending_portfolio.cash / end_at_close if end_at_close > 0 else None
+        ),
+        "position_count": len(ending_portfolio.positions),
+        "paper_orders_submitted": 0,
+    }
+    result["invariants"] = {
+        "ending_cash_nonnegative": ending_portfolio.cash >= -1e-9,
+        "portfolio_value_identity_at_open": abs(
+            (end_at_open - start_at_open) + modeled_cost
+        ) <= max(0.01, start_at_open * 1e-9),
+        "paper_orders_disabled": True,
+    }
+    result["reconciliation_sha256"] = _hash(result)
+    return result
+
+
 def persist_compact_session_bundle(
     *, session: str, strategy_records: list[dict], store: Any,
     local_root: Path, retention_sessions: int = 90,
     maximum_bundle_bytes: int = 256 * 1024,
+    session_diagnostics: dict | None = None,
 ) -> dict:
     """Persist one compact immutable session bundle with bounded retention.
 
@@ -317,6 +414,7 @@ def persist_compact_session_bundle(
         "schema_version": 1,
         "session": session,
         "strategies": strategy_records,
+        "session_diagnostics": session_diagnostics or {},
     }
     payload["bundle_sha256"] = _hash(payload)
     local_root.mkdir(parents=True, exist_ok=True)

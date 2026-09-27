@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "research_id": "DEFENSIVE_LONG_TERM_CONCEPTS_PHASE_001",
+  "status": "DRAFT_INACTIVE",
+  "declared_at": "2026-09-26",
+  "purpose": "Evaluate genuinely distinct defensive long-term mechanisms in the market states where the current roster lacks a reliable active alternative to SPY.",
+  "activation": {
+    "automatic_submission": false,
+    "prospective_shadow_participant": false,
+    "paper_trading_approved": false,
+    "router_eligible": false,
+    "earliest_review_trigger": "after_2026-09-28_shadow_reconciliation"
+  },
+  "frozen_experiment_protection": {
+    "changes_existing_six_strategies": false,
+    "changes_existing_parameters": false,
+    "changes_existing_universes": false,
+    "changes_existing_pending_plans": false,
+    "generation_015_status": "paused"
+  },
+  "concepts": [
+    {
+      "concept_id": "TREASURY_CASH_ABSOLUTE_TREND",
+      "mechanism": "Select among cash-equivalent and Treasury-duration sleeves using independently observable absolute-trend rules.",
+      "candidate_instruments": ["BIL", "SHY", "IEF", "TLT"],
+      "primary_gap": "bear_deteriorating_and_equity_trend_failure"
+    },
+    {
+      "concept_id": "DEFENSIVE_MULTI_ASSET_TREND",
+      "mechanism": "Allocate defensively among Treasury, gold, cash-equivalent, and low-volatility equity sleeves without relying on the existing relative-momentum implementation.",
+      "candidate_instruments": ["BIL", "SHY", "IEF", "GLD", "USMV"],
+      "primary_gap": "inflation_or_growth_shock_defense"
+    },
+    {
+      "concept_id": "BROAD_EQUITY_ABSOLUTE_MOMENTUM",
+      "mechanism": "Hold broad equity only above a predeclared long-term trend hurdle and otherwise hold a cash-equivalent sleeve.",
+      "candidate_instruments": ["SPY", "BIL"],
+      "primary_gap": "simple_low_complexity_drawdown_control"
+    },
+    {
+      "concept_id": "DEFENSIVE_SECTOR_TREND",
+      "mechanism": "Compare defensive equity sectors with cash and Treasury sleeves under the same causal daily decision rules.",
+      "candidate_instruments": ["XLU", "XLP", "XLV", "BIL", "IEF"],
+      "primary_gap": "narrow_breadth_defensive_equity_participation"
+    }
+  ],
+  "required_evaluation": [
+    "canonical_state_labels",
+    "identical_date_boundaries",
+    "1_5_10_20_bps_cost_ladder",
+    "condition_specific_spy_comparison",
+    "episode_recurrence",
+    "chronological_folds",
+    "drawdown_and_turnover",
+    "cross_strategy_return_correlation",
+    "untouched_holdout_then_forward_shadow"
+  ]
+}

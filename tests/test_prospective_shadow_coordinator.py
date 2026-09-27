@@ -1,3 +1,4 @@
+import json
 import unittest
 import uuid
 from pathlib import Path
@@ -7,6 +8,34 @@ from research.prospective_shadow_coordinator import ProspectiveShadowCoordinator
 
 class Store:
     durable = False
+
+
+class DurableStore:
+    durable = True
+
+    def __init__(self):
+        self.files = {}
+
+    def upload_file(self, path, key):
+        self.files[key] = Path(path).read_bytes()
+        return "s3://test/" + key
+
+    def upload_file_if_missing(self, path, key):
+        self.files.setdefault(key, Path(path).read_bytes())
+        return "s3://test/" + key
+
+    def download_file(self, key, path):
+        if key not in self.files:
+            return False
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_bytes(self.files[key])
+        return True
+
+    def list_keys(self, prefix):
+        return sorted(key for key in self.files if key.startswith(prefix))
+
+    def delete_file(self, key):
+        self.files.pop(key, None)
 
 
 class CoordinatorTests(unittest.TestCase):
@@ -144,6 +173,68 @@ class CoordinatorTests(unittest.TestCase):
             coordinator.process_session(payload("2026-09-25", "2026-09-28"))
             with self.assertRaisesRegex(ValueError, "expected 2026-09-28"):
                 coordinator.process_session(payload("2026-09-29", "2026-09-30"))
+        finally:
+            for path in sorted(root.rglob("*"), reverse=True):
+                if path.is_file(): path.unlink()
+                elif path.is_dir(): path.rmdir()
+            root.rmdir()
+
+    def test_readiness_manifest_is_immutable_and_rehearsal_does_not_mutate_state(self):
+        root = Path(".test-prospective-coordinator") / uuid.uuid4().hex
+        root.mkdir(parents=True)
+        try:
+            coordinator = ProspectiveShadowCoordinator(root, Store())
+            symbols = tuple(coordinator.state["histories"])
+            coordinator.state["histories"] = {
+                symbol: [100 + index * .1 for index in range(260)] for symbol in symbols
+            }
+            payload = {
+                "session": "2026-09-25", "next_session": "2026-09-28",
+                "source_observed_at": "2026-09-25T21:05:00Z",
+                "code_revision": "test", "state_evidence": self.evidence,
+                "bars": {symbol: {"open": 100, "high": 100, "low": 100,
+                                  "close": 100, "volume": 1_000_000}
+                         for symbol in symbols},
+            }
+            coordinator.process_session(payload)
+            before = json.dumps(coordinator.state, sort_keys=True)
+            first = coordinator.create_readiness_manifest("2026-09-28")
+            second = coordinator.create_readiness_manifest("2026-09-28")
+            self.assertEqual("created", first["status"])
+            self.assertEqual("unchanged", second["status"])
+            self.assertTrue(all(first["checks"].values()))
+            self.assertEqual(before, json.dumps(coordinator.state, sort_keys=True))
+            with self.assertRaisesRegex(ValueError, "expected next session"):
+                coordinator.create_readiness_manifest("2026-09-29")
+        finally:
+            for path in sorted(root.rglob("*"), reverse=True):
+                if path.is_file(): path.unlink()
+                elif path.is_dir(): path.rmdir()
+            root.rmdir()
+
+    def test_readiness_manifest_restores_from_durable_storage_after_restart(self):
+        root = Path(".test-prospective-coordinator") / uuid.uuid4().hex
+        root.mkdir(parents=True); store = DurableStore()
+        try:
+            coordinator = ProspectiveShadowCoordinator(root, store)
+            symbols = tuple(coordinator.state["histories"])
+            coordinator.state["histories"] = {
+                symbol: [100 + index * .1 for index in range(260)] for symbol in symbols
+            }
+            coordinator.process_session({
+                "session": "2026-09-25", "next_session": "2026-09-28",
+                "source_observed_at": "2026-09-25T21:05:00Z",
+                "code_revision": "test", "state_evidence": self.evidence,
+                "bars": {symbol: {"open": 100, "high": 100, "low": 100,
+                                  "close": 100, "volume": 1_000_000}
+                         for symbol in symbols},
+            })
+            first = coordinator.create_readiness_manifest("2026-09-28")
+            (root / "readiness-2026-09-28.json").unlink()
+            restored = ProspectiveShadowCoordinator(root, store)
+            second = restored.create_readiness_manifest("2026-09-28")
+            self.assertEqual("unchanged", second["status"])
+            self.assertEqual(first["manifest_sha256"], second["manifest_sha256"])
         finally:
             for path in sorted(root.rglob("*"), reverse=True):
                 if path.is_file(): path.unlink()

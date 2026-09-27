@@ -9,9 +9,11 @@ from research.prospective_shadow import (
     append_execution_journal,
     build_frozen_plan,
     execute_shadow_plan,
+    execution_reconciliation,
     execution_attribution,
     freeze_decision,
     load_portfolio,
+    opening_quote_diagnostics,
     persist_compact_session_bundle,
     save_portfolio,
     write_immutable_snapshot,
@@ -118,6 +120,37 @@ class ProspectiveShadowTests(unittest.TestCase):
         self.assertGreaterEqual(result["ending_cash"], -1e-9)
         self.assertEqual(2, len(result["fills"]))
         self.assertTrue(any(row["partial"] for row in result["fills"]))
+
+    def test_quote_evidence_is_diagnostic_and_execution_reconciles(self):
+        plan = {
+            "plan_sha256": "plan", "orders": [
+                {"symbol": "SPY", "notional": 5_000.0, "side": "buy"}
+            ]
+        }
+        starting = ShadowPortfolio(cash=10_000.0)
+        ending = ShadowPortfolio(cash=starting.cash)
+        bars = {"SPY": {"open": 100.0, "close": 102.0, "volume": 1_000_000.0}}
+        outcome = execute_shadow_plan(plan, ending, bars)
+        quotes = opening_quote_diagnostics(
+            bars, {"SPY": {"bid": 99.9, "ask": 100.1,
+                            "observed_at": "2026-09-28T13:30:01Z"}}
+        )
+        self.assertFalse(quotes[0]["used_for_execution"])
+        self.assertAlmostEqual(100.0, quotes[0]["midpoint"])
+        reconciliation = execution_reconciliation(
+            plan=plan, outcome=outcome, starting_portfolio=starting,
+            ending_portfolio=ending, prior_closes={"SPY": 99.0}, bars=bars,
+        )
+        self.assertGreater(reconciliation["modeled_execution_cost"], 0)
+        self.assertGreater(reconciliation["intraday_holding_pnl"], 0)
+        self.assertTrue(reconciliation["invariants"]["portfolio_value_identity_at_open"])
+        self.assertEqual(0, reconciliation["paper_orders_submitted"])
+
+    def test_invalid_opening_quote_fails_closed(self):
+        with self.assertRaisesRegex(ValueError, "invalid opening quote spread"):
+            opening_quote_diagnostics(
+                {"SPY": {"open": 100.0}}, {"SPY": {"bid": 101.0, "ask": 100.0}}
+            )
 
     def test_portfolio_checkpoint_and_journal_survive_restart(self):
         folder = Path(".test-prospective-shadow") / uuid.uuid4().hex

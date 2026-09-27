@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import copy
 import gzip
 import json
+import os
+from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from research.prospective_shadow import (
     ShadowPortfolio, build_frozen_plan, execute_shadow_plan, execution_attribution,
-    freeze_decision, persist_compact_session_bundle,
+    execution_reconciliation, freeze_decision, opening_quote_diagnostics,
+    persist_compact_session_bundle, _hash,
 )
 from research.tier1_etf_replay import (
     Tier1Config, _daily_strategy_registry, _rebalance_day,
@@ -66,6 +71,124 @@ class ProspectiveShadowCoordinator:
         if self.store.durable:
             self.store.upload_file(temporary, "shadow/prospective-shadow-state.json.gz")
         temporary.replace(self.state_path)
+
+    def create_readiness_manifest(self, expected_session: str) -> dict:
+        """Freeze the existing prospective state and rehearse it without mutation."""
+        if self.state.get("expected_next_session") != expected_session:
+            raise ValueError(
+                "readiness session does not match the coordinator's expected next session"
+            )
+        pending = self.state.get("pending", {})
+        missing = sorted(set(STRATEGIES).difference(pending))
+        wrong_session = sorted(
+            name for name, plan in pending.items()
+            if str(plan.get("execution_session")) != expected_session
+        )
+        prior_closes = {
+            symbol: float(values[-1]) for symbol, values in self.state["histories"].items()
+            if values
+        }
+        missing_closes = sorted(set(resolve_universe(self.config.universe_name)) - set(prior_closes))
+        rehearsal = []
+        for strategy in STRATEGIES:
+            plan = pending.get(strategy)
+            if not plan:
+                rehearsal.append({"strategy": strategy, "status": "missing_plan"})
+                continue
+            data = self.state["portfolios"][strategy]
+            portfolio = ShadowPortfolio(
+                float(data["cash"]), dict(data["positions"]), set(data["processed_plans"])
+            )
+            before = copy.deepcopy(portfolio)
+            observations = {
+                symbol: {"open": price, "volume": 10_000_000.0}
+                for symbol, price in prior_closes.items()
+            }
+            outcome = execute_shadow_plan(plan, portfolio, observations)
+            second = execute_shadow_plan(plan, portfolio, observations)
+            rehearsal.append({
+                "strategy": strategy,
+                "status": outcome["status"],
+                "fills": len(outcome.get("fills", [])),
+                "rejections": len(outcome.get("rejections", [])),
+                "ending_cash_nonnegative": portfolio.cash >= -1e-9,
+                "idempotent_retry": second["status"] == "unchanged",
+                "starting_state_unchanged": (
+                    data["cash"] == before.cash and data["positions"] == before.positions
+                ),
+            })
+        checks = {
+            "expected_session_matches": True,
+            "all_six_plans_present": not missing,
+            "all_plans_target_expected_session": not wrong_session,
+            "complete_prior_close_coverage": not missing_closes,
+            "broker_orders_disabled": True,
+            "all_rehearsals_executed": all(r["status"] == "executed" for r in rehearsal),
+            "all_rehearsals_idempotent": all(r.get("idempotent_retry") for r in rehearsal),
+            "all_rehearsal_cash_nonnegative": all(
+                r.get("ending_cash_nonnegative") for r in rehearsal
+            ),
+        }
+        payload = {
+            "schema_version": 1,
+            "test_name": "prospective-long-term-shadow",
+            "expected_session": expected_session,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "service_code_revision": os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT"),
+            "strategies": list(STRATEGIES),
+            "universe_name": self.config.universe_name,
+            "market_state_universe_name": self.config.market_state_universe_name,
+            "config": asdict(self.config),
+            "config_sha256": _hash(asdict(self.config)),
+            "last_completed_session": self.state.get("last_session"),
+            "confirmed_market_state": (self.state.get("market_state") or {}).get("active"),
+            "pending_plans": {
+                name: {
+                    "decision_sha256": plan.get("decision_sha256"),
+                    "plan_sha256": plan.get("plan_sha256"),
+                    "execution_session": plan.get("execution_session"),
+                    "order_count": len(plan.get("orders", [])),
+                } for name, plan in sorted(pending.items())
+            },
+            "portfolio_state_sha256": _hash(self.state.get("portfolios", {})),
+            "checks": checks,
+            "rehearsal": rehearsal,
+            "missing_strategies": missing,
+            "wrong_execution_session": wrong_session,
+            "missing_prior_closes": missing_closes,
+            "frozen_strategy_parameters_changed": False,
+            "paper_orders_approved": False,
+        }
+        unsigned = dict(payload)
+        payload["manifest_sha256"] = _hash(unsigned)
+        path = self.root / f"readiness-{expected_session}.json"
+        if not path.exists() and self.store.durable:
+            self.store.download_file(
+                f"shadow/readiness-{expected_session}.json", path
+            )
+        if path.exists():
+            existing = json.loads(path.read_text(encoding="utf-8"))
+            volatile = {"created_at", "manifest_sha256"}
+            comparable_existing = {k: v for k, v in existing.items() if k not in volatile}
+            comparable_payload = {k: v for k, v in payload.items() if k not in volatile}
+            if _hash(comparable_existing) != _hash(comparable_payload):
+                raise ValueError("readiness manifest already exists with different frozen state")
+            durable_uri = None
+            if self.store.durable:
+                durable_uri = self.store.upload_file_if_missing(
+                    path, f"shadow/readiness-{expected_session}.json"
+                )
+            return {**existing, "status": "unchanged", "path": str(path),
+                    "durable_uri": durable_uri}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        durable_uri = None
+        if self.store.durable:
+            durable_uri = self.store.upload_file_if_missing(
+                path, f"shadow/readiness-{expected_session}.json"
+            )
+        return {**payload, "status": "created", "path": str(path),
+                "durable_uri": durable_uri}
 
     def process_session(self, payload: dict) -> dict:
         session, next_session = str(payload["session"]), str(payload["next_session"])
@@ -141,6 +264,9 @@ class ProspectiveShadowCoordinator:
         if supplied_confirmed and supplied_confirmed != state["active"]:
             raise ValueError("supplied confirmed market state disagrees with coordinator state")
         warnings = []
+        quote_diagnostics = opening_quote_diagnostics(
+            bars, payload.get("opening_quote_diagnostics")
+        )
         stale = sorted(name for name, plan in self.state["pending"].items()
                        if plan["execution_session"] < session)
         if stale:
@@ -155,6 +281,8 @@ class ProspectiveShadowCoordinator:
             )
             prior = self.state["pending"].get(strategy)
             outcome, attribution = None, []
+            starting_portfolio = copy.deepcopy(portfolio)
+            reconciliation = None
             if prior and prior["execution_session"] == session:
                 observations = {
                     symbol: {"open": float(row["open"]), "volume": float(row.get("volume", 0))}
@@ -163,6 +291,16 @@ class ProspectiveShadowCoordinator:
                 outcome = execute_shadow_plan(prior, portfolio, observations)
                 attribution = execution_attribution(
                     prior, outcome, {symbol: float(row["open"]) for symbol, row in bars.items()}
+                )
+                reconciliation = execution_reconciliation(
+                    plan=prior, outcome=outcome,
+                    starting_portfolio=starting_portfolio,
+                    ending_portfolio=portfolio,
+                    prior_closes={
+                        symbol: float(values[-1])
+                        for symbol, values in self.state["histories"].items() if values
+                    },
+                    bars=bars,
                 )
                 excessive = [row["symbol"] for row in attribution
                              if row["price_divergence_bps"] is not None
@@ -177,7 +315,8 @@ class ProspectiveShadowCoordinator:
                 "processed_plans": sorted(portfolio.processed_plans),
             }
             records.append({"strategy": strategy, "executed_plan": prior,
-                            "outcome": outcome, "attribution": attribution})
+                            "outcome": outcome, "attribution": attribution,
+                            "reconciliation": reconciliation})
         for symbol, row in bars.items():
             if symbol in self.state["histories"]:
                 values = self.state["histories"][symbol]
@@ -213,6 +352,12 @@ class ProspectiveShadowCoordinator:
         bundle = persist_compact_session_bundle(
             session=session, strategy_records=records, store=self.store,
             local_root=self.root / "sessions",
+            session_diagnostics={
+                "opening_quotes": quote_diagnostics,
+                "opening_quote_collection": payload.get("opening_quote_collection") or {},
+                "opening_quotes_used_for_execution": False,
+                "official_daily_opens_used_for_execution": True,
+            },
         )
         return {"status": "processed", "session": session,
                 "next_session": next_session, "strategies": len(records),
@@ -228,4 +373,8 @@ class ProspectiveShadowCoordinator:
                     key: value["execution_session"]
                     for key, value in self.state["pending"].items()},
                 "market_state": self.state.get("market_state"),
+                "readiness_manifest_available": bool(
+                    self.state.get("expected_next_session") and
+                    (self.root / f"readiness-{self.state['expected_next_session']}.json").exists()
+                ),
                 "broker_orders_enabled": False}
