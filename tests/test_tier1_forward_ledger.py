@@ -21,6 +21,37 @@ class ForwardLedgerTests(unittest.TestCase):
             self.assertEqual("appended",first["status"]); self.assertEqual("unchanged",second["status"])
             self.assertEqual(1,len(ledger.read_text().splitlines())); self.assertTrue(first["chain_sha256"])
 
+    def test_one_archive_appends_every_missing_forward_session(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); archive=root/"result.zip"; ledger=root/"ledger.jsonl"
+            manifest={"config":{"primary_cost_bps":10,"initial_cash":100000},"source_sha256":"weekly-source"}
+            stream=(
+                "date,strategy,cost_bps,equity,cash,positions\n"
+                "2026-09-02,SECTOR_ETF_ROTATION,10.0,100000,0,3\n"
+                "2026-09-03,SECTOR_ETF_ROTATION,10.0,101000,0,3\n"
+                "2026-09-04,SECTOR_ETF_ROTATION,10.0,102010,0,3\n"
+                "2026-09-08,SECTOR_ETF_ROTATION,10.0,101500,0,3\n"
+            )
+            with zipfile.ZipFile(archive,"w") as bundle:
+                bundle.writestr("tier1_manifest.json",json.dumps(manifest))
+                bundle.writestr("tier1_daily.csv",stream)
+
+            result=append_observation(archive,ledger,"2026-09-03")
+            rows=[json.loads(line) for line in ledger.read_text().splitlines()]
+
+            self.assertEqual(3,result["appended_count"])
+            self.assertEqual(
+                ["2026-09-03","2026-09-04","2026-09-08"],
+                [row["as_of_date"] for row in rows],
+            )
+            self.assertAlmostEqual(.01,rows[0]["daily_return"])
+            self.assertAlmostEqual(.01,rows[1]["daily_return"])
+            self.assertEqual(rows[0]["chain_sha256"],rows[1]["previous_chain_sha256"])
+
+            unchanged=append_observation(archive,ledger,"2026-09-03")
+            self.assertEqual("unchanged",unchanged["status"])
+            self.assertEqual(0,unchanged["appended_count"])
+
     def test_append_supports_named_shadow_strategy(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory); archive=root/"result.zip"; ledger=root/"ledger.jsonl"; self._archive(archive)

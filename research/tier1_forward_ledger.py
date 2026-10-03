@@ -53,44 +53,103 @@ def _validate_schema_compatible_config(
     return reference_hash
 
 
-def append_observation(archive: Path, ledger: Path, forward_start: str,
-                       strategy: str = "SECTOR_ETF_ROTATION",
-                       variant: str = "g2-momentum-no-1m") -> dict:
+def _load_archive_rows(archive: Path, strategy: str) -> tuple[dict, dict, list[dict]]:
     with zipfile.ZipFile(archive) as bundle:
         manifest = json.loads(bundle.read("tier1_manifest.json"))
         daily = list(csv.DictReader(io.TextIOWrapper(bundle.open("tier1_daily.csv"), encoding="utf-8")))
-    config = dict(manifest["config"]); config_hash = hashlib.sha256(_canonical(config)).hexdigest()
+    config = dict(manifest["config"])
     rows = [r for r in daily if r["strategy"] == strategy and float(r["cost_bps"]) == float(config["primary_cost_bps"])]
     rows.sort(key=lambda r: r["date"])
+    return manifest, config, rows
+
+
+def _existing_observations(ledger: Path) -> list[dict]:
+    if not ledger.is_file():
+        return []
+    return [
+        json.loads(line)
+        for line in ledger.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def append_missing_observations(
+    archive: Path,
+    ledger: Path,
+    forward_start: str,
+    strategy: str = "SECTOR_ETF_ROTATION",
+    variant: str = "g2-momentum-no-1m",
+) -> dict:
+    """Append every new daily observation in one archive, in date order."""
+    manifest, config, rows = _load_archive_rows(archive, strategy)
     if not rows or rows[-1]["date"] < forward_start:
         raise ValueError("archive does not contain a forward observation")
-    existing = []
-    if ledger.is_file():
-        existing = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines() if line.strip()]
+    existing = _existing_observations(ledger)
+    config_hash = hashlib.sha256(_canonical(config)).hexdigest()
     config_hash = _validate_schema_compatible_config(
         current=config, current_hash=config_hash, existing=existing, ledger=ledger
     )
-    latest_date = rows[-1]["date"]
-    if existing and latest_date <= existing[-1]["as_of_date"]:
-        return {"status": "unchanged", "as_of_date": latest_date, "chain_sha256": existing[-1]["chain_sha256"]}
-    previous_equity = float(rows[-2]["equity"]) if len(rows) > 1 else float(config["initial_cash"])
-    payload = {
-        "as_of_date": latest_date, "recorded_at": datetime.now(UTC).isoformat(),
-        "strategy": strategy, "variant": variant,
-        "equity": float(rows[-1]["equity"]),
-        "daily_return": float(rows[-1]["equity"]) / previous_equity - 1.0,
-        "cash": float(rows[-1]["cash"]), "positions": int(rows[-1]["positions"]),
-        "config_sha256": config_hash,
-        "source_sha256": manifest["source_sha256"],
-        "source_archive": archive.name,
-        "previous_chain_sha256": existing[-1]["chain_sha256"] if existing else None,
-        "paper_trading_approved": False,
-    }
-    payload["chain_sha256"] = hashlib.sha256(_canonical(payload)).hexdigest()
+    last_date = existing[-1]["as_of_date"] if existing else ""
+    pending_indexes = [
+        index
+        for index, row in enumerate(rows)
+        if row["date"] >= forward_start and row["date"] > last_date
+    ]
+    if not pending_indexes:
+        return {
+            "status": "unchanged",
+            "as_of_date": rows[-1]["date"],
+            "appended_count": 0,
+            "chain_sha256": existing[-1]["chain_sha256"] if existing else None,
+        }
+
+    previous_chain = existing[-1]["chain_sha256"] if existing else None
+    payloads = []
+    for index in pending_indexes:
+        row = rows[index]
+        previous_equity = (
+            float(rows[index - 1]["equity"])
+            if index > 0
+            else float(config["initial_cash"])
+        )
+        payload = {
+            "as_of_date": row["date"],
+            "recorded_at": datetime.now(UTC).isoformat(),
+            "strategy": strategy,
+            "variant": variant,
+            "equity": float(row["equity"]),
+            "daily_return": float(row["equity"]) / previous_equity - 1.0,
+            "cash": float(row["cash"]),
+            "positions": int(row["positions"]),
+            "config_sha256": config_hash,
+            "source_sha256": manifest["source_sha256"],
+            "source_archive": archive.name,
+            "previous_chain_sha256": previous_chain,
+            "paper_trading_approved": False,
+        }
+        payload["chain_sha256"] = hashlib.sha256(_canonical(payload)).hexdigest()
+        previous_chain = payload["chain_sha256"]
+        payloads.append(payload)
+
     ledger.parent.mkdir(parents=True, exist_ok=True)
     with ledger.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, sort_keys=True) + "\n")
-    return {"status": "appended", **payload}
+        for payload in payloads:
+            handle.write(json.dumps(payload, sort_keys=True) + "\n")
+    return {
+        "status": "appended",
+        "appended_count": len(payloads),
+        "first_appended_date": payloads[0]["as_of_date"],
+        **payloads[-1],
+    }
+
+
+def append_observation(archive: Path, ledger: Path, forward_start: str,
+                       strategy: str = "SECTOR_ETF_ROTATION",
+                       variant: str = "g2-momentum-no-1m") -> dict:
+    """Backward-compatible name; now catches up every missing session."""
+    return append_missing_observations(
+        archive, ledger, forward_start, strategy, variant
+    )
 
 
 def main():
