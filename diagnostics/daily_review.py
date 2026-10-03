@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import gc
 from datetime import datetime, timedelta, timezone
 import json
 import logging
@@ -22,6 +23,7 @@ from layers.layer_csv import LAYER_CSV_FILES, layer_csv_path
 EASTERN = ZoneInfo("America/New_York")
 _CSV_LOCK = threading.Lock()
 REVIEW_PACKAGE_DIR = Path("daily_review_packages")
+DEFAULT_MAX_BUILD_RSS_MB = 400.0
 
 ACCOUNT_FIELDS = [
     "timestamp", "trade_date", "snapshot_type", "capture_reason",
@@ -81,6 +83,56 @@ def _safe_float(value: Any) -> float:
         return float(value or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _process_rss_mb() -> float | None:
+    try:
+        import psutil
+
+        return psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+    except Exception:
+        return None
+
+
+def _max_build_rss_mb() -> float:
+    try:
+        return max(
+            0.0,
+            float(os.getenv("DAILY_REVIEW_MAX_BUILD_RSS_MB", DEFAULT_MAX_BUILD_RSS_MB)),
+        )
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_BUILD_RSS_MB
+
+
+def _guard_package_memory(state: dict) -> None:
+    rss_mb = _process_rss_mb()
+    limit_mb = _max_build_rss_mb()
+    state["package_build_rss_mb"] = rss_mb
+    if rss_mb is not None and limit_mb > 0 and rss_mb >= limit_mb:
+        reason = (
+            f"daily review package deferred: RSS {rss_mb:.1f} MB is at or "
+            f"above the {limit_mb:.1f} MB safety limit"
+        )
+        state["package_deferred_reason"] = reason
+        state["package_deferred_at"] = datetime.now(timezone.utc).isoformat()
+        raise MemoryError(reason)
+
+
+def _trim_package_memory() -> None:
+    gc.collect()
+    try:
+        import ctypes
+
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
 
 
 def _order_timestamp_is_trade_date(order: Any, trade_date: str) -> bool:
@@ -471,7 +523,27 @@ def _read_diagnostic_rows(filename: str, trade_date: str) -> list[dict]:
         return []
     try:
         with path.open("r", newline="", encoding="utf-8-sig") as handle:
-            rows = list(csv.DictReader(handle))
+            filtered = []
+            for row in csv.DictReader(handle):
+                raw = (
+                    row.get("timestamp")
+                    or row.get("broker_submitted_at")
+                    or row.get("plan_created_at")
+                    or ""
+                )
+                try:
+                    timestamp = datetime.fromisoformat(
+                        str(raw).replace("Z", "+00:00")
+                    )
+                    if timestamp.tzinfo is None:
+                        timestamp = timestamp.replace(tzinfo=timezone.utc)
+                    row_trade_date = (
+                        timestamp.astimezone(EASTERN).date().isoformat()
+                    )
+                except (TypeError, ValueError):
+                    row_trade_date = str(raw)[:10]
+                if row_trade_date == trade_date:
+                    filtered.append(row)
     except Exception:
         logging.warning(
             "[DailyReview] Failed reading %s for analytics.",
@@ -479,35 +551,16 @@ def _read_diagnostic_rows(filename: str, trade_date: str) -> list[dict]:
             exc_info=True,
         )
         return []
-    filtered = []
-    for row in rows:
-        raw = (
-            row.get("timestamp")
-            or row.get("broker_submitted_at")
-            or row.get("plan_created_at")
-            or ""
-        )
-        try:
-            timestamp = datetime.fromisoformat(
-                str(raw).replace("Z", "+00:00")
-            )
-            if timestamp.tzinfo is None:
-                timestamp = timestamp.replace(tzinfo=timezone.utc)
-            row_trade_date = (
-                timestamp.astimezone(EASTERN).date().isoformat()
-            )
-        except (TypeError, ValueError):
-            row_trade_date = str(raw)[:10]
-        if row_trade_date == trade_date:
-            filtered.append(row)
     return filtered
 
 
 def build_daily_review_package(trade_date: str | None = None) -> Path:
     state = app_state.setdefault("daily_review", {})
+    _guard_package_memory(state)
     trade_date = trade_date or state.get("trade_date") or datetime.now(EASTERN).date().isoformat()
     REVIEW_PACKAGE_DIR.mkdir(parents=True, exist_ok=True)
     path = REVIEW_PACKAGE_DIR / f"daily_review_{trade_date}.zip"
+    temporary_path = path.with_suffix(".zip.tmp")
     snapshots = state.get("snapshots", {})
     execution_rows = _read_diagnostic_rows(
         LAYER_CSV_FILES["orders"], trade_date
@@ -552,34 +605,48 @@ def build_daily_review_package(trade_date: str | None = None) -> Path:
         for log_path in log_dir.glob("trading_bot.log*"):
             candidates[f"logs/{log_path.name}"] = log_path
 
-    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for arcname, source in sorted(candidates.items()):
-            if source.exists() and source.is_file():
-                archive.write(source, arcname=arcname)
-                metadata["files"].append({
-                    "filename": arcname,
-                    "size_bytes": source.stat().st_size,
-                })
-        archive.writestr("snapshots.json", json.dumps(snapshots, indent=2, default=str))
-        archive.writestr(
-            "daily_summary.json",
-            json.dumps(daily_summary, indent=2, default=str),
+    try:
+        with zipfile.ZipFile(
+            temporary_path, "w", compression=zipfile.ZIP_DEFLATED
+        ) as archive:
+            for arcname, source in sorted(candidates.items()):
+                if source.exists() and source.is_file():
+                    archive.write(source, arcname=arcname)
+                    metadata["files"].append({
+                        "filename": arcname,
+                        "size_bytes": source.stat().st_size,
+                    })
+            archive.writestr("snapshots.json", json.dumps(snapshots, indent=2, default=str))
+            archive.writestr(
+                "daily_summary.json",
+                json.dumps(daily_summary, indent=2, default=str),
+            )
+            archive.writestr(
+                "execution_analytics.json",
+                json.dumps(
+                    daily_summary.get("execution_analytics", {}),
+                    indent=2,
+                    default=str,
+                ),
+            )
+            archive.writestr("config_redacted.json", json.dumps(_redacted_config(), indent=2, default=str))
+            archive.writestr("manifest.json", json.dumps(metadata, indent=2, default=str))
+        temporary_path.replace(path)
+        state["latest_package"] = str(path.resolve())
+        state["latest_package_at"] = datetime.now(timezone.utc).isoformat()
+        state.pop("package_deferred_reason", None)
+        state.pop("package_deferred_at", None)
+        logging.warning(
+            "[DailyReview] Review package created: %s (RSS before build: %s MB)",
+            path,
+            f"{state.get('package_build_rss_mb'):.1f}"
+            if state.get("package_build_rss_mb") is not None else "unknown",
         )
-        archive.writestr(
-            "execution_analytics.json",
-            json.dumps(
-                daily_summary.get("execution_analytics", {}),
-                indent=2,
-                default=str,
-            ),
-        )
-        archive.writestr("config_redacted.json", json.dumps(_redacted_config(), indent=2, default=str))
-        archive.writestr("manifest.json", json.dumps(metadata, indent=2, default=str))
-
-    state["latest_package"] = str(path.resolve())
-    state["latest_package_at"] = datetime.now(timezone.utc).isoformat()
-    logging.warning("[DailyReview] Review package created: %s", path)
-    return path
+        return path
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+        _trim_package_memory()
 
 
 async def run_daily_review_monitor(poll_seconds: float = 30.0) -> None:
@@ -650,11 +717,20 @@ async def run_daily_review_monitor(poll_seconds: float = 30.0) -> None:
                     market_is_open=False,
                     now=now,
                 )
-                await asyncio.to_thread(
-                    build_daily_review_package,
-                    trade_date,
-                )
-                state["package_created_for"] = trade_date
+                if _env_bool("DAILY_REVIEW_REBUILD_AFTER_HOURS", False):
+                    await asyncio.to_thread(
+                        build_daily_review_package,
+                        trade_date,
+                    )
+                    state["package_created_for"] = trade_date
+                else:
+                    state["after_hours_package_rebuild_skipped_at"] = (
+                        datetime.now(timezone.utc).isoformat()
+                    )
+                    logging.info(
+                        "[DailyReview] Captured after-hours snapshot without "
+                        "rebuilding the full archive."
+                    )
             previous_open = is_open
         except asyncio.CancelledError:
             raise
