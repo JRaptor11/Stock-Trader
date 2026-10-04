@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+from research.strategy_registry import validate_experiment_declaration
 from research.universes import resolve_universe
 
 
@@ -32,6 +33,8 @@ def test_phase006_jobs_preserve_costs_states_and_exact_windows():
     for suffix, (strategy, start) in expected.items():
         job = load(f"long-term-prehistory-validation-006-{suffix}-job.json")
         config = job["tier1_config"]
+        declaration = validate_experiment_declaration(job["experiment"])
+        assert declaration["hypothesis_id"] == "LONG_TERM_PREHISTORY_VALIDATION_006"
         assert job["experiment"]["hypothesis_id"] == "LONG_TERM_PREHISTORY_VALIDATION_006"
         assert job["research_evaluation"]["router"] is False
         assert job["research_evaluation"]["evaluate_all_hierarchical_states"] is True
