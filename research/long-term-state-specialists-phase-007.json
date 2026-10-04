@@ -1,0 +1,55 @@
+{
+  "study_id": "LONG_TERM_STATE_SPECIALISTS_PHASE_007",
+  "status": "locked_before_return_analysis",
+  "parent_study": "LONG_TERM_PREHISTORY_VALIDATION_006",
+  "generation_015_status": "paused_and_unchanged",
+  "purpose": "Test whether an unchanged, structurally distinct defensive concept can reliably outperform SPY during causally confirmed bear-deteriorating states without constructing a router.",
+  "design": {
+    "router": false,
+    "paper_trading": false,
+    "parameter_retuning": false,
+    "promotion": false,
+    "shared_universe": "ETF_LONG_TERM_STATE_SPECIALISTS_EXACT",
+    "canonical_market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+    "primary_state_level": "trend",
+    "primary_market_state": "BEAR_DETERIORATING",
+    "secondary_state_levels": ["trend_volatility", "trend_breadth", "core"],
+    "primary_cost_bps": 10.0,
+    "cost_ladder_bps": [1.0, 5.0, 10.0, 20.0],
+    "eras": [
+      {"name": "prehistory", "coverage": "2007-05-30 through 2012-12-31", "role": "older locked validation era"},
+      {"name": "modern", "coverage": "2011-01-03 through 2026-09-17", "role": "multi-regime replication era; not independent of all prior development"}
+    ],
+    "independence_rule": "Strategy identities, mechanisms, costs, states, and acceptance gates are frozen before Phase 007 return outputs are inspected.",
+    "selection_rule": "The challenger roster contains distinct existing mechanisms, not parameter variants. No challenger may be removed because of poor whole-period performance if it has repeatable state-specific evidence.",
+    "comparison_rule": "Every strategy in an era uses identical dates, causal state labels, execution assumptions, and costs. Evidence is reported against SPY at episode and aggregate levels.",
+    "acceptance_standard": {
+      "preferred_minimum_sessions": 250,
+      "preferred_minimum_independent_episodes": 20,
+      "minimum_episode_win_rate": 0.60,
+      "require_positive_aggregate_excess_return": true,
+      "require_positive_median_episode_excess_return": true,
+      "require_positive_excess_at_cost_bps": [10.0, 20.0],
+      "require_no_direction_reversal_across_eras": true,
+      "require_bounded_worst_losing_episode": true,
+      "require_forward_shadow_before_paper_use": true
+    }
+  },
+  "frozen_controls": [
+    "SPY_BUY_HOLD",
+    "STATIC_INFLATION_AWARE",
+    "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+    "INDUSTRY_ETF_MOMENTUM",
+    "SECTOR_ETF_ROTATION"
+  ],
+  "defensive_challengers": [
+    {"strategy": "VOL_MANAGED_SPY", "mechanism": "continuous realized-volatility exposure scaling"},
+    {"strategy": "EQUITY_TREND_DEFENSIVE", "mechanism": "multi-horizon equity trend with defensive-asset fallback"},
+    {"strategy": "DRAWDOWN_BRAKE", "mechanism": "drawdown-triggered cash defense"},
+    {"strategy": "VOLATILITY_SHOCK_DEFENSIVE", "mechanism": "short-versus-medium volatility shock defense"},
+    {"strategy": "BREADTH_DETERIORATION_DEFENSIVE", "mechanism": "breadth-collapse defensive allocation"},
+    {"strategy": "DEFENSIVE_TREND_PERSISTENCE", "mechanism": "persistent defensive-asset trend selection when equity trend is negative"}
+  ],
+  "interpretation_rule": "Passing the gates creates a viable specialist candidate for further frozen validation, not authorization to route capital or place trades.",
+  "promotion_effect": "none"
+}

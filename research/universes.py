@@ -94,6 +94,15 @@ UNIVERSES = {
         "SPY", "SHY", "IEF", "GLD", "DBC",
         "XLY", "XLP", "XLE", "XLF", "XLV", "XLI", "XLB", "XLK", "XLU",
     ),
+    # Shared exact roster for state-specialist comparisons.  Every member has
+    # complete coverage from BIL's 2007-05-30 inception onward, allowing the
+    # controls and defensive challengers to use one synchronized state clock.
+    "ETF_LONG_TERM_STATE_SPECIALISTS_EXACT": (
+        "SPY", "QQQ", "IWM", "SHY", "BIL", "IEF", "TLT", "GLD", "DBC",
+        "EFA", "EEM", "VNQ", "XBI", "XRT", "XHB", "XME", "XOP", "KRE",
+        "SMH", "IYT", "XLY", "XLP", "XLE", "XLF", "XLV", "XLI", "XLB",
+        "XLK", "XLU",
+    ),
     # Exactly 30 liquid ETFs spanning the principal allocation roles. This is
     # a deployable watch roster under Alpaca Basic's current 30-symbol stream
     # ceiling, but daily research may use larger offline universes.

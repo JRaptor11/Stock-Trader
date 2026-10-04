@@ -15,6 +15,7 @@ class StrategyRegistryTests(unittest.TestCase):
         self.assertIn("LONG_TERM_ENGINE_STUDY_001", HYPOTHESES)
         self.assertIn("LONG_TERM_VALIDATION_PHASE_001", HYPOTHESES)
         self.assertIn("LONG_TERM_PREHISTORY_VALIDATION_006", HYPOTHESES)
+        self.assertIn("LONG_TERM_STATE_SPECIALISTS_PHASE_007", HYPOTHESES)
 
     def test_snapshot_is_stable_except_capture_time(self):
         first = registry_snapshot(); second = registry_snapshot()
