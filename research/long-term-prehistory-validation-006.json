@@ -1,0 +1,58 @@
+{
+  "study_id": "LONG_TERM_PREHISTORY_VALIDATION_006",
+  "status": "locked_before_return_analysis",
+  "parent_study": "LONG_TERM_LOCKED_VALIDATION_005",
+  "generation_015_status": "paused_and_unchanged",
+  "purpose": "Evaluate exact tradable long-term strategy concepts on pre-2013 market history that was not used to select the Phase 005 finalists.",
+  "design": {
+    "router": false,
+    "tactical_overrides": false,
+    "parameter_retuning": false,
+    "promotion": false,
+    "validation_only_data_source": "Yahoo adjusted daily chart data",
+    "data_end_date": "2012-12-31",
+    "canonical_market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+    "primary_cost_bps": 10.0,
+    "cost_ladder_bps": [1.0, 5.0, 10.0, 20.0],
+    "minimum_state_sessions": 30,
+    "minimum_state_episodes": 5,
+    "analysis_rule": "Report direct strategy-versus-SPY results at every supported hierarchical market-state level, including sessions, episodes, return, excess return, drawdown, turnover, and cost sensitivity. Never select states after observing returns.",
+    "independence_rule": "No return, state-performance, or ranking output may be inspected before this declaration and its job files are frozen.",
+    "coverage_rule": "Each cohort has its own exact common-coverage start; later-launch ETFs cannot truncate unrelated cohorts.",
+    "proxy_rule": "Proxy or reconstructed factor concepts are excluded from primary evidence and require a separately labeled future experiment."
+  },
+  "primary_cohorts": [
+    {
+      "cohort": "cross_asset_exact",
+      "strategy": "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+      "universe": "ETF_LONG_TERM_PREHISTORY_CROSS_ASSET",
+      "common_start": "2007-05-30"
+    },
+    {
+      "cohort": "industry_exact",
+      "strategy": "INDUSTRY_ETF_MOMENTUM",
+      "universe": "ETF_LONG_TERM_PREHISTORY_INDUSTRY",
+      "common_start": "2006-06-22"
+    },
+    {
+      "cohort": "sector_exact",
+      "strategy": "SECTOR_ETF_ROTATION",
+      "universe": "ETF_LONG_TERM_PREHISTORY_SECTOR",
+      "common_start": "2002-07-30"
+    },
+    {
+      "cohort": "inflation_aware_exact",
+      "strategy": "STATIC_INFLATION_AWARE",
+      "universe": "ETF_LONG_TERM_PREHISTORY_INFLATION",
+      "common_start": "2006-02-06"
+    }
+  ],
+  "excluded_primary_concepts": [
+    {
+      "strategies": ["VALUE_QUALITY_STATIC", "MULTIFACTOR_STATIC", "FACTOR_ETF_MOMENTUM"],
+      "reason": "Defining modern factor ETFs do not provide a complete exact pre-2013 investable history."
+    }
+  ],
+  "interpretation_rule": "This is an older independent time sample but still one finite historical era. Evidence is strongest when excess return recurs across multiple state episodes and remains positive after the full cost ladder.",
+  "promotion_effect": "none"
+}

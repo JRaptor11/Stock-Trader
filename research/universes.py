@@ -74,6 +74,26 @@ UNIVERSES = {
     "ETF_LONG_TERM_STATE_CANONICAL": (
         "SPY", "XLY", "XLP", "XLE", "XLF", "XLV", "XLI", "XLB", "XLK", "XLU",
     ),
+    # Locked pre-2013 validation cohorts.  These deliberately omit later
+    # launches (XLC, XLRE, and the modern factor ETFs) instead of letting one
+    # unavailable symbol truncate the entire historical experiment.
+    "ETF_LONG_TERM_PREHISTORY_SECTOR": (
+        "SPY", "SHY", "XLY", "XLP", "XLE", "XLF", "XLV",
+        "XLI", "XLB", "XLK", "XLU",
+    ),
+    "ETF_LONG_TERM_PREHISTORY_INDUSTRY": (
+        "SPY", "SHY", "XBI", "XRT", "XHB", "XME", "XOP", "KRE", "SMH", "IYT",
+        "XLY", "XLP", "XLE", "XLF", "XLV", "XLI", "XLB", "XLK", "XLU",
+    ),
+    "ETF_LONG_TERM_PREHISTORY_CROSS_ASSET": (
+        "SPY", "QQQ", "IWM", "SHY", "BIL", "IEF", "TLT", "GLD", "DBC",
+        "EFA", "EEM", "VNQ", "XLY", "XLP", "XLE", "XLF", "XLV", "XLI",
+        "XLB", "XLK", "XLU",
+    ),
+    "ETF_LONG_TERM_PREHISTORY_INFLATION": (
+        "SPY", "SHY", "IEF", "GLD", "DBC",
+        "XLY", "XLP", "XLE", "XLF", "XLV", "XLI", "XLB", "XLK", "XLU",
+    ),
     # Exactly 30 liquid ETFs spanning the principal allocation roles. This is
     # a deployable watch roster under Alpaca Basic's current 30-symbol stream
     # ceiling, but daily research may use larger offline universes.
