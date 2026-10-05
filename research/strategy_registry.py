@@ -159,6 +159,12 @@ HYPOTHESES = {
         "data_frequency": "1d", "turnover_expectation": "diagnostic_only",
         "point_in_time_equities_required": False,
     },
+    "DOWNSIDE_EVENT_ACTIONABILITY_PHASE_009": {
+        "tier": 1, "status": "active_research",
+        "mechanism": "validate a frozen causal taxonomy of discrete downside-continuation events across older and modern eras before testing defensive implementations",
+        "data_frequency": "1d", "turnover_expectation": "diagnostic_only",
+        "point_in_time_equities_required": False,
+    },
     "CURRENT_INTRADAY_FAMILY": {
         "tier": "legacy_challenger", "status": "active_challenger",
         "mechanism": "intraday cross-sectional price ranking and target rotation",
