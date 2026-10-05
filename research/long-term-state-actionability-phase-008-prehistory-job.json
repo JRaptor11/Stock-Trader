@@ -1,0 +1,18 @@
+{
+  "job_id": "long-term-state-actionability-phase-008-prehistory-yahoo",
+  "engine": "tier1_etf_daily",
+  "bars_csv": "long_term_prehistory_validation_1998_2012_1d_yahoo.csv",
+  "data_source": "Yahoo adjusted daily chart data; older state-actionability audit",
+  "experiment": {"hypothesis_id": "LONG_TERM_STATE_ACTIONABILITY_PHASE_008", "trial_id": "bear-transition-prehistory-locked"},
+  "research_evaluation": {"cohort": "state_actionability", "baseline_strategy": "SPY_BUY_HOLD", "router": false, "target_state": "BEAR_DETERIORATING"},
+  "tier1_config": {
+    "initial_cash": 100000.0, "universe_name": "ETF_LONG_TERM_STATE_SPECIALISTS_EXACT", "market_state_universe_name": "ETF_LONG_TERM_STATE_CANONICAL",
+    "benchmark_symbol": "SPY", "cash_proxy_symbol": "SHY", "rebalance_frequency": "monthly", "volatility_lookback_days": 60, "volatility_target_annualized": 0.12,
+    "regime_high_volatility_annualized": 0.18, "trend_lookback_days": 200, "momentum_lookbacks_days": [63, 126, 252], "sector_holdings": 3, "cross_asset_holdings": 3,
+    "factor_holdings": 2, "industry_holdings": 3, "no_trade_band": 0.02, "cost_ladder_bps": [1.0, 5.0, 10.0, 20.0], "primary_cost_bps": 10.0,
+    "discovery_end_date": "2010-12-31", "holdout_start_date": "2011-01-01", "required_common_start_date": "2007-05-30", "minimum_common_coverage_pct": 99.0,
+    "minimum_scored_sessions": 1100, "rolling_window_sessions": 756, "walk_forward_train_sessions": 756, "walk_forward_test_sessions": 126, "walk_forward_step_sessions": 126,
+    "hierarchical_state_validation": true,
+    "strategy_names": ["SPY_BUY_HOLD", "STATIC_INFLATION_AWARE", "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE", "INDUSTRY_ETF_MOMENTUM", "SECTOR_ETF_ROTATION", "VOL_MANAGED_SPY", "EQUITY_TREND_DEFENSIVE", "DRAWDOWN_BRAKE", "VOLATILITY_SHOCK_DEFENSIVE", "BREADTH_DETERIORATION_DEFENSIVE", "DEFENSIVE_TREND_PERSISTENCE"]
+  }
+}
