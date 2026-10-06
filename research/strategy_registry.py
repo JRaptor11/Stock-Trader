@@ -165,6 +165,12 @@ HYPOTHESES = {
         "data_frequency": "1d", "turnover_expectation": "diagnostic_only",
         "point_in_time_equities_required": False,
     },
+    "LONG_TERM_BASELINE_MECHANISMS_PHASE_010": {
+        "tier": 1, "status": "active_research",
+        "mechanism": "compare a frozen compact roster of structurally distinct long-term baseline mechanisms across non-overlapping older and modern evidence windows without routing or retuning",
+        "data_frequency": "1d", "turnover_expectation": "low_to_medium",
+        "point_in_time_equities_required": False,
+    },
     "CURRENT_INTRADAY_FAMILY": {
         "tier": "legacy_challenger", "status": "active_challenger",
         "mechanism": "intraday cross-sectional price ranking and target rotation",

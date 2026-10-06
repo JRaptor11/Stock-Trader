@@ -18,6 +18,7 @@ class StrategyRegistryTests(unittest.TestCase):
         self.assertIn("LONG_TERM_STATE_SPECIALISTS_PHASE_007", HYPOTHESES)
         self.assertIn("LONG_TERM_STATE_ACTIONABILITY_PHASE_008", HYPOTHESES)
         self.assertIn("DOWNSIDE_EVENT_ACTIONABILITY_PHASE_009", HYPOTHESES)
+        self.assertIn("LONG_TERM_BASELINE_MECHANISMS_PHASE_010", HYPOTHESES)
 
     def test_snapshot_is_stable_except_capture_time(self):
         first = registry_snapshot(); second = registry_snapshot()
