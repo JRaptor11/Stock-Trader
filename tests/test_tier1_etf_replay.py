@@ -34,6 +34,14 @@ def write_bars(path: Path, sessions: int = 280):
 
 
 class Tier1ETFReplayTests(unittest.TestCase):
+    def test_config_accepts_baseline_core_diagnostic_profile(self):
+        config = config_from_job({"tier1_config": {"diagnostic_profile": "baseline_core"}})
+        self.assertEqual("baseline_core", config.diagnostic_profile)
+
+    def test_config_rejects_unknown_diagnostic_profile(self):
+        with self.assertRaisesRegex(ValueError, "diagnostic_profile"):
+            config_from_job({"tier1_config": {"diagnostic_profile": "everything"}})
+
     def test_cost_path_audit_flags_nonmonotonic_path_dependent_results(self):
         config = Tier1Config(
             strategy_names=("SPY_BUY_HOLD",), cost_ladder_bps=(1.0, 10.0)
@@ -309,6 +317,36 @@ class Tier1ETFReplayTests(unittest.TestCase):
                 self.assertEqual({"1.0","10.0"},{row["cost_bps"] for row in daily_rows})
                 self.assertEqual("holdout",summary["promotion_period"])
                 self.assertTrue(all(not row["paper_trading_approved"] for row in summary["promotion_gates"]))
+
+    def test_baseline_core_profile_keeps_core_evidence_and_empties_extended_outputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); bars = root / "bars.csv"; archive = root / "result.zip"
+            write_bars(bars)
+            job = {
+                "engine": "tier1_etf_daily",
+                "experiment": {"hypothesis_id": "ETF_DUAL_MOMENTUM", "trial_id": "baseline-core"},
+                "tier1_config": {
+                    "cost_ladder_bps": [10], "primary_cost_bps": 10,
+                    "hierarchical_state_validation": True,
+                    "diagnostic_profile": "baseline_core",
+                    "rolling_window_sessions": 10,
+                    "walk_forward_train_sessions": 10,
+                    "walk_forward_test_sessions": 5,
+                    "walk_forward_step_sessions": 5,
+                },
+            }
+            run_tier1_job(job, bars, archive, "abc123")
+            with zipfile.ZipFile(archive) as bundle:
+                manifest = json.loads(bundle.read("tier1_manifest.json"))
+                self.assertEqual("baseline_core", manifest["config"]["diagnostic_profile"])
+                self.assertTrue(bundle.read("tier1_period_scorecard.csv"))
+                self.assertTrue(bundle.read("tier1_rolling_window_scorecard.csv"))
+                self.assertTrue(bundle.read("tier1_walk_forward_scorecard.csv"))
+                self.assertTrue(bundle.read("tier1_market_state_period_scorecard.csv"))
+                self.assertTrue(bundle.read("tier1_market_state_hierarchy_period_scorecard.csv"))
+                self.assertEqual(b"", bundle.read("tier1_event_diagnostics.csv"))
+                self.assertEqual(b"", bundle.read("tier1_state_transition_timing.csv"))
+                self.assertEqual(b"", bundle.read("tier1_generation_candidate_map.csv"))
 
 
 if __name__ == "__main__": unittest.main()

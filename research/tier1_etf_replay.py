@@ -169,6 +169,7 @@ class Tier1Config:
     walk_forward_test_sessions: int = 252
     walk_forward_step_sessions: int = 252
     hierarchical_state_validation: bool = False
+    diagnostic_profile: str = "full"
 
     def __post_init__(self):
         if self.rebalance_frequency not in {"weekly", "monthly"}:
@@ -195,6 +196,8 @@ class Tier1Config:
             raise ValueError(f"unknown Tier 1 strategies: {sorted(unknown_strategies)}")
         if len(set(self.strategy_names)) != len(self.strategy_names):
             raise ValueError("strategy_names must not contain duplicates")
+        if self.diagnostic_profile not in {"full", "baseline_core"}:
+            raise ValueError("diagnostic_profile must be full or baseline_core")
         if not 0 < self.minimum_common_coverage_pct <= 100:
             raise ValueError("minimum_common_coverage_pct must be above zero and at most 100")
         for name in ("minimum_scored_sessions", "rolling_window_sessions",
@@ -1343,70 +1346,86 @@ def run_tier1_job(job: dict, bars_path: Path, archive_path: Path, source_sha256:
             progress_callback=progress_callback,
             daily_for_cost=lambda cost: _read_daily_spool(cost_daily_paths[float(cost)]),
         )
-    (state_actionability_sessions, state_actionability_summary,
-     state_actionability_segments) = build_state_actionability_diagnostics(
-        all_daily, market_conditions, config.primary_cost_bps,
-        benchmark_strategy="SPY_BUY_HOLD",
-    )
-    (downside_event_sessions, downside_event_summary,
-     downside_event_overlap) = build_downside_event_diagnostics(
-        all_daily, market_conditions, config.primary_cost_bps,
-        benchmark_strategy="SPY_BUY_HOLD",
-    )
-    if progress_callback:
-        progress_callback({"stage":"building_event_diagnostics","stage_completed_rows":0,
-                           "stage_total_rows":len(config.strategy_names),"stage_percent_complete":0.0})
-    event_rows,event_summary,event_horizons,event_conditions=build_event_diagnostics(
-        dates, bars, config, scored_start, market_conditions, _targets
-    )
-    breakout_opportunities,breakout_opportunity_summary=build_breakout_opportunity_diagnostics(
-        dates,bars,config,scored_start,state_labels,_targets,SECTOR_ETFS
-    )
-    if progress_callback:
-        progress_callback({"stage":"building_event_diagnostics",
-                           "stage_completed_rows":len(config.strategy_names),
-                           "stage_total_rows":len(config.strategy_names),"stage_percent_complete":100.0})
     pairwise_summary=_pairwise_summary(period_scorecards,rolling_scorecards,walk_forward_scorecards,config)
-    baseline_strategy = job.get("research_evaluation", {}).get(
-        "baseline_strategy", "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE"
-    )
-    if baseline_strategy not in config.strategy_names:
-        baseline_strategy = "SPY_BUY_HOLD"
-    evidence_matrix,tactical_comparisons,tactical_summary=build_role_aware_evidence(
-        config,scorecards,period_scorecards,state_periods,state_survival,event_rows,
-        state_labels,all_daily,STRATEGY_CONCEPT_FAMILIES,baseline_strategy
-    )
-    baseline_leaderboard=build_baseline_state_leaderboard(
-        config,state_periods,state_survival,baseline_strategy
-    )
-    defensive_comparisons=build_defensive_baseline_comparisons(
-        config,state_periods,state_costs,baseline_strategy
-    )
-    tactical_horizon_comparisons,tactical_horizon_summary=build_tactical_horizon_comparisons(
-        config,event_rows,state_labels,all_daily,baseline_strategy
-    )
-    locked_tactical_validation=build_locked_tactical_validation(
-        config,tactical_horizon_comparisons,
-        job.get("research_evaluation",{}).get("locked_tactical_hypotheses",[])
-    )
-    defensive_distinctness=build_defensive_distinctness(
-        config,all_daily,all_trades,state_labels
-    )
-    baseline_era_details,baseline_era_recurrence=build_baseline_era_recurrence(
-        config,all_daily,state_labels
-    )
-    baseline_confirmation_sensitivity=build_baseline_confirmation_sensitivity(
-        config,all_daily,market_conditions
-    )
-    generation_candidate_map=build_generation_candidate_map(
-        config,baseline_confirmation_sensitivity,baseline_era_recurrence,
-        locked_tactical_validation,defensive_comparisons
-    )
+    extended_diagnostics = config.diagnostic_profile == "full"
+    (state_actionability_sessions, state_actionability_summary,
+     state_actionability_segments, downside_event_sessions,
+     downside_event_summary, downside_event_overlap, event_rows,
+     event_summary, event_horizons, event_conditions, breakout_opportunities,
+     breakout_opportunity_summary, evidence_matrix, tactical_comparisons,
+     tactical_summary, baseline_leaderboard, defensive_comparisons,
+     tactical_horizon_comparisons, tactical_horizon_summary,
+     locked_tactical_validation, defensive_distinctness, baseline_era_details,
+     baseline_era_recurrence, baseline_confirmation_sensitivity,
+     generation_candidate_map) = ([],) * 25
+    transition_timing_rows = ()
+    if extended_diagnostics:
+        (state_actionability_sessions, state_actionability_summary,
+         state_actionability_segments) = build_state_actionability_diagnostics(
+            all_daily, market_conditions, config.primary_cost_bps,
+            benchmark_strategy="SPY_BUY_HOLD",
+        )
+        (downside_event_sessions, downside_event_summary,
+         downside_event_overlap) = build_downside_event_diagnostics(
+            all_daily, market_conditions, config.primary_cost_bps,
+            benchmark_strategy="SPY_BUY_HOLD",
+        )
+        if progress_callback:
+            progress_callback({"stage":"building_event_diagnostics","stage_completed_rows":0,
+                               "stage_total_rows":len(config.strategy_names),"stage_percent_complete":0.0})
+        event_rows,event_summary,event_horizons,event_conditions=build_event_diagnostics(
+            dates, bars, config, scored_start, market_conditions, _targets
+        )
+        breakout_opportunities,breakout_opportunity_summary=build_breakout_opportunity_diagnostics(
+            dates,bars,config,scored_start,state_labels,_targets,SECTOR_ETFS
+        )
+        if progress_callback:
+            progress_callback({"stage":"building_event_diagnostics",
+                               "stage_completed_rows":len(config.strategy_names),
+                               "stage_total_rows":len(config.strategy_names),"stage_percent_complete":100.0})
+        baseline_strategy = job.get("research_evaluation", {}).get(
+            "baseline_strategy", "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE"
+        )
+        if baseline_strategy not in config.strategy_names:
+            baseline_strategy = "SPY_BUY_HOLD"
+        evidence_matrix,tactical_comparisons,tactical_summary=build_role_aware_evidence(
+            config,scorecards,period_scorecards,state_periods,state_survival,event_rows,
+            state_labels,all_daily,STRATEGY_CONCEPT_FAMILIES,baseline_strategy
+        )
+        baseline_leaderboard=build_baseline_state_leaderboard(
+            config,state_periods,state_survival,baseline_strategy
+        )
+        defensive_comparisons=build_defensive_baseline_comparisons(
+            config,state_periods,state_costs,baseline_strategy
+        )
+        tactical_horizon_comparisons,tactical_horizon_summary=build_tactical_horizon_comparisons(
+            config,event_rows,state_labels,all_daily,baseline_strategy
+        )
+        locked_tactical_validation=build_locked_tactical_validation(
+            config,tactical_horizon_comparisons,
+            job.get("research_evaluation",{}).get("locked_tactical_hypotheses",[])
+        )
+        defensive_distinctness=build_defensive_distinctness(
+            config,all_daily,all_trades,state_labels
+        )
+        baseline_era_details,baseline_era_recurrence=build_baseline_era_recurrence(
+            config,all_daily,state_labels
+        )
+        baseline_confirmation_sensitivity=build_baseline_confirmation_sensitivity(
+            config,all_daily,market_conditions
+        )
+        generation_candidate_map=build_generation_candidate_map(
+            config,baseline_confirmation_sensitivity,baseline_era_recurrence,
+            locked_tactical_validation,defensive_comparisons
+        )
+        transition_timing_rows = iter_state_transition_timing(
+            config, all_daily, market_conditions, progress_callback=progress_callback
+        )
     declaration=validate_experiment_declaration(job.get("experiment"))
     manifest={"created_at":datetime.now(UTC).isoformat(),"engine":"tier1_etf_daily","source_path":str(bars_path),"source_sha256":source_sha256,"config":asdict(config),"coverage":coverage,"universe":universe_metadata(config.universe_name,tuple(sorted(symbols))),"market_state_universe":universe_metadata(config.market_state_universe_name or config.universe_name,state_universe),"hypothesis_registry":registry_snapshot(),"experiment":declaration,"execution_semantics":"warm-up excluded; signal at close and fill at next available open on validated common sessions","strategies":list(config.strategy_names),"daily_strategy_interface":{"version":1,"validation":"long-only finite weights, no leverage, universe membership","specifications":_daily_strategy_registry().snapshot(config.strategy_names)},"market_state_validation":{"version":5,"canonical_universe":config.market_state_universe_name or config.universe_name,"periods":"full, discovery, and untouched chronological holdout","fold_sessions":config.walk_forward_test_sessions,"uncertainty":"deterministic 2,000-draw whole-episode bootstrap","multiplicity":"Benjamini-Hochberg false-discovery-rate correction independently within each period and hierarchy level or transition horizon","transition_definition":"causally pending or newly confirmed state change; confirmation sensitivity at 1, 3, 5, and 10 sessions; post-confirmation horizons are 1, 2, 3, 5, and 10 sessions","confirmation_sensitivity_sessions":list(CONFIRMATION_WINDOWS),"cost_sensitivity_bps":list(config.cost_ladder_bps),"hierarchical_evidence":{"enabled":config.hierarchical_state_validation,"levels":["trend_volatility","trend_breadth","trend"],"effect":"diagnostic corroboration only; detailed labels remain preserved and no parent result authorizes routing"},"candidate_map_effect":"retains challengers and summarizes evidence only","survival_statuses":"insufficient, failed gates, historically promising, chronologically recurring, or cost robust awaiting forward validation","routing_effect":"none"},"promotion_policy":"diagnostic gate only; shadow approval requires untouched holdout and stability tests"}
     archive_path.parent.mkdir(parents=True,exist_ok=True)
     with zipfile.ZipFile(archive_path,"w",zipfile.ZIP_DEFLATED,compresslevel=1) as bundle:
-        bundle.write(all_daily_path,arcname="tier1_daily.csv"); _write_csv(bundle,"tier1_trades.csv",all_trades); _write_csv(bundle,"tier1_cost_ladder_scorecard.csv",scorecards); _write_csv(bundle,"tier1_cost_path_audit.csv",cost_path_audit); _write_csv(bundle,"tier1_period_scorecard.csv",period_scorecards); _write_csv(bundle,"tier1_promotion_gates.csv",promotions); _write_csv(bundle,"tier1_rolling_window_scorecard.csv",rolling_scorecards); _write_csv(bundle,"tier1_walk_forward_scorecard.csv",walk_forward_scorecards); _write_csv(bundle,"tier1_regime_scorecard.csv",regime_scorecards); _write_csv(bundle,"tier1_market_conditions.csv",list(market_conditions.values())); _write_csv(bundle,"tier1_condition_scorecard.csv",condition_rows); _write_csv(bundle,"tier1_condition_pair_scorecard.csv",condition_pair_rows); _write_csv(bundle,"tier1_market_state_labels.csv",state_labels); _write_csv(bundle,"tier1_market_state_episodes.csv",state_episodes); _write_csv(bundle,"tier1_market_state_attribution.csv",state_attribution); _write_csv(bundle,"tier1_market_state_episode_returns.csv",state_episode_returns); _write_csv(bundle,"tier1_market_state_period_scorecard.csv",state_periods); _write_csv(bundle,"tier1_market_state_inference.csv",state_inference); _write_csv(bundle,"tier1_market_state_cost_sensitivity.csv",state_costs); _write_csv(bundle,"tier1_market_state_transition_scorecard.csv",state_transitions); _write_csv(bundle,"tier1_market_state_chronological_folds.csv",state_folds); _write_csv(bundle,"tier1_market_state_fold_recurrence.csv",state_fold_recurrence); _write_csv(bundle,"tier1_market_state_transition_horizons.csv",state_transition_horizons); _write_csv(bundle,"tier1_hypothesis_survival.csv",state_survival); _write_csv(bundle,"tier1_market_state_hierarchy_period_scorecard.csv",hierarchy_periods); _write_csv(bundle,"tier1_market_state_hierarchy_inference.csv",hierarchy_inference); _write_csv(bundle,"tier1_market_state_hierarchy_cost_sensitivity.csv",hierarchy_costs); _write_csv(bundle,"tier1_market_state_hierarchy_chronological_folds.csv",hierarchy_folds); _write_csv(bundle,"tier1_market_state_hierarchy_fold_recurrence.csv",hierarchy_recurrence); _write_csv(bundle,"tier1_market_state_hierarchy_survival.csv",hierarchy_survival); _write_csv(bundle,"tier1_state_actionability_sessions.csv",state_actionability_sessions); _write_csv(bundle,"tier1_state_actionability_summary.csv",state_actionability_summary); _write_csv(bundle,"tier1_state_actionability_episode_segments.csv",state_actionability_segments); _write_csv(bundle,"tier1_downside_event_sessions.csv",downside_event_sessions); _write_csv(bundle,"tier1_downside_event_summary.csv",downside_event_summary); _write_csv(bundle,"tier1_downside_event_overlap.csv",downside_event_overlap); _write_csv(bundle,"tier1_pairwise_summary.csv",pairwise_summary); _write_csv(bundle,"tier1_event_diagnostics.csv",event_rows); _write_csv(bundle,"tier1_event_summary.csv",event_summary); _write_csv(bundle,"tier1_event_horizon_summary.csv",event_horizons); _write_csv(bundle,"tier1_event_condition_summary.csv",event_conditions); _write_csv(bundle,"tier1_breakout_opportunities.csv",breakout_opportunities); _write_csv(bundle,"tier1_breakout_opportunity_summary.csv",breakout_opportunity_summary); _write_csv(bundle,"tier1_role_aware_evidence.csv",evidence_matrix); _write_csv(bundle,"tier1_tactical_baseline_comparisons.csv",tactical_comparisons); _write_csv(bundle,"tier1_tactical_override_summary.csv",tactical_summary); _write_csv(bundle,"tier1_baseline_state_leaderboard.csv",baseline_leaderboard); _write_csv(bundle,"tier1_defensive_baseline_comparisons.csv",defensive_comparisons); _write_csv(bundle,"tier1_tactical_horizon_comparisons.csv",tactical_horizon_comparisons); _write_csv(bundle,"tier1_tactical_horizon_summary.csv",tactical_horizon_summary); _write_csv(bundle,"tier1_locked_tactical_validation.csv",locked_tactical_validation); _write_csv(bundle,"tier1_defensive_distinctness.csv",defensive_distinctness); _write_csv(bundle,"tier1_baseline_era_details.csv",baseline_era_details); _write_csv(bundle,"tier1_baseline_era_recurrence.csv",baseline_era_recurrence); _write_csv(bundle,"tier1_baseline_confirmation_sensitivity.csv",baseline_confirmation_sensitivity); _write_csv(bundle,"tier1_state_transition_timing.csv",iter_state_transition_timing(config,all_daily,market_conditions,progress_callback=progress_callback)); _write_csv(bundle,"tier1_generation_candidate_map.csv",generation_candidate_map)
+        bundle.write(all_daily_path,arcname="tier1_daily.csv"); _write_csv(bundle,"tier1_trades.csv",all_trades); _write_csv(bundle,"tier1_cost_ladder_scorecard.csv",scorecards); _write_csv(bundle,"tier1_cost_path_audit.csv",cost_path_audit); _write_csv(bundle,"tier1_period_scorecard.csv",period_scorecards); _write_csv(bundle,"tier1_promotion_gates.csv",promotions); _write_csv(bundle,"tier1_rolling_window_scorecard.csv",rolling_scorecards); _write_csv(bundle,"tier1_walk_forward_scorecard.csv",walk_forward_scorecards); _write_csv(bundle,"tier1_regime_scorecard.csv",regime_scorecards); _write_csv(bundle,"tier1_market_conditions.csv",list(market_conditions.values())); _write_csv(bundle,"tier1_condition_scorecard.csv",condition_rows); _write_csv(bundle,"tier1_condition_pair_scorecard.csv",condition_pair_rows); _write_csv(bundle,"tier1_market_state_labels.csv",state_labels); _write_csv(bundle,"tier1_market_state_episodes.csv",state_episodes); _write_csv(bundle,"tier1_market_state_attribution.csv",state_attribution); _write_csv(bundle,"tier1_market_state_episode_returns.csv",state_episode_returns); _write_csv(bundle,"tier1_market_state_period_scorecard.csv",state_periods); _write_csv(bundle,"tier1_market_state_inference.csv",state_inference); _write_csv(bundle,"tier1_market_state_cost_sensitivity.csv",state_costs); _write_csv(bundle,"tier1_market_state_transition_scorecard.csv",state_transitions); _write_csv(bundle,"tier1_market_state_chronological_folds.csv",state_folds); _write_csv(bundle,"tier1_market_state_fold_recurrence.csv",state_fold_recurrence); _write_csv(bundle,"tier1_market_state_transition_horizons.csv",state_transition_horizons); _write_csv(bundle,"tier1_hypothesis_survival.csv",state_survival); _write_csv(bundle,"tier1_market_state_hierarchy_period_scorecard.csv",hierarchy_periods); _write_csv(bundle,"tier1_market_state_hierarchy_inference.csv",hierarchy_inference); _write_csv(bundle,"tier1_market_state_hierarchy_cost_sensitivity.csv",hierarchy_costs); _write_csv(bundle,"tier1_market_state_hierarchy_chronological_folds.csv",hierarchy_folds); _write_csv(bundle,"tier1_market_state_hierarchy_fold_recurrence.csv",hierarchy_recurrence); _write_csv(bundle,"tier1_market_state_hierarchy_survival.csv",hierarchy_survival); _write_csv(bundle,"tier1_state_actionability_sessions.csv",state_actionability_sessions); _write_csv(bundle,"tier1_state_actionability_summary.csv",state_actionability_summary); _write_csv(bundle,"tier1_state_actionability_episode_segments.csv",state_actionability_segments); _write_csv(bundle,"tier1_downside_event_sessions.csv",downside_event_sessions); _write_csv(bundle,"tier1_downside_event_summary.csv",downside_event_summary); _write_csv(bundle,"tier1_downside_event_overlap.csv",downside_event_overlap); _write_csv(bundle,"tier1_pairwise_summary.csv",pairwise_summary); _write_csv(bundle,"tier1_event_diagnostics.csv",event_rows); _write_csv(bundle,"tier1_event_summary.csv",event_summary); _write_csv(bundle,"tier1_event_horizon_summary.csv",event_horizons); _write_csv(bundle,"tier1_event_condition_summary.csv",event_conditions); _write_csv(bundle,"tier1_breakout_opportunities.csv",breakout_opportunities); _write_csv(bundle,"tier1_breakout_opportunity_summary.csv",breakout_opportunity_summary); _write_csv(bundle,"tier1_role_aware_evidence.csv",evidence_matrix); _write_csv(bundle,"tier1_tactical_baseline_comparisons.csv",tactical_comparisons); _write_csv(bundle,"tier1_tactical_override_summary.csv",tactical_summary); _write_csv(bundle,"tier1_baseline_state_leaderboard.csv",baseline_leaderboard); _write_csv(bundle,"tier1_defensive_baseline_comparisons.csv",defensive_comparisons); _write_csv(bundle,"tier1_tactical_horizon_comparisons.csv",tactical_horizon_comparisons); _write_csv(bundle,"tier1_tactical_horizon_summary.csv",tactical_horizon_summary); _write_csv(bundle,"tier1_locked_tactical_validation.csv",locked_tactical_validation); _write_csv(bundle,"tier1_defensive_distinctness.csv",defensive_distinctness); _write_csv(bundle,"tier1_baseline_era_details.csv",baseline_era_details); _write_csv(bundle,"tier1_baseline_era_recurrence.csv",baseline_era_recurrence); _write_csv(bundle,"tier1_baseline_confirmation_sensitivity.csv",baseline_confirmation_sensitivity); _write_csv(bundle,"tier1_state_transition_timing.csv",transition_timing_rows); _write_csv(bundle,"tier1_generation_candidate_map.csv",generation_candidate_map)
         bundle.writestr("tier1_market_state_definition.json",json.dumps(STATE_DEFINITION,indent=2))
         bundle.writestr("tier1_manifest.json",json.dumps(manifest,indent=2,default=list)); bundle.writestr("tier1_summary.json",json.dumps({"primary_cost_bps":config.primary_cost_bps,"promotion_period":promotion_period,"scorecards":list(primary.values()),"promotion_gates":promotions},indent=2))
     spool.cleanup()

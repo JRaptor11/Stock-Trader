@@ -37,6 +37,7 @@ class LongTermBaselineMechanismsPhase010Tests(unittest.TestCase):
             self.assertEqual([1.0, 5.0, 10.0, 20.0], config["cost_ladder_bps"])
             self.assertEqual(10.0, config["primary_cost_bps"])
             self.assertTrue(config["hierarchical_state_validation"])
+            self.assertEqual("baseline_core", config["diagnostic_profile"])
             self.assertTrue(set(expected).issubset(STRATEGIES))
             self.assertIn(config["universe_name"], UNIVERSES)
 

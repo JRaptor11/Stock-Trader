@@ -29,6 +29,7 @@
     ],
     "non_overlap_rule": "Primary cross-era conclusions compare the prehistory discovery partition ending 2010-12-31 with the modern dataset beginning 2011-01-03. Prehistory holdout rows from 2011-2012 remain audit outputs but are excluded from the primary cross-era replication claim.",
     "comparison_rule": "All mechanisms use synchronized dates, causal market-state labels, execution assumptions, and costs within each era. Whole-period and rolling evidence determine baseline robustness; state-level results remain diagnostic and cannot authorize routing.",
+    "diagnostic_profile": "baseline_core preserves strategy, cost, period, rolling, walk-forward, regime, causal-state, and hierarchical-state evidence while omitting unrelated tactical, breakout, downside-event, and transition-timing artifacts.",
     "selection_rule": "The roster represents distinct mechanisms rather than parameter variants. No strategy may be removed, retuned, or promoted after inspecting Phase 010 outputs.",
     "acceptance_standard": {
       "return_contender_path": {
