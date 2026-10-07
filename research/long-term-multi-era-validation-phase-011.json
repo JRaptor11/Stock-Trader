@@ -1,0 +1,51 @@
+{
+  "study_id": "LONG_TERM_MULTI_ERA_VALIDATION_PHASE_011",
+  "status": "locked_before_phase_011_analysis",
+  "parent_study": "LONG_TERM_BASELINE_MECHANISMS_PHASE_010",
+  "generation_015_status": "paused_and_unchanged",
+  "purpose": "Determine whether unchanged long-term baseline mechanisms recur across multiple calendar blocks and causal trend-state episodes instead of succeeding only in one crisis or one long equity bull market.",
+  "data_reuse": {
+    "resimulation": false,
+    "source_archives": [
+      "long-term-baseline-mechanisms-phase-010-prehistory-yahoo-results.zip",
+      "long-term-baseline-mechanisms-phase-010-modern-core-v2-yahoo-results.zip"
+    ],
+    "required_files": ["tier1_daily.csv", "tier1_market_state_labels.csv"],
+    "reason": "Reuse preserves identical frozen strategy paths while avoiding another hosted-memory and R2 burden."
+  },
+  "fixed_calendar_blocks": [
+    {"id": "OLDER_2008_2010", "source": "prehistory", "start": "2008-05-30", "end": "2010-12-31"},
+    {"id": "MODERN_2012_2014", "source": "modern", "start": "2012-01-01", "end": "2014-12-31"},
+    {"id": "MODERN_2015_2017", "source": "modern", "start": "2015-01-01", "end": "2017-12-31"},
+    {"id": "MODERN_2018_2020", "source": "modern", "start": "2018-01-01", "end": "2020-12-31"},
+    {"id": "MODERN_2021_2023", "source": "modern", "start": "2021-01-01", "end": "2023-12-31"},
+    {"id": "MODERN_2024_CURRENT", "source": "modern", "start": "2024-01-01", "end": "9999-12-31", "partial": true}
+  ],
+  "exclusion_rule": "Calendar year 2011 is excluded from primary recurrence counts because it appears in the prehistory archive's holdout and precedes the modern archive's scored path; this prevents overlapping-source evidence.",
+  "frozen_costs_bps": [10.0, 20.0],
+  "acceptance_standard": {
+    "return_contender": {
+      "minimum_blocks_beating_spy": 4,
+      "total_blocks": 6,
+      "require_positive_median_relative_wealth": true,
+      "minimum_worst_block_relative_wealth": -0.10,
+      "require_same_result_at_bps": [10.0, 20.0]
+    },
+    "stability_baseline": {
+      "minimum_blocks_with_lower_drawdown": 5,
+      "minimum_blocks_with_higher_sharpe": 4,
+      "minimum_median_spy_cagr_retention": 0.75,
+      "require_cost_robustness_through_bps": 20.0
+    },
+    "state_specialist_hypothesis": {
+      "minimum_eligible_blocks": 3,
+      "minimum_positive_relative_blocks": 2,
+      "minimum_aggregate_episode_win_rate": 0.60,
+      "minimum_sessions_per_block": 50,
+      "minimum_episodes_per_block": 5,
+      "effect": "eligible for another frozen test only; never activates routing"
+    }
+  },
+  "effects": {"router": false, "paper_trading": false, "promotion": false, "parameter_retuning": false},
+  "interpretation_rule": "Phase 011 separates recurring baselines from era-specific behavior. It cannot authorize a combined strategy or capital allocation."
+}
