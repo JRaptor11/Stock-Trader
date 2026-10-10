@@ -1,0 +1,41 @@
+{
+  "study_id": "ROLE_AWARE_BASELINE_REASSESSMENT_STUDY_001",
+  "status": "locked_before_role_scorecard_generation",
+  "generation_015_status": "paused_and_unchanged",
+  "purpose": "Determine whether unchanged isolated strategies were rejected because one universal gate ignored their intended role.",
+  "evidence_reuse": {
+    "source": "immutable Phase 011 multi-era and state-episode outputs plus Phase 012-013 adjudication",
+    "resimulation": false,
+    "new_market_data": false,
+    "interpretation": "retrospective taxonomy audit only; cannot promote a strategy"
+  },
+  "roles": {
+    "growth_baseline": {
+      "minimum_blocks_beating_spy": 3,
+      "require_positive_median_relative_wealth": true,
+      "minimum_worst_block_relative_wealth": -0.10,
+      "minimum_median_spy_cagr_retention": 0.90
+    },
+    "stability_baseline": {
+      "minimum_blocks_with_lower_drawdown": 6,
+      "minimum_blocks_with_higher_sharpe": 4,
+      "minimum_median_spy_cagr_retention": 0.65,
+      "minimum_worst_block_relative_wealth": -0.25
+    },
+    "capital_retention_control": {
+      "minimum_blocks_with_lower_drawdown": 5,
+      "minimum_blocks_with_higher_sharpe": 2,
+      "minimum_median_spy_cagr_retention": 0.80,
+      "minimum_worst_block_relative_wealth": -0.25
+    },
+    "conditional_specialist": {
+      "minimum_eligible_blocks": 3,
+      "minimum_positive_relative_blocks": 2,
+      "minimum_episode_win_rate": 0.60,
+      "require_no_later_dedicated_rejection": true
+    }
+  },
+  "cost_robustness": {"required_bps": [10.0, 20.0]},
+  "effects": {"router": false, "paper_trading": false, "promotion": false, "retuning": false, "generation_015": false},
+  "interpretation_rule": "A role fit only nominates an unchanged strategy for a separately declared prospective or untouched validation. It does not override prior failures or authorize allocation."
+}

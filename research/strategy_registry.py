@@ -177,6 +177,42 @@ HYPOTHESES = {
         "data_frequency": "1d", "turnover_expectation": "diagnostic_only",
         "point_in_time_equities_required": False,
     },
+    "BEAR_RECOVERING_SPECIALIST_VALIDATION_PHASE_012": {
+        "tier": 1, "status": "active_research",
+        "mechanism": "validate frozen bear-recovering specialist observations at the independent causal episode level with activation-delay and cost stress",
+        "data_frequency": "1d", "turnover_expectation": "diagnostic_only",
+        "point_in_time_equities_required": False,
+    },
+    "BEAR_RECOVERY_STATE_TIMING_PHASE_013": {
+        "tier": 1, "status": "active_research",
+        "mechanism": "compare raw and confirmed causal bear-recovery onsets for the frozen diversified-trend hypothesis without routing or retuning",
+        "data_frequency": "1d", "turnover_expectation": "diagnostic_only",
+        "point_in_time_equities_required": False,
+    },
+    "LONG_TERM_PORTFOLIO_INSURANCE_PHASE_014": {
+        "tier": 1, "status": "active_research",
+        "mechanism": "test one frozen unlevered ratcheting-floor portfolio-insurance baseline as a structurally distinct equity drawdown-control mechanism",
+        "data_frequency": "1d", "turnover_expectation": "medium",
+        "point_in_time_equities_required": False,
+    },
+    "FULLY_INVESTED_EQUITY_BASELINE_STUDY_001": {
+        "tier": 1, "status": "active_research",
+        "mechanism": "test one frozen exact-tradable blend of broad-market, dividend-growth, and net-buyback U.S. equity sleeves without exposure timing",
+        "data_frequency": "1d", "turnover_expectation": "low",
+        "point_in_time_equities_required": False,
+    },
+    "ROLE_AWARE_BASELINE_REASSESSMENT_STUDY_001": {
+        "tier": 1, "status": "active_research",
+        "mechanism": "reassess unchanged immutable long-term evidence under separate growth, stability, capital-retention, and conditional-specialist role standards",
+        "data_frequency": "1d", "turnover_expectation": "diagnostic_only",
+        "point_in_time_equities_required": False,
+    },
+    "STATIC_60_30_10_STABILITY_FORWARD_SHADOW": {
+        "tier": 1, "status": "forward_shadow",
+        "mechanism": "collect untouched broker-free forward evidence for the unchanged static 60/30/10 stability-baseline nominee in a separate ledger",
+        "data_frequency": "1d", "turnover_expectation": "low",
+        "point_in_time_equities_required": False,
+    },
     "CURRENT_INTRADAY_FAMILY": {
         "tier": "legacy_challenger", "status": "active_challenger",
         "mechanism": "intraday cross-sectional price ranking and target rotation",

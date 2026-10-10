@@ -1,0 +1,39 @@
+{
+  "study_id": "STATIC_60_30_10_STABILITY_FORWARD_SHADOW",
+  "status": "frozen_before_first_forward_session",
+  "frozen_at": "2026-10-10",
+  "forward_start": "2026-10-12",
+  "parent_study": "ROLE_AWARE_BASELINE_REASSESSMENT_STUDY_001",
+  "strategy": "STATIC_60_30_10",
+  "role": "stability_baseline",
+  "target_weights": {"SPY": 0.60, "IEF": 0.30, "GLD": 0.10},
+  "rebalance_frequency": "monthly",
+  "signal_timing": "prior completed session close",
+  "execution_timing": "next session official adjusted open",
+  "valuation_timing": "official adjusted close",
+  "primary_cost_bps": 10.0,
+  "initial_virtual_equity": 100000.0,
+  "benchmark": "SPY_BUY_HOLD",
+  "data": "adjusted Alpaca IEX 1Day bars",
+  "broker_orders_enabled": false,
+  "ledger": {
+    "append_only": true,
+    "hash_chained": true,
+    "idempotent_by_session": true,
+    "prior_session_backfill": false
+  },
+  "evaluation_standard": {
+    "role": "stability_not_growth_replacement",
+    "minimum_growth_retention": 0.65,
+    "primary_outcomes": ["drawdown_vs_spy", "risk_adjusted_return_vs_spy", "growth_retention"],
+    "minimum_sessions_before_interim_role_assessment": 60,
+    "minimum_sessions_before_primary_role_assessment": 252
+  },
+  "isolation": {
+    "existing_six_strategy_shadow_changed": false,
+    "generation_015_changed": false,
+    "paper_trading_changed": false,
+    "live_trading_changed": false,
+    "router_created": false
+  }
+}

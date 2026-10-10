@@ -1,0 +1,56 @@
+{
+  "study_id": "LONG_TERM_PORTFOLIO_INSURANCE_PHASE_014",
+  "status": "locked_before_return_analysis",
+  "parent_study": "LONG_TERM_MULTI_ERA_VALIDATION_PHASE_011",
+  "generation_015_status": "paused_and_unchanged",
+  "purpose": "Test one structurally new path-dependent equity portfolio-insurance baseline that seeks materially higher SPY participation than balanced portfolios while reducing major drawdowns.",
+  "research_basis": {
+    "mechanism": "time-invariant portfolio protection (TIPP), a ratcheting-floor CPPI variant",
+    "selection_reason": "It changes exposure from portfolio cushion rather than momentum, trend, volatility forecasts, market-state routing, or static diversification.",
+    "known_failure_modes": ["gap risk", "cash lock", "whipsaw turnover", "bull-market underparticipation"],
+    "alternatives_not_selected": {
+      "option_based_tail_hedge": "requires reliable historical option surfaces and execution assumptions unavailable on the free data stack",
+      "managed_futures_overlay": "tradable ETF histories are too short for the required prehistory replication",
+      "factor_rotation": "would overlap prior factor and momentum families and lacks a synchronized prehistory ETF record",
+      "additional_trend_or_volatility_rules": "would be parameter variants of mechanisms that already failed the locked baseline gates"
+    }
+  },
+  "frozen_candidate": {
+    "strategy": "TIPP_EQUITY_INSURANCE",
+    "risky_asset": "SPY",
+    "reserve_asset": "non-interest-bearing cash",
+    "floor_fraction_of_high_watermark": 0.80,
+    "cushion_multiplier": 5.0,
+    "minimum_equity_weight": 0.0,
+    "maximum_equity_weight": 1.0,
+    "rebalance_frequency": "daily close for next-session exposure",
+    "no_trade_band_absolute_weight": 0.02,
+    "leverage": false,
+    "shorting": false,
+    "cash_return_assumption": 0.0,
+    "cash_assumption_reason": "Conservative and reproducible from immutable Phase 010 outputs without a new data transfer."
+  },
+  "frozen_costs_bps": [10.0, 20.0],
+  "evidence": {
+    "source": "immutable Phase 010 SPY paths",
+    "resimulation_of_parent_strategies": false,
+    "calendar_blocks": ["2008-2010", "2012-2014", "2015-2017", "2018-2020", "2021-2023", "2024-current"],
+    "exclude_2011": true
+  },
+  "acceptance_standard": {
+    "minimum_blocks_with_lower_drawdown_than_spy": 5,
+    "minimum_blocks_with_higher_sharpe_than_spy": 4,
+    "minimum_median_spy_cagr_retention": 0.85,
+    "minimum_blocks_with_positive_relative_wealth": 2,
+    "require_same_verdict_at_bps": [10.0, 20.0],
+    "require_no_floor_breach": true
+  },
+  "effects": {
+    "router": false,
+    "paper_trading": false,
+    "promotion": false,
+    "retuning": false,
+    "generation_015": false
+  },
+  "interpretation_rule": "A pass creates a candidate for separate frozen validation only. A failure retires this exact mechanism without parameter variants."
+}
