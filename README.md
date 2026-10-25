@@ -586,6 +586,16 @@ the default remains `SPY_BUY_HOLD` for backward-compatible strategy evidence.
 Focused declarations can freeze `benchmark_strategy`; validation fails closed if
 the runtime comparator differs from that declaration.
 
+An exact frozen hypothesis can be selected with repeatable `--hypothesis-id`
+arguments. The selector also understands entries in
+`primary_condition_hypotheses`. A primary condition containing numbered
+`dimension_N` and `included_buckets_N` fields is evaluated as one causal `AND`
+condition, not as separate favorable slices. The nested validator constructs
+whole episodes from the materialized joint state, excludes partially aligned
+episodes as a unit, and records the original condition terms in every result
+row. `--hypothesis-id` is mutually exclusive with `--cohort`, and missing source
+dimensions or multi-bucket `OR` conditions fail closed.
+
 `research.condition_forward_ledger` records every post-freeze session for each
 focused hypothesis, including the causal bucket, continuous condition value,
 strategy and fixed-benchmark returns, active-condition excess, and cumulative

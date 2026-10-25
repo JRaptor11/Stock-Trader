@@ -230,14 +230,99 @@ def _resolve_family_count(
     }
 
 
-def _load_declaration(path: Path | None, cohort: str | None = None) -> dict | None:
+def _condition_terms(item: dict) -> list[dict]:
+    terms = item.get("condition_terms") or item.get("conditions")
+    if terms is None:
+        terms = [{"dimension": item.get("dimension"), "bucket": item.get("bucket")}]
+    normalized = []
+    for term in terms:
+        dimension = term.get("dimension")
+        bucket = term.get("bucket")
+        if not isinstance(dimension, str) or not dimension.endswith("_bucket"):
+            raise ValueError("focused condition dimensions must be named *_bucket")
+        if not isinstance(bucket, str) or not bucket:
+            raise ValueError("focused condition buckets must be non-empty strings")
+        normalized.append({"dimension": dimension, "bucket": bucket})
+    if not normalized:
+        raise ValueError("focused hypotheses require at least one condition term")
+    dimensions = [term["dimension"] for term in normalized]
+    if len(dimensions) != len(set(dimensions)):
+        raise ValueError("focused conjunctive hypotheses cannot repeat a dimension")
+    return normalized
+
+
+def _normalize_hypothesis(item: dict) -> dict:
+    if not {"id", "strategy"}.issubset(item):
+        raise ValueError("focused hypotheses require id and strategy")
+    terms = _condition_terms(item)
+    normalized = {
+        **item,
+        "condition_operator": "AND" if len(terms) > 1 else "SINGLE",
+        "condition_terms": terms,
+    }
+    if len(terms) == 1:
+        normalized["dimension"] = terms[0]["dimension"]
+        normalized["bucket"] = terms[0]["bucket"]
+    else:
+        normalized["dimension"] = f"focused_conjunction__{item['id']}__bucket"
+        normalized["bucket"] = "MATCH"
+    return normalized
+
+
+def _primary_condition_hypothesis(item: dict) -> dict:
+    condition = item.get("condition") or {}
+    terms = []
+    if "dimension" in condition:
+        buckets = condition.get("included_buckets") or []
+        if len(buckets) != 1:
+            raise ValueError(
+                "focused primary conditions require exactly one included bucket per dimension"
+            )
+        terms.append({"dimension": condition["dimension"], "bucket": buckets[0]})
+    else:
+        index = 1
+        while f"dimension_{index}" in condition:
+            buckets = condition.get(f"included_buckets_{index}") or []
+            if len(buckets) != 1:
+                raise ValueError(
+                    "focused primary conditions require exactly one included bucket per dimension"
+                )
+            terms.append({
+                "dimension": condition[f"dimension_{index}"],
+                "bucket": buckets[0],
+            })
+            index += 1
+    return _normalize_hypothesis({
+        **item,
+        "strategy": item.get("candidate"),
+        "conditions": terms,
+        "declaration_section": "primary_condition_hypotheses",
+    })
+
+
+def _load_declaration(
+    path: Path | None, cohort: str | None = None,
+    hypothesis_ids: tuple[str, ...] | None = None,
+) -> dict | None:
     if path is None:
         return None
+    if cohort and hypothesis_ids:
+        raise ValueError("cohort and hypothesis_ids are mutually exclusive")
     declaration = json.loads(path.read_text(encoding="utf-8"))
-    hypotheses = declaration.get("hypotheses") or []
-    required = {"id", "strategy", "dimension", "bucket"}
-    if not hypotheses or any(not required.issubset(item) for item in hypotheses):
-        raise ValueError("focused declaration requires non-empty hypotheses with id, strategy, dimension, and bucket")
+    hypotheses = [_normalize_hypothesis(item) for item in declaration.get("hypotheses") or []]
+    if hypothesis_ids:
+        primary = [
+            _primary_condition_hypothesis(item)
+            for item in declaration.get("primary_condition_hypotheses") or []
+        ]
+        pool = {item["id"]: item for item in hypotheses + primary}
+        requested = list(dict.fromkeys(hypothesis_ids))
+        missing = sorted(set(requested).difference(pool))
+        if missing:
+            raise ValueError(f"focused declaration has no requested hypothesis ids: {missing}")
+        hypotheses = [pool[hypothesis_id] for hypothesis_id in requested]
+    if not hypotheses:
+        raise ValueError("focused declaration requires non-empty hypotheses")
     ids = [item["id"] for item in hypotheses]
     if len(ids) != len(set(ids)):
         raise ValueError("focused hypothesis ids must be unique")
@@ -247,8 +332,30 @@ def _load_declaration(path: Path | None, cohort: str | None = None) -> dict | No
         hypotheses = [item for item in hypotheses if item.get("cohort") == cohort]
         if not hypotheses:
             raise ValueError(f"focused declaration has no hypotheses for cohort {cohort}")
-        declaration = {**declaration, "hypotheses": hypotheses, "selected_cohort": cohort}
-    return declaration
+        declaration = {**declaration, "selected_cohort": cohort}
+    return {
+        **declaration,
+        "hypotheses": hypotheses,
+        "selected_hypothesis_ids": ids if hypothesis_ids else None,
+    }
+
+
+def _materialize_conjunctive_conditions(
+    conditions: dict[str, dict], declaration: dict | None,
+) -> None:
+    for hypothesis in (declaration or {}).get("hypotheses", []):
+        terms = hypothesis["condition_terms"]
+        if len(terms) < 2:
+            continue
+        dimension = hypothesis["dimension"]
+        for row in conditions.values():
+            values = [row.get(term["dimension"]) for term in terms]
+            if any(value in (None, "") for value in values):
+                row[dimension] = ""
+            elif all(value == term["bucket"] for value, term in zip(values, terms)):
+                row[dimension] = "MATCH"
+            else:
+                row[dimension] = "OTHER"
 
 
 def _nested_episode_validation_rows(
@@ -456,6 +563,18 @@ def _nested_episode_validation_rows(
                     "benchmark_strategy": benchmark_strategy,
                     "dimension": dimension,
                     "bucket": bucket,
+                    "condition_operator": (
+                        hypothesis.get("condition_operator", "SINGLE")
+                        if hypothesis else "SINGLE"
+                    ),
+                    "condition_terms": json.dumps(
+                        hypothesis.get("condition_terms", [{
+                            "dimension": dimension, "bucket": bucket,
+                        }]) if hypothesis else [{
+                            "dimension": dimension, "bucket": bucket,
+                        }],
+                        separators=(",", ":"),
+                    ),
                     "validation_mode": "nested_episode_grouped",
                     "train_start": train_dates[0],
                     "train_end": train_dates[-1],
@@ -575,6 +694,7 @@ def validate_bundle(path: Path, train_sessions: int = 252, test_sessions: int = 
                     step_sessions: int = 63, minimum_bucket_sessions: int = 30,
                     alpha: float = 0.05, declaration_path: Path | None = None,
                     cohort: str | None = None,
+                    hypothesis_ids: tuple[str, ...] | None = None,
                     dimensions: tuple[str, ...] | None = None,
                     benchmark_strategy: str = "SPY_BUY_HOLD",
                     validation_mode: str = "session_expanding",
@@ -589,7 +709,7 @@ def validate_bundle(path: Path, train_sessions: int = 252, test_sessions: int = 
                     multiple_testing_mean_block_length: float = 10.0,
                     multiple_testing_seed: int = 29,
                     ) -> tuple[list[dict], list[dict], dict]:
-    declaration = _load_declaration(declaration_path, cohort)
+    declaration = _load_declaration(declaration_path, cohort, hypothesis_ids)
     if declaration and declaration.get("benchmark_strategy") not in (None, benchmark_strategy):
         raise ValueError(
             "focused declaration benchmark does not match requested benchmark: "
@@ -604,6 +724,8 @@ def validate_bundle(path: Path, train_sessions: int = 252, test_sessions: int = 
         conditions = {row["date"]: row for row in _rows(bundle, "causal_market_conditions.csv")}
         source_manifest = json.loads(bundle.read("strategy_evidence_manifest.json"))
 
+    _materialize_conjunctive_conditions(conditions, declaration)
+
     series: dict[tuple[str, str], dict[str, float]] = defaultdict(dict)
     for row in daily:
         series[(row["source"], row["strategy"])][row["date"]] = float(row["daily_return"])
@@ -616,6 +738,17 @@ def validate_bundle(path: Path, train_sessions: int = 252, test_sessions: int = 
     if len(common_dates) < train_sessions + test_sessions:
         raise ValueError("insufficient common condition-labeled sessions for one fold")
     available_dimensions = sorted({key for day in common_dates for key in conditions[day] if key.endswith("_bucket")})
+    focused_hypotheses = (declaration or {}).get("hypotheses", [])
+    source_dimensions = sorted({
+        term["dimension"] for item in focused_hypotheses
+        for term in item["condition_terms"]
+    })
+    missing_source_dimensions = sorted(set(source_dimensions).difference(available_dimensions))
+    if missing_source_dimensions:
+        raise ValueError(
+            "focused declaration source dimensions are unavailable: "
+            f"{missing_source_dimensions}"
+        )
     if dimensions:
         missing_requested = sorted(set(dimensions).difference(available_dimensions))
         if missing_requested:
@@ -623,7 +756,12 @@ def validate_bundle(path: Path, train_sessions: int = 252, test_sessions: int = 
         dimensions = sorted(set(dimensions))
     else:
         dimensions = available_dimensions
-    focused = {(item["strategy"], item["dimension"], item["bucket"]): item for item in (declaration or {}).get("hypotheses", [])}
+    focused = {
+        (item["strategy"], item["dimension"], item["bucket"]): item
+        for item in focused_hypotheses
+    }
+    if focused:
+        dimensions = sorted({item["dimension"] for item in focused_hypotheses})
     missing_strategies = sorted({key[0] for key in focused}.difference(key[1] for key in strategy_keys))
     missing_dimensions = sorted({key[1] for key in focused}.difference(dimensions))
     if missing_strategies or missing_dimensions:
@@ -730,6 +868,18 @@ def validate_bundle(path: Path, train_sessions: int = 252, test_sessions: int = 
                         "fold": fold, "hypothesis_id": hypothesis["id"] if hypothesis else "", "source": source, "strategy": strategy,
                         "benchmark_strategy": benchmark_strategy,
                         "dimension": dimension, "bucket": bucket,
+                        "condition_operator": (
+                            hypothesis.get("condition_operator", "SINGLE")
+                            if hypothesis else "SINGLE"
+                        ),
+                        "condition_terms": json.dumps(
+                            hypothesis.get("condition_terms", [{
+                                "dimension": dimension, "bucket": bucket,
+                            }]) if hypothesis else [{
+                                "dimension": dimension, "bucket": bucket,
+                            }],
+                            separators=(",", ":"),
+                        ),
                         "validation_mode": "session_expanding",
                         "train_start": train_dates[0], "train_end": train_dates[-1],
                         "test_start": test_dates[0], "test_end": test_dates[-1],
@@ -784,6 +934,7 @@ def validate_bundle(path: Path, train_sessions: int = 252, test_sessions: int = 
         "benchmark_strategy": benchmark_strategy,
         "validation_mode": validation_mode,
         "condition_dimensions": dimensions,
+        "condition_source_dimensions": source_dimensions,
         "family_trials": family_trials, "selection_policy": "training-only; descriptive validation; no router or execution",
         "focused_declaration": declaration,
         "promotion_policy": "only untouched_forward rows may support promotion; retrospective_reuse and mixed_boundary are development evidence",
@@ -822,6 +973,14 @@ def main() -> None:
     parser.add_argument("--alpha", type=float, default=0.05)
     parser.add_argument("--declaration", type=Path)
     parser.add_argument("--cohort")
+    parser.add_argument(
+        "--hypothesis-id", action="append", dest="hypothesis_ids",
+        help=(
+            "Select an exact frozen hypothesis id. IDs may come from hypotheses "
+            "or primary_condition_hypotheses; repeatable and mutually exclusive "
+            "with --cohort."
+        ),
+    )
     parser.add_argument("--dimension", action="append", dest="dimensions",
                         help="Limit the multiplicity family to an explicit condition bucket column; repeatable")
     parser.add_argument("--benchmark-strategy", default="SPY_BUY_HOLD",
@@ -851,6 +1010,7 @@ def main() -> None:
                                 test_sessions=args.test_sessions, step_sessions=args.step_sessions,
                                 minimum_bucket_sessions=args.minimum_bucket_sessions, alpha=args.alpha,
                                 declaration_path=args.declaration, cohort=args.cohort,
+                                hypothesis_ids=tuple(args.hypothesis_ids) if args.hypothesis_ids else None,
                                 dimensions=tuple(args.dimensions) if args.dimensions else None,
                                 benchmark_strategy=args.benchmark_strategy,
                                 validation_mode=args.validation_mode,

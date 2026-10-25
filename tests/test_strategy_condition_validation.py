@@ -46,6 +46,47 @@ class StrategyConditionValidationTests(unittest.TestCase):
             bundle.writestr("strategy_evidence_manifest.json", "{}")
         return dates
 
+    @staticmethod
+    def _conjunction_bundle(path, declaration, *, mutate_from=None):
+        dates = [(date(2026, 1, 1) + timedelta(days=index)).isoformat()
+                 for index in range(96)]
+        conditions = []
+        daily = []
+        for index, day in enumerate(dates):
+            matched = (index // 4) % 2 == 0
+            conditions.append({
+                "date": day,
+                "alpha_bucket": "A" if matched or (index // 8) % 2 else "X",
+                "beta_bucket": "B" if matched else "Y",
+            })
+            phase = .002 if index % 2 else -.002
+            candidate = (.012 + phase) if matched else (-.001 + phase / 4)
+            if mutate_from is not None and day >= mutate_from:
+                candidate = -.70 if index % 2 else .70
+            for strategy, value in (("SPY_BUY_HOLD", 0.0), ("TEST", candidate)):
+                daily.append({
+                    "source": "joint", "strategy": strategy, "date": day,
+                    "daily_return": value,
+                })
+        with zipfile.ZipFile(path, "w") as bundle:
+            bundle.writestr("normalized_daily_returns.csv", _csv(daily))
+            bundle.writestr("causal_market_conditions.csv", _csv(conditions))
+            bundle.writestr("strategy_evidence_manifest.json", "{}")
+        declaration.write_text(json.dumps({
+            "frozen_at": "2025-12-31T00:00:00Z",
+            "evidence_observed_through": "2025-12-31",
+            "primary_condition_hypotheses": [{
+                "id": "JOINT", "candidate": "TEST",
+                "condition": {
+                    "dimension_1": "alpha_bucket",
+                    "included_buckets_1": ["A"],
+                    "dimension_2": "beta_bucket",
+                    "included_buckets_2": ["B"],
+                },
+            }],
+        }))
+        return dates
+
     def test_training_qualification_never_uses_test_returns(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "evidence.zip"
@@ -96,6 +137,93 @@ class StrategyConditionValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "no hypotheses for cohort other"):
                 from research.strategy_condition_validation import _load_declaration
                 _load_declaration(declaration, "other")
+
+    def test_frozen_primary_conjunction_uses_whole_joint_state_episodes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            evidence = root / "joint.zip"
+            declaration = root / "declaration.json"
+            self._conjunction_bundle(evidence, declaration)
+            rows, summary, metadata = validate_bundle(
+                evidence,
+                train_sessions=24,
+                test_sessions=8,
+                step_sessions=8,
+                minimum_bucket_sessions=4,
+                alpha=1.0,
+                declaration_path=declaration,
+                hypothesis_ids=("JOINT",),
+                dimensions=("alpha_bucket", "beta_bucket"),
+                validation_mode="nested_episode_grouped",
+                nested_inner_folds=10,
+            )
+            self.assertTrue(rows)
+            self.assertEqual(["alpha_bucket", "beta_bucket"],
+                             metadata["condition_source_dimensions"])
+            self.assertEqual(1, metadata["family_trials"])
+            self.assertEqual({"AND"}, {row["condition_operator"] for row in rows})
+            self.assertEqual({"MATCH"}, {row["bucket"] for row in rows})
+            self.assertTrue(all(row["dimension"].startswith("focused_conjunction__JOINT")
+                                for row in rows))
+            self.assertTrue(any(row["selected_on_train"] for row in rows))
+            self.assertTrue(any(row["outer_test_evaluated"] for row in rows))
+            for row in rows:
+                terms = json.loads(row["condition_terms"])
+                self.assertEqual([
+                    {"dimension": "alpha_bucket", "bucket": "A"},
+                    {"dimension": "beta_bucket", "bucket": "B"},
+                ], terms)
+                self.assertTrue(set(json.loads(row["train_episode_ids"])).isdisjoint(
+                    json.loads(row["test_episode_ids"])
+                ))
+            self.assertTrue(all(not item["router_eligible"] for item in summary))
+
+    def test_conjunction_selection_is_invariant_to_outer_test_returns(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            evidence = root / "joint.zip"
+            declaration = root / "declaration.json"
+            dates = self._conjunction_bundle(evidence, declaration)
+            kwargs = dict(
+                train_sessions=24, test_sessions=8, step_sessions=8,
+                minimum_bucket_sessions=4, alpha=1.0,
+                declaration_path=declaration,
+                hypothesis_ids=("JOINT",),
+                dimensions=("alpha_bucket", "beta_bucket"),
+                validation_mode="nested_episode_grouped",
+                nested_inner_folds=10,
+            )
+            before, _, _ = validate_bundle(evidence, **kwargs)
+            first_fold = min(row["fold"] for row in before)
+            signature = [
+                (row["selected_on_train"], row["train_adjusted_p"],
+                 row["inner_validation_episode_ids"])
+                for row in before if row["fold"] == first_fold
+            ]
+            self._conjunction_bundle(evidence, declaration, mutate_from=dates[24])
+            after, _, _ = validate_bundle(evidence, **kwargs)
+            self.assertEqual(signature, [
+                (row["selected_on_train"], row["train_adjusted_p"],
+                 row["inner_validation_episode_ids"])
+                for row in after if row["fold"] == first_fold
+            ])
+
+    def test_conjunction_fails_closed_when_a_source_dimension_is_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            evidence = root / "joint.zip"
+            declaration = root / "declaration.json"
+            self._conjunction_bundle(evidence, declaration)
+            payload = json.loads(declaration.read_text())
+            payload["primary_condition_hypotheses"][0]["condition"]["dimension_2"] = (
+                "missing_bucket"
+            )
+            declaration.write_text(json.dumps(payload))
+            with self.assertRaisesRegex(ValueError, "source dimensions are unavailable"):
+                validate_bundle(
+                    evidence, train_sessions=24, test_sessions=8,
+                    declaration_path=declaration, hypothesis_ids=("JOINT",),
+                )
 
     def test_explicit_dimensions_define_family_and_fail_closed(self):
         with tempfile.TemporaryDirectory() as directory:

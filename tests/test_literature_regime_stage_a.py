@@ -215,6 +215,25 @@ class LiteratureRegimeStageATests(unittest.TestCase):
             for item in cross_asset["hypotheses"]
         ))
 
+        joint = _load_declaration(
+            path, hypothesis_ids=("TREND_STRONG_DIVERSIFIED_CELL",),
+        )
+        self.assertEqual(
+            ["TREND_STRONG_DIVERSIFIED_CELL"],
+            joint["selected_hypothesis_ids"],
+        )
+        self.assertEqual("AND", joint["hypotheses"][0]["condition_operator"])
+        self.assertEqual([
+            {
+                "dimension": "cross_asset_directional_magnitude_252d_bucket",
+                "bucket": "Q5_HIGH",
+            },
+            {
+                "dimension": "cross_asset_correlation_60d_bucket",
+                "bucket": "Q1_LOW",
+            },
+        ], joint["hypotheses"][0]["condition_terms"])
+
     def test_cross_asset_trend_diagnostics_are_causal_and_do_not_change_state_labels(self):
         dates, bars = self._diagnostic_bars()
         state_symbols = resolve_universe("ETF_LONG_TERM_STATE_CANONICAL")
