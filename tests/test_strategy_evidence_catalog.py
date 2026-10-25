@@ -6,7 +6,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from research.strategy_evidence_catalog import load_archives, write_bundle
+from research.strategy_evidence_catalog import _merge_conditions, load_archives, write_bundle
 
 
 def _csv(rows):
@@ -29,6 +29,45 @@ def _archive(path, daily_name, strategy, equities, include_conditions=False, cos
 
 
 class StrategyEvidenceCatalogTests(unittest.TestCase):
+    def test_condition_merge_preserves_richer_diagnostics_in_either_order(self):
+        sparse = {
+            "date": "2026-01-02",
+            "canonical_state_bucket": "BULL_LOW_VOL",
+            "cross_asset_directional_magnitude_252d_bucket": "",
+            "cross_asset_correlation_60d_bucket": "",
+        }
+        rich = {
+            "date": "2026-01-02",
+            "canonical_state_bucket": "BULL_LOW_VOL",
+            "cross_asset_directional_magnitude_252d": "0.18",
+            "cross_asset_directional_magnitude_252d_bucket": "Q5_HIGH",
+            "cross_asset_correlation_60d": "0.31",
+            "cross_asset_correlation_60d_bucket": "Q2_LOW",
+        }
+        for rows in ((sparse, rich), (rich, sparse)):
+            with self.subTest(order=rows):
+                conditions = {}
+                for row in rows:
+                    _merge_conditions(conditions, [row])
+                merged = conditions["2026-01-02"]
+                self.assertEqual("BULL_LOW_VOL", merged["canonical_state_bucket"])
+                self.assertEqual("0.18", merged["cross_asset_directional_magnitude_252d"])
+                self.assertEqual("Q5_HIGH", merged["cross_asset_directional_magnitude_252d_bucket"])
+                self.assertEqual("0.31", merged["cross_asset_correlation_60d"])
+                self.assertEqual("Q2_LOW", merged["cross_asset_correlation_60d_bucket"])
+
+    def test_condition_merge_rejects_shared_nonblank_bucket_conflict(self):
+        conditions = {}
+        _merge_conditions(conditions, [{"date": "2026-01-02", "canonical_state_bucket": "BULL_LOW_VOL"}])
+        with self.assertRaisesRegex(
+            ValueError,
+            "conflicting causal condition labels for 2026-01-02: canonical_state_bucket",
+        ):
+            _merge_conditions(
+                conditions,
+                [{"date": "2026-01-02", "canonical_state_bucket": "BEAR_HIGH_VOL"}],
+            )
+
     def test_builds_matched_cross_family_matrix(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); first = root / "first.zip"; second = root / "second.zip"; output = root / "out.zip"

@@ -48,9 +48,28 @@ def _merge_conditions(target: dict[str, dict], rows: list[dict]) -> None:
     for row in rows:
         day = row["date"]
         existing = target.get(day)
-        if existing and any(existing.get(key) != value for key, value in row.items() if key.endswith("_bucket")):
-            raise ValueError(f"conflicting causal condition labels for {day}")
-        target[day] = row
+        if not existing:
+            target[day] = dict(row)
+            continue
+
+        merged = dict(existing)
+        for key, value in row.items():
+            if key == "date" or value is None or (isinstance(value, str) and not value.strip()):
+                continue
+            prior = merged.get(key)
+            prior_is_blank = prior is None or (isinstance(prior, str) and not prior.strip())
+            if prior_is_blank:
+                merged[key] = value
+            elif key.endswith("_bucket") and prior != value:
+                raise ValueError(f"conflicting causal condition labels for {day}: {key}")
+            elif prior == value:
+                continue
+            else:
+                # Preserve the catalog's existing last-source-wins behavior for
+                # non-label diagnostics while retaining fields absent from a
+                # sparser cohort archive.
+                merged[key] = value
+        target[day] = merged
 
 
 def load_condition_archives(paths: list[Path]) -> dict[str, dict]:

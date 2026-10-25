@@ -213,6 +213,36 @@ HYPOTHESES = {
         "data_frequency": "1d", "turnover_expectation": "low",
         "point_in_time_equities_required": False,
     },
+    "MOMENTUM_STATE_RELIABILITY_STUDY_001": {
+        "tier": 1, "status": "active_research",
+        "mechanism": "audit frozen momentum and trend state hypotheses for episode recurrence, payoff asymmetry, tail loss, delay, and cost robustness without retuning",
+        "data_frequency": "1d", "turnover_expectation": "diagnostic_only",
+        "point_in_time_equities_required": False,
+    },
+    "LITERATURE_REGIME_REPLICATION_STAGE_A_001": {
+        "tier": 1, "status": "frozen_retrospective_research",
+        "mechanism": "replicate predeclared literature-motivated momentum-state, momentum-crash-guard, multi-asset trend, and quality-proxy hypotheses without routing or parameter search",
+        "data_frequency": "1d", "turnover_expectation": "low_to_medium",
+        "point_in_time_equities_required": False,
+    },
+    "LITERATURE_UP_LOW_VOL_RELATIVE_MOMENTUM": {
+        "tier": 1, "status": "active_research",
+        "mechanism": "run the incumbent cross-asset relative-momentum portfolio only when the lagged 36-month SPY return is positive and 12-month realized volatility is no greater than 36-month realized volatility",
+        "data_frequency": "1d", "turnover_expectation": "low",
+        "point_in_time_equities_required": False,
+    },
+    "LITERATURE_PANIC_REBOUND_GUARDED_MOMENTUM": {
+        "tier": 1, "status": "active_research_adaptation",
+        "mechanism": "hold SHY during a frozen causal decline-and-rebound hazard while otherwise preserving the incumbent cross-asset relative-momentum target",
+        "data_frequency": "1d", "turnover_expectation": "low_to_medium",
+        "point_in_time_equities_required": False,
+    },
+    "LITERATURE_12M_LONG_FLAT_TREND": {
+        "tier": 1, "status": "active_research_adaptation",
+        "mechanism": "assign fixed equal risk slots to cross-asset ETFs with positive lagged 12-month returns and leave inactive slots in SHY",
+        "data_frequency": "1d", "turnover_expectation": "low",
+        "point_in_time_equities_required": False,
+    },
     "CURRENT_INTRADAY_FAMILY": {
         "tier": "legacy_challenger", "status": "active_challenger",
         "mechanism": "intraday cross-sectional price ranking and target rotation",

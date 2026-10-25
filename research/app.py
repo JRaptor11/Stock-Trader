@@ -23,6 +23,13 @@ from fastapi.responses import FileResponse, RedirectResponse
 
 from config.service_mode import ServiceMode, validate_service_startup
 from research.artifact_store import EgressBudgetExceeded, artifact_store_from_env
+from research.experiment_audit import (
+    AuditIntegrityError,
+    HoldoutReuseError,
+    assert_audit_anchors,
+    audit_integrity_summary,
+    register_job_audit,
+)
 from research.job_queue import (
     classify_failure, progress_aware_restart_state, queued_in_fifo_order,
     retry_delay_seconds,
@@ -39,11 +46,16 @@ class StorageBudgetExceeded(RuntimeError):
     pass
 
 
+class DatasetAmbiguityError(RuntimeError):
+    """Raised when a filename resolves to multiple durable dataset objects."""
+
+
 class ResearchRuntime:
     def __init__(self) -> None:
         self.data_root = Path(os.getenv("RESEARCH_DATA_DIR", "/tmp/research/data")).resolve()
         self.job_root = Path(os.getenv("RESEARCH_JOB_DIR", "/tmp/research/jobs")).resolve()
         self.results_root = Path(os.getenv("RESEARCH_RESULTS_DIR", "/tmp/research/results")).resolve()
+        self.audit_root = Path(os.getenv("RESEARCH_AUDIT_DIR", "/tmp/research/audit")).resolve()
         self.maximum_upload_bytes = int(os.getenv("RESEARCH_MAX_UPLOAD_BYTES", str(2 * 1024**3)))
         self.api_token = str(os.getenv("RESEARCH_API_TOKEN") or "")
         self.active_job_id: str | None = None
@@ -60,6 +72,7 @@ class ResearchRuntime:
         self.cleanup_local_artifacts = True
         self._storage_usage_cache: tuple[float, int] | None = None
         self._health_egress_cache: tuple[float, dict] | None = None
+        self._dataset_digest_cache: dict[str, tuple[int, int, str]] = {}
         self.startup_completed_at: str | None = None
         self.startup_duration_seconds: float | None = None
         self.coordinator_ready = False
@@ -71,6 +84,9 @@ class ResearchRuntime:
         self.data_root = Path(os.getenv("RESEARCH_DATA_DIR", "/tmp/research/data")).resolve()
         self.job_root = Path(os.getenv("RESEARCH_JOB_DIR", "/tmp/research/jobs")).resolve()
         self.results_root = Path(os.getenv("RESEARCH_RESULTS_DIR", "/tmp/research/results")).resolve()
+        self.audit_root = Path(
+            os.getenv("RESEARCH_AUDIT_DIR", str(self.results_root.parent / "audit"))
+        ).resolve()
         self.maximum_upload_bytes = int(os.getenv("RESEARCH_MAX_UPLOAD_BYTES", str(2 * 1024**3)))
         self.api_token = str(os.getenv("RESEARCH_API_TOKEN") or "")
         self.maximum_queued_jobs = max(1, int(os.getenv("RESEARCH_MAX_QUEUED_JOBS", "20")))
@@ -91,14 +107,23 @@ class ResearchRuntime:
         ).strip().lower() in {"1", "true", "yes", "on"}
         self._storage_usage_cache = None
         self._health_egress_cache = None
+        self._dataset_digest_cache = {}
         self.coordinator_ready = False
         self.restore_error = None
         self.shadow_coordinator = None
         if len(self.api_token) < 24:
             raise RuntimeError("RESEARCH_API_TOKEN must contain at least 24 characters")
-        for path in (self.data_root, self.job_root, self.results_root):
+        for path in (self.data_root, self.job_root, self.results_root, self.audit_root):
             path.mkdir(parents=True, exist_ok=True)
         self.store = artifact_store_from_env()
+
+    @property
+    def trial_ledger_path(self) -> Path:
+        return self.audit_root / "trial-ledger.jsonl"
+
+    @property
+    def holdout_registry_path(self) -> Path:
+        return self.audit_root / "holdout-registry.jsonl"
 
     def ensure_storage_capacity(self, path: Path) -> None:
         if not self.store.durable:
@@ -214,6 +239,25 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _dataset_sha256(path: Path) -> str:
+    """Hash a dataset once per unchanged local file.
+
+    Several cohort jobs commonly share one large bars file.  Caching by the
+    resolved path, byte size, and nanosecond mtime keeps job acceptance from
+    rereading the same file while still invalidating the digest if its local
+    bytes are replaced.
+    """
+    stat = path.stat()
+    key = str(path.resolve())
+    cached = runtime._dataset_digest_cache.get(key)
+    identity = (int(stat.st_size), int(stat.st_mtime_ns))
+    if cached and cached[:2] == identity:
+        return cached[2]
+    digest = _sha256_file(path)
+    runtime._dataset_digest_cache[key] = (*identity, digest)
+    return digest
+
+
 def _upload_status_snapshot(
     status_path: Path,
     *,
@@ -285,11 +329,19 @@ def _health_egress_usage() -> dict | None:
 @app.get("/api/diagnostics/runtime", dependencies=[Depends(require_token)])
 def runtime_diagnostics() -> dict:
     """Potentially slower operational diagnostics kept off the health path."""
+    try:
+        audit = audit_integrity_summary(
+            trial_ledger=runtime.trial_ledger_path,
+            holdout_registry=runtime.holdout_registry_path,
+        )
+    except AuditIntegrityError as exc:
+        audit = {"status": "invalid", "error": str(exc)}
     return {
         **health(),
         "queued_jobs": _queued_job_count(),
         "storage_budget_bytes": runtime.storage_budget_bytes,
         "r2_egress": _health_egress_usage(),
+        "experiment_audit": audit,
         **cgroup_memory_snapshot(),
     }
 
@@ -383,6 +435,10 @@ async def upload_dataset(filename: str, request: Request) -> dict:
         raise HTTPException(status_code=507, detail=str(exc)) from exc
     durable_uri = runtime.store.upload_file_if_missing(
         destination, f"datasets/{digest.hexdigest()}-{filename}"
+    )
+    stat = destination.stat()
+    runtime._dataset_digest_cache[str(destination.resolve())] = (
+        int(stat.st_size), int(stat.st_mtime_ns), digest.hexdigest(),
     )
     runtime.record_storage_write(destination.stat().st_size)
     return {"filename": filename, "bytes": size, "sha256": digest.hexdigest(), "durable_uri": durable_uri}
@@ -521,6 +577,7 @@ def _classify_failure(exc: Exception, status_payload: dict) -> tuple[bool, str]:
 
 def _restore_durable_state() -> None:
     if not runtime.store.durable:
+        _validate_restored_audit_state()
         return
     for key in runtime.store.list_keys("status/"):
         if key.endswith(".status.json"):
@@ -528,16 +585,196 @@ def _restore_durable_state() -> None:
     for key in runtime.store.list_keys("jobs/"):
         if key.endswith(".json"):
             runtime.store.download_file(key, runtime.job_root / Path(key).name)
+    for key in runtime.store.list_keys("audit/"):
+        if key in {"audit/trial-ledger.jsonl", "audit/holdout-registry.jsonl"}:
+            runtime.store.download_file(key, runtime.audit_root / Path(key).name)
+    # A corrupt chain and a valid-but-older prefix both prevent the
+    # coordinator from accepting work.  Read-only health remains available
+    # with the exact recovery error, matching the existing fail-closed startup.
+    _validate_restored_audit_state()
 
 
-def _restore_dataset(filename: str) -> bool:
+def _validate_restored_audit_state() -> dict:
+    """Validate chains and require every restored status/job audit anchor.
+
+    A hash chain by itself cannot distinguish a complete ledger from a valid
+    prefix.  Accepted status documents and durable job definitions therefore
+    retain the chain tips observed at acceptance.  Requiring all of those tips
+    makes an accidental R2 rollback or truncated overwrite detectable.
+    """
+    trial_anchors: list[str] = []
+    holdout_anchors: list[str] = []
+
+    def collect(payload: dict, *, field: str, source: Path) -> None:
+        audit = payload.get(field)
+        if audit is None:
+            return  # Legacy jobs predate the audit layer.
+        if not isinstance(audit, dict):
+            raise AuditIntegrityError(
+                f"{source.name} contains malformed experiment audit metadata"
+            )
+        trial = audit.get("trial_chain_sha256")
+        holdout = audit.get("holdout_chain_sha256")
+        if not trial:
+            raise AuditIntegrityError(
+                f"{source.name} is missing its trial audit anchor"
+            )
+        trial_anchors.append(str(trial))
+        if holdout:
+            holdout_anchors.append(str(holdout))
+
+    for path in runtime.results_root.glob("*.status.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise AuditIntegrityError(
+                f"{path.name} cannot be read while validating audit anchors"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise AuditIntegrityError(f"{path.name} is not a JSON object")
+        collect(payload, field="experiment_audit", source=path)
+
+    for path in runtime.job_root.glob("*.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise AuditIntegrityError(
+                f"{path.name} cannot be read while validating audit anchors"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise AuditIntegrityError(f"{path.name} is not a JSON object")
+        collect(payload, field="_experiment_audit", source=path)
+
+    summary = audit_integrity_summary(
+        trial_ledger=runtime.trial_ledger_path,
+        holdout_registry=runtime.holdout_registry_path,
+    )
+    anchors = assert_audit_anchors(
+        trial_ledger=runtime.trial_ledger_path,
+        holdout_registry=runtime.holdout_registry_path,
+        required_trial_anchors=trial_anchors,
+        required_holdout_anchors=holdout_anchors,
+    )
+    return {**summary, "anchors": anchors}
+
+
+def _register_and_persist_job_audit(job: dict, accepted_at: str) -> dict:
+    """Record a submission before queueing it and durably anchor both chains."""
+    try:
+        # Recheck persisted acceptance anchors on every submission, not only
+        # after a service restart, so a mid-process valid-prefix replacement
+        # cannot become the base of a new chain.
+        _validate_restored_audit_state()
+        result = register_job_audit(
+            job=job,
+            trial_ledger=runtime.trial_ledger_path,
+            holdout_registry=runtime.holdout_registry_path,
+            accepted_at=accepted_at,
+        )
+    except HoldoutReuseError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except AuditIntegrityError as exc:
+        raise HTTPException(
+            status_code=503, detail=f"experiment audit integrity failure: {exc}",
+        ) from exc
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=503, detail=f"experiment audit could not be recorded: {exc}",
+        ) from exc
+
+    durable_uris = {}
+    if runtime.store.durable:
+        try:
+            # Persist holdout consumption first.  If the process stops between
+            # the two objects, evidence may be conservatively marked consumed,
+            # but it can never remain labeled untouched.  Size-aware uploads
+            # avoid retransmitting unchanged ledgers on an idempotent retry.
+            for label, path in (
+                ("holdout_registry", runtime.holdout_registry_path),
+                ("trial_ledger", runtime.trial_ledger_path),
+            ):
+                if path.is_file():
+                    runtime.ensure_storage_capacity(path)
+                    durable_uris[label] = runtime.store.upload_file_if_missing(
+                        path, f"audit/{path.name}",
+                    )
+                    # This intentionally over-reserves when an existing key is
+                    # replaced.  A conservative false stop is preferable to
+                    # exceeding the configured free-tier storage ceiling.
+                    runtime.record_storage_write(path.stat().st_size)
+        except EgressBudgetExceeded as exc:
+            raise HTTPException(status_code=507, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"experiment audit could not be persisted durably: {exc}",
+            ) from exc
+    return {
+        "accepted_at": accepted_at,
+        "trial_chain_sha256": result["trials"].get("chain_sha256"),
+        "job_definition_sha256": result["trials"].get("job_definition_sha256"),
+        "trial_records_added": result["trials"].get("new_records", 0),
+        "variant_enumeration_complete": result["trials"].get(
+            "variant_enumeration_complete", False
+        ),
+        "holdout_status": result["holdout"].get("status"),
+        "holdout_chain_sha256": result["holdout"].get("chain_sha256"),
+        "durable_uris": durable_uris,
+    }
+
+
+def _restore_dataset(filename: str, expected_sha256: str | None = None) -> bool:
     destination = runtime.data_root / filename
     if destination.is_file():
+        if expected_sha256 and _dataset_sha256(destination) != expected_sha256:
+            raise DatasetAmbiguityError(
+                f"local dataset {filename} does not match the job's expected SHA-256"
+            )
         return True
     if not runtime.store.durable:
         return False
-    matches = [key for key in runtime.store.list_keys("datasets/") if key.endswith("-" + filename)]
-    return bool(matches and runtime.store.download_file(matches[-1], destination))
+    matches = sorted(
+        key for key in runtime.store.list_keys("datasets/")
+        if key.endswith("-" + filename)
+    )
+    if expected_sha256:
+        matches = [
+            key for key in matches
+            if Path(key).name == f"{expected_sha256}-{filename}"
+        ]
+    elif len(matches) > 1:
+        raise DatasetAmbiguityError(
+            f"multiple durable datasets use {filename}; an expected SHA-256 is required"
+        )
+    if len(matches) > 1:
+        raise DatasetAmbiguityError(
+            f"multiple durable objects match {filename} and SHA-256 {expected_sha256}"
+        )
+    if not matches:
+        return False
+    selected = matches[0]
+    key_name = Path(selected).name
+    suffix = "-" + filename
+    key_digest = key_name[:-len(suffix)] if key_name.endswith(suffix) else ""
+    if (
+        len(key_digest) != 64
+        or any(character not in "0123456789abcdef" for character in key_digest.lower())
+    ):
+        raise DatasetAmbiguityError(
+            f"durable dataset key for {filename} does not contain a valid SHA-256"
+        )
+    if not runtime.store.download_file(selected, destination):
+        return False
+    actual = _dataset_sha256(destination)
+    if actual != key_digest.lower() or (expected_sha256 and actual != expected_sha256):
+        destination.unlink(missing_ok=True)
+        runtime._dataset_digest_cache.pop(str(destination.resolve()), None)
+        raise DatasetAmbiguityError(
+            f"durable dataset bytes for {filename} do not match their SHA-256 identity"
+        )
+    return True
 
 
 def _cleanup_local_job_artifacts(job_id: str, job_path: Path) -> None:
@@ -549,6 +786,7 @@ def _cleanup_local_job_artifacts(job_id: str, job_path: Path) -> None:
             dataset = runtime.data_root / Path(dataset_name).name
             if dataset.is_file():
                 dataset.unlink()
+                runtime._dataset_digest_cache.pop(str(dataset.resolve()), None)
         output = runtime.results_root / job_id
         if output.is_dir():
             shutil.rmtree(output)
@@ -562,6 +800,52 @@ def _cleanup_local_job_artifacts(job_id: str, job_path: Path) -> None:
                 path.unlink(missing_ok=True)
     except Exception:
         logging.exception("Could not clean local research artifacts for %s", job_id)
+
+
+_JOB_DATASET_FIELDS = (
+    "bars_csv", "security_master_csv", "market_events_csv", "fundamentals_csv",
+)
+
+
+def _bind_job_dataset_hashes(job: dict) -> dict:
+    """Resolve and bind every referenced dataset to its exact local bytes."""
+    supplied = job.get("dataset_sha256") or {}
+    if not isinstance(supplied, dict):
+        raise HTTPException(status_code=400, detail="dataset_sha256 must be a JSON object")
+    unexpected = sorted(set(supplied).difference(_JOB_DATASET_FIELDS))
+    if unexpected:
+        raise HTTPException(
+            status_code=400,
+            detail=f"dataset_sha256 has unexpected fields: {unexpected}",
+        )
+    normalized: dict[str, str] = {}
+    for field in _JOB_DATASET_FIELDS:
+        filename = str(job.get(field) or "").strip()
+        if not filename:
+            continue
+        expected = str(supplied.get(field) or "").strip().lower() or None
+        if expected and (
+            len(expected) != 64
+            or any(character not in "0123456789abcdef" for character in expected)
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=f"dataset_sha256.{field} must be a 64-character hexadecimal digest",
+            )
+        try:
+            restored = _restore_dataset(filename, expected_sha256=expected)
+        except DatasetAmbiguityError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if not restored:
+            raise HTTPException(status_code=400, detail=f"{field} has not been uploaded")
+        actual = _dataset_sha256(runtime.data_root / filename)
+        if expected and actual != expected:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{field} does not match its declared SHA-256",
+            )
+        normalized[field] = actual
+    return {**job, "dataset_sha256": normalized}
 
 
 def _queued_statuses() -> list[dict]:
@@ -582,14 +866,14 @@ def _queued_job_count() -> int:
 
 def _launch_job(job_id: str, job_path: Path) -> bool:
     job = json.loads(job_path.read_text(encoding="utf-8"))
-    if not _restore_dataset(str(job.get("bars_csv") or "")):
-        return False
-    if job.get("security_master_csv") and not _restore_dataset(str(job["security_master_csv"])):
-        return False
-    if job.get("market_events_csv") and not _restore_dataset(str(job["market_events_csv"])):
-        return False
-    if job.get("fundamentals_csv") and not _restore_dataset(str(job["fundamentals_csv"])):
-        return False
+    hashes = job.get("dataset_sha256") or {}
+    for field in _JOB_DATASET_FIELDS:
+        filename = str(job.get(field) or "")
+        if not filename:
+            continue
+        expected = str(hashes.get(field) or "").strip().lower() or None
+        if not _restore_dataset(filename, expected_sha256=expected):
+            return False
     continuation_of = str(job.get("continuation_of") or "").strip()
     if continuation_of:
         archive = runtime.results_root / f"{continuation_of}-results.zip"
@@ -726,29 +1010,97 @@ async def submit_job(job: dict) -> dict:
     if security_master_csv: job["security_master_csv"]=security_master_csv
     if market_events_csv: job["market_events_csv"]=market_events_csv
     if fundamentals_csv: job["fundamentals_csv"]=fundamentals_csv
-    if not _restore_dataset(bars_csv):
-        raise HTTPException(status_code=400, detail="dataset has not been uploaded")
-    if security_master_csv and not _restore_dataset(security_master_csv):
-        raise HTTPException(status_code=400, detail="security master dataset has not been uploaded")
-    if market_events_csv and not _restore_dataset(market_events_csv):
-        raise HTTPException(status_code=400, detail="market events dataset has not been uploaded")
-    if fundamentals_csv and not _restore_dataset(fundamentals_csv):
-        raise HTTPException(status_code=400, detail="fundamentals dataset has not been uploaded")
+    job_path = runtime.job_root / f"{job_id}.json"
+    # On an idempotent retry after restart, use the already accepted hashes to
+    # select the exact R2 objects even when several datasets share a filename.
+    if job_path.is_file():
+        existing_job = json.loads(job_path.read_text(encoding="utf-8"))
+        existing_hashes = existing_job.get("dataset_sha256") or {}
+        supplied_hashes = job.get("dataset_sha256") or {}
+        if isinstance(existing_hashes, dict) and isinstance(supplied_hashes, dict):
+            job["dataset_sha256"] = {**existing_hashes, **supplied_hashes}
+    job = _bind_job_dataset_hashes(job)
     async with runtime.lock:
+        status_path = runtime.results_root / f"{job_id}.status.json"
+        if job_path.is_file() and not (runtime.results_root / job_id).exists():
+            existing_job = json.loads(job_path.read_text(encoding="utf-8"))
+            existing_public = {
+                key: value for key, value in existing_job.items()
+                if not str(key).startswith("_")
+            }
+            submitted_public = {
+                key: value for key, value in job.items()
+                if not str(key).startswith("_")
+            }
+            if existing_public != submitted_public:
+                raise HTTPException(status_code=409, detail="job id already exists")
+            audit = existing_job.get("_experiment_audit")
+            if not isinstance(audit, dict) or not audit.get("trial_chain_sha256"):
+                raise HTTPException(
+                    status_code=503,
+                    detail="existing job is missing its experiment audit anchor",
+                )
+            try:
+                _validate_restored_audit_state()
+            except AuditIntegrityError as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"experiment audit integrity failure: {exc}",
+                ) from exc
+            current_status = (
+                json.loads(status_path.read_text(encoding="utf-8"))
+                if status_path.is_file() else None
+            )
+            if current_status and current_status.get("status") not in {
+                "queued", "starting", "running", "retry_wait",
+            }:
+                raise HTTPException(status_code=409, detail="job id already exists")
+            queued_at = str(
+                (current_status or {}).get("queued_at")
+                or audit.get("accepted_at")
+                or datetime.now(timezone.utc).isoformat()
+            )
+            if not current_status:
+                current_status = {
+                    "job_id": job_id, "status": "queued", "queued_at": queued_at,
+                    "bars_csv": bars_csv,
+                    "security_master_csv": security_master_csv,
+                    "market_events_csv": market_events_csv,
+                    "fundamentals_csv": fundamentals_csv,
+                    "experiment_audit": audit,
+                }
+                write_json_atomic(status_path, current_status)
+            job_uri = runtime.store.upload_file_if_missing(
+                job_path, f"jobs/{job_path.name}"
+            )
+            runtime.store.upload_file(status_path, f"status/{status_path.name}")
+            _start_next_job()
+            return {
+                "job_id": job_id,
+                "status": str(current_status.get("status") or "queued"),
+                "queue_position": 0 if runtime.active_job_id == job_id else None,
+                "durable_job_uri": job_uri,
+                "experiment_audit": audit,
+                "idempotent_retry": True,
+            }
         if _queued_job_count() >= runtime.maximum_queued_jobs:
             raise HTTPException(status_code=429, detail="research queue is full")
-        if (runtime.results_root / job_id).exists() or (runtime.job_root / f"{job_id}.json").exists():
+        if (runtime.results_root / job_id).exists() or job_path.exists():
             raise HTTPException(status_code=409, detail="job id already exists")
-        job_path = runtime.job_root / f"{job_id}.json"
-        write_json_atomic(job_path, job)
-        job_uri = runtime.store.upload_file(job_path, f"jobs/{job_path.name}")
         queued_at = datetime.now(timezone.utc).isoformat()
-        status_path = runtime.results_root / f"{job_id}.status.json"
+        audit = _register_and_persist_job_audit(job, queued_at)
+        # The private anchor is ignored by strategy workers and immutable job
+        # hashing, but lets recovery detect a valid-prefix ledger rollback even
+        # if a crash happened before the first status object was uploaded.
+        durable_job = {**job, "_experiment_audit": audit}
+        write_json_atomic(job_path, durable_job)
+        job_uri = runtime.store.upload_file(job_path, f"jobs/{job_path.name}")
         write_json_atomic(status_path, {
             "job_id": job_id, "status": "queued", "queued_at": queued_at,
             "bars_csv": bars_csv, "security_master_csv": security_master_csv,
             "market_events_csv": market_events_csv,
             "fundamentals_csv": fundamentals_csv,
+            "experiment_audit": audit,
         })
         runtime.store.upload_file(status_path, f"status/{status_path.name}")
         _start_next_job()
@@ -757,6 +1109,7 @@ async def submit_job(job: dict) -> dict:
     return {
         "job_id": job_id, "status": "starting" if queue_position == 0 else "queued",
         "queue_position": queue_position, "durable_job_uri": job_uri,
+        "experiment_audit": audit,
     }
 
 

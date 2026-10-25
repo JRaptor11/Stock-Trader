@@ -16,7 +16,14 @@ from pathlib import Path
 from research.strategy_registry import registry_snapshot, validate_experiment_declaration
 from research.universes import resolve_universe, universe_metadata
 from research.walk_forward import build_walk_forward_folds
-from research.market_conditions import causal_market_conditions, condition_scorecards
+from research.market_conditions import (
+    LITERATURE_CROSS_ASSET_SYMBOLS,
+    LITERATURE_LONG_WINDOW,
+    causal_market_conditions,
+    condition_scorecards,
+    literature_momentum_state,
+    literature_panic_rebound_hazard,
+)
 from research.market_state_episodes import STATE_DEFINITION, market_state_scorecards
 from research.market_state_validation import (
     hierarchical_state_validation_outputs, state_validation_outputs,
@@ -77,6 +84,9 @@ STRATEGIES = LEGACY_STRATEGIES + (
     "FAILED_BREAKDOWN_RECOVERY",
     "DEFENSIVE_ASSET_BREAKOUT",
     "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+    "LITERATURE_UP_LOW_VOL_RELATIVE_MOMENTUM",
+    "LITERATURE_PANIC_REBOUND_GUARDED_MOMENTUM",
+    "LITERATURE_12M_LONG_FLAT_TREND",
     "TREND_VOLATILITY_SCALED_EQUITY",
     "DEFENSIVE_TREND_PERSISTENCE",
     "BREADTH_DIVERGENCE_DEFENSIVE",
@@ -116,6 +126,9 @@ STRATEGY_REBALANCE_FREQUENCIES = {
     "FAILED_BREAKDOWN_RECOVERY": "daily",
     "DEFENSIVE_ASSET_BREAKOUT": "daily",
     "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE": "monthly",
+    "LITERATURE_UP_LOW_VOL_RELATIVE_MOMENTUM": "monthly",
+    "LITERATURE_PANIC_REBOUND_GUARDED_MOMENTUM": "monthly",
+    "LITERATURE_12M_LONG_FLAT_TREND": "monthly",
     "TREND_VOLATILITY_SCALED_EQUITY": "weekly",
     "DEFENSIVE_TREND_PERSISTENCE": "weekly",
     "BREADTH_DIVERGENCE_DEFENSIVE": "weekly",
@@ -291,6 +304,10 @@ def _validated_calendar(dates: list[str], bars: dict, symbols: tuple[str, ...],
         config.trend_lookback_days,
         config.volatility_lookback_days + 1,
     )
+    if "LITERATURE_UP_LOW_VOL_RELATIVE_MOMENTUM" in config.strategy_names:
+        # Keep every Stage A cross-asset path on the same calendar and avoid
+        # scoring the filter before its exact 36-month state exists.
+        warmup = max(warmup, LITERATURE_LONG_WINDOW + 1)
     if len(common_dates) <= warmup:
         raise ValueError("insufficient common daily history after warm-up")
     scored_dates = common_dates[warmup:]
@@ -380,6 +397,36 @@ def _breadth(histories: dict[str, list[float]], offset: int = 0, lookback: int =
             continue
         observations.append(closes[end - 1] > statistics.fmean(closes[end - lookback:end]))
     return sum(observations) / len(observations) if observations else None
+
+
+def _relative_momentum_defensive_targets(
+    histories: dict[str, list[float]], config: Tier1Config,
+) -> dict[str, float]:
+    """Frozen incumbent target builder reused by Stage A wrappers."""
+    def composite(symbol):
+        values = [
+            _return(histories.get(symbol, []), window)
+            for window in (63, 126, 252)
+        ]
+        return statistics.fmean(values) if all(value is not None for value in values) else None
+
+    defensive = [(composite(symbol), symbol) for symbol in DEFENSIVE_ETFS]
+    defensive = [(score, symbol) for score, symbol in defensive if score is not None]
+    defense_score, defense_symbol = max(defensive) if defensive else (0.0, config.cash_proxy_symbol)
+    risk = [(composite(symbol), symbol) for symbol in CROSS_ASSET_RISK]
+    risk = [
+        (score, symbol) for score, symbol in risk
+        if score is not None
+        and score > max(0.0, defense_score)
+        and _trend_positive(histories[symbol], config.trend_lookback_days)
+    ]
+    selected = [
+        symbol for _, symbol in sorted(risk, reverse=True)[: config.cross_asset_holdings]
+    ]
+    return (
+        {symbol: 1.0 / len(selected) for symbol in selected}
+        if selected else {defense_symbol: 1.0}
+    )
 
 
 def _legacy_targets(name: str, histories: dict[str, list[float]], config: Tier1Config) -> dict[str, float]:
@@ -589,19 +636,34 @@ def _legacy_targets(name: str, histories: dict[str, list[float]], config: Tier1C
         return ({max(candidates)[1]: 1.0} if candidates
                 else {config.cash_proxy_symbol: 1.0})
     if name == "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE":
-        def composite(symbol):
-            values = [_return(histories.get(symbol, []), window) for window in (63, 126, 252)]
-            return statistics.fmean(values) if all(value is not None for value in values) else None
-        defensive = [(composite(symbol), symbol) for symbol in DEFENSIVE_ETFS]
-        defensive = [(score, symbol) for score, symbol in defensive if score is not None]
-        defense_score, defense_symbol = max(defensive) if defensive else (0.0, config.cash_proxy_symbol)
-        risk = [(composite(symbol), symbol) for symbol in CROSS_ASSET_RISK]
-        risk = [(score, symbol) for score, symbol in risk
-                if score is not None and score > max(0.0, defense_score)
-                and _trend_positive(histories[symbol], config.trend_lookback_days)]
-        selected = [symbol for _, symbol in sorted(risk, reverse=True)[:config.cross_asset_holdings]]
-        return ({symbol: 1.0 / len(selected) for symbol in selected} if selected
-                else {defense_symbol: 1.0})
+        return _relative_momentum_defensive_targets(histories, config)
+    if name == "LITERATURE_UP_LOW_VOL_RELATIVE_MOMENTUM":
+        # This filter is the exact predeclared 2x2 literature replication:
+        # positive 36-month SPY return and 12-month realized volatility no
+        # greater than 36-month realized volatility. Other cells hold SHY.
+        if literature_momentum_state(spy) != "UP_LOW_RELATIVE_VOL":
+            return {config.cash_proxy_symbol: 1.0}
+        return _relative_momentum_defensive_targets(histories, config)
+    if name == "LITERATURE_PANIC_REBOUND_GUARDED_MOMENTUM":
+        # This is explicitly an ETF-engine adaptation, not a claim to
+        # replicate the conditional-beta crash-management model in the paper.
+        if literature_panic_rebound_hazard(histories, config.benchmark_symbol) is True:
+            return {config.cash_proxy_symbol: 1.0}
+        return _relative_momentum_defensive_targets(histories, config)
+    if name == "LITERATURE_12M_LONG_FLAT_TREND":
+        # Long-flat adaptation of a 12-month time-series trend signal. Each
+        # asset retains a fixed 1/N risk slot; inactive slots remain in SHY so
+        # a single positive asset cannot silently become a 100% concentration.
+        selected = [
+            symbol for symbol in CROSS_ASSET_RISK
+            if (_return(histories.get(symbol, []), 252) or 0.0) > 0
+        ]
+        slot = 1.0 / len(CROSS_ASSET_RISK)
+        targets = {symbol: slot for symbol in selected}
+        cash_weight = 1.0 - slot * len(selected)
+        if cash_weight > 0:
+            targets[config.cash_proxy_symbol] = cash_weight
+        return targets
     if name == "TREND_VOLATILITY_SCALED_EQUITY":
         if not _trend_positive(spy, config.trend_lookback_days):
             return {config.cash_proxy_symbol: 1.0}
@@ -883,6 +945,9 @@ STRATEGY_CONCEPT_FAMILIES = {
     "FAILED_BREAKDOWN_RECOVERY": "trend_filtered_failed_breakdown_recovery",
     "DEFENSIVE_ASSET_BREAKOUT": "risk_off_defensive_asset_breakout",
     "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE": "relative_momentum_with_defensive_hurdle",
+    "LITERATURE_UP_LOW_VOL_RELATIVE_MOMENTUM": "literature_36m_trend_12m_relative_vol_momentum_filter",
+    "LITERATURE_PANIC_REBOUND_GUARDED_MOMENTUM": "literature_informed_panic_rebound_momentum_guard_adaptation",
+    "LITERATURE_12M_LONG_FLAT_TREND": "literature_12m_multi_asset_long_flat_trend",
     "TREND_VOLATILITY_SCALED_EQUITY": "trend_filtered_volatility_scaled_equity",
     "DEFENSIVE_TREND_PERSISTENCE": "risk_off_defensive_trend_persistence",
     "BREADTH_DIVERGENCE_DEFENSIVE": "market_high_breadth_divergence_defense",
@@ -971,6 +1036,7 @@ def _simulate(name: str, dates: list[str], bars: dict, config: Tier1Config,
     target_function = target_function or _targets
     symbols = resolve_universe(config.universe_name); histories = MarketHistories(symbols)
     cash = config.initial_cash; shares: dict[str, float] = {}; pending = None; daily=[]; trades=[]; previous_day=None
+    panic_guard_active: bool | None = None
     for index, day in enumerate(dates):
         today=bars[day]
         if pending is not None:
@@ -994,15 +1060,30 @@ def _simulate(name: str, dates: list[str], bars: dict, config: Tier1Config,
         equity=cash+sum(quantity*today.get(symbol,{"close":0})["close"] for symbol,quantity in shares.items())
         if day >= scored_start:
             daily.append({"date":day,"strategy":name,"cost_bps":cost_bps,"equity":equity,"cash":cash,"positions":len(shares)})
-            if _rebalance_day(
+            scheduled_rebalance = _rebalance_day(
                 day, previous_day, _strategy_rebalance_frequency(name, config)
-            ):
+            )
+            guard_transition = False
+            if name == "LITERATURE_PANIC_REBOUND_GUARDED_MOMENTUM":
+                current_guard = literature_panic_rebound_hazard(
+                    histories, config.benchmark_symbol
+                ) is True
+                guard_transition = (
+                    panic_guard_active is not None
+                    and current_guard != panic_guard_active
+                )
+                panic_guard_active = current_guard
+            if scheduled_rebalance or guard_transition:
                 pending=target_function(name,histories,config)
             previous_day=day
         elif index + 1 < len(dates) and dates[index + 1] == scored_start:
             # Compute the first target after the final warm-up close so the
             # first scored session receives the same next-open semantics.
             pending=target_function(name,histories,config)
+            if name == "LITERATURE_PANIC_REBOUND_GUARDED_MOMENTUM":
+                panic_guard_active = literature_panic_rebound_hazard(
+                    histories, config.benchmark_symbol
+                ) is True
     return daily,trades
 
 
@@ -1318,8 +1399,28 @@ def run_tier1_job(job: dict, bars_path: Path, archive_path: Path, source_sha256:
             "market-state universe must be contained in the strategy data universe: "
             f"{missing_state_symbols}"
         )
+    literature_cross_asset_diagnostics = any(
+        strategy in {
+            "LITERATURE_UP_LOW_VOL_RELATIVE_MOMENTUM",
+            "LITERATURE_PANIC_REBOUND_GUARDED_MOMENTUM",
+            "LITERATURE_12M_LONG_FLAT_TREND",
+        }
+        for strategy in config.strategy_names
+    )
+    diagnostic_symbols: tuple[str, ...] = ()
+    if literature_cross_asset_diagnostics:
+        missing_diagnostic_symbols = sorted(
+            set(LITERATURE_CROSS_ASSET_SYMBOLS) - set(universe)
+        )
+        if missing_diagnostic_symbols:
+            raise ValueError(
+                "literature Stage A cross-asset diagnostics require their frozen "
+                f"roster in the strategy universe: {missing_diagnostic_symbols}"
+            )
+        diagnostic_symbols = LITERATURE_CROSS_ASSET_SYMBOLS
     market_conditions=causal_market_conditions(
-        dates, bars, state_universe, benchmark=config.benchmark_symbol
+        dates, bars, state_universe, benchmark=config.benchmark_symbol,
+        diagnostic_symbols=diagnostic_symbols,
     )
     condition_rows,condition_pair_rows=condition_scorecards(
         all_daily,market_conditions,config.primary_cost_bps
@@ -1423,6 +1524,18 @@ def run_tier1_job(job: dict, bars_path: Path, archive_path: Path, source_sha256:
         )
     declaration=validate_experiment_declaration(job.get("experiment"))
     manifest={"created_at":datetime.now(UTC).isoformat(),"engine":"tier1_etf_daily","source_path":str(bars_path),"source_sha256":source_sha256,"config":asdict(config),"coverage":coverage,"universe":universe_metadata(config.universe_name,tuple(sorted(symbols))),"market_state_universe":universe_metadata(config.market_state_universe_name or config.universe_name,state_universe),"hypothesis_registry":registry_snapshot(),"experiment":declaration,"execution_semantics":"warm-up excluded; signal at close and fill at next available open on validated common sessions","strategies":list(config.strategy_names),"daily_strategy_interface":{"version":1,"validation":"long-only finite weights, no leverage, universe membership","specifications":_daily_strategy_registry().snapshot(config.strategy_names)},"market_state_validation":{"version":5,"canonical_universe":config.market_state_universe_name or config.universe_name,"periods":"full, discovery, and untouched chronological holdout","fold_sessions":config.walk_forward_test_sessions,"uncertainty":"deterministic 2,000-draw whole-episode bootstrap","multiplicity":"Benjamini-Hochberg false-discovery-rate correction independently within each period and hierarchy level or transition horizon","transition_definition":"causally pending or newly confirmed state change; confirmation sensitivity at 1, 3, 5, and 10 sessions; post-confirmation horizons are 1, 2, 3, 5, and 10 sessions","confirmation_sensitivity_sessions":list(CONFIRMATION_WINDOWS),"cost_sensitivity_bps":list(config.cost_ladder_bps),"hierarchical_evidence":{"enabled":config.hierarchical_state_validation,"levels":["trend_volatility","trend_breadth","trend"],"effect":"diagnostic corroboration only; detailed labels remain preserved and no parent result authorizes routing"},"candidate_map_effect":"retains challengers and summarizes evidence only","survival_statuses":"insufficient, failed gates, historically promising, chronologically recurring, or cost robust awaiting forward validation","routing_effect":"none"},"promotion_policy":"diagnostic gate only; shadow approval requires untouched holdout and stability tests"}
+    manifest["market_condition_diagnostics"] = {
+        "cross_asset_trend_enabled": bool(diagnostic_symbols),
+        "cross_asset_trend_symbols": list(diagnostic_symbols),
+        "directional_magnitude": (
+            "mean absolute lagged 252-session total return over the exact frozen roster"
+        ),
+        "correlation": (
+            "mean pairwise correlation of lagged 60-session daily returns over the exact frozen roster"
+        ),
+        "bucket_method": "causal expanding-history quintiles",
+        "canonical_market_state_effect": "none",
+    }
     archive_path.parent.mkdir(parents=True,exist_ok=True)
     with zipfile.ZipFile(archive_path,"w",zipfile.ZIP_DEFLATED,compresslevel=1) as bundle:
         bundle.write(all_daily_path,arcname="tier1_daily.csv"); _write_csv(bundle,"tier1_trades.csv",all_trades); _write_csv(bundle,"tier1_cost_ladder_scorecard.csv",scorecards); _write_csv(bundle,"tier1_cost_path_audit.csv",cost_path_audit); _write_csv(bundle,"tier1_period_scorecard.csv",period_scorecards); _write_csv(bundle,"tier1_promotion_gates.csv",promotions); _write_csv(bundle,"tier1_rolling_window_scorecard.csv",rolling_scorecards); _write_csv(bundle,"tier1_walk_forward_scorecard.csv",walk_forward_scorecards); _write_csv(bundle,"tier1_regime_scorecard.csv",regime_scorecards); _write_csv(bundle,"tier1_market_conditions.csv",list(market_conditions.values())); _write_csv(bundle,"tier1_condition_scorecard.csv",condition_rows); _write_csv(bundle,"tier1_condition_pair_scorecard.csv",condition_pair_rows); _write_csv(bundle,"tier1_market_state_labels.csv",state_labels); _write_csv(bundle,"tier1_market_state_episodes.csv",state_episodes); _write_csv(bundle,"tier1_market_state_attribution.csv",state_attribution); _write_csv(bundle,"tier1_market_state_episode_returns.csv",state_episode_returns); _write_csv(bundle,"tier1_market_state_period_scorecard.csv",state_periods); _write_csv(bundle,"tier1_market_state_inference.csv",state_inference); _write_csv(bundle,"tier1_market_state_cost_sensitivity.csv",state_costs); _write_csv(bundle,"tier1_market_state_transition_scorecard.csv",state_transitions); _write_csv(bundle,"tier1_market_state_chronological_folds.csv",state_folds); _write_csv(bundle,"tier1_market_state_fold_recurrence.csv",state_fold_recurrence); _write_csv(bundle,"tier1_market_state_transition_horizons.csv",state_transition_horizons); _write_csv(bundle,"tier1_hypothesis_survival.csv",state_survival); _write_csv(bundle,"tier1_market_state_hierarchy_period_scorecard.csv",hierarchy_periods); _write_csv(bundle,"tier1_market_state_hierarchy_inference.csv",hierarchy_inference); _write_csv(bundle,"tier1_market_state_hierarchy_cost_sensitivity.csv",hierarchy_costs); _write_csv(bundle,"tier1_market_state_hierarchy_chronological_folds.csv",hierarchy_folds); _write_csv(bundle,"tier1_market_state_hierarchy_fold_recurrence.csv",hierarchy_recurrence); _write_csv(bundle,"tier1_market_state_hierarchy_survival.csv",hierarchy_survival); _write_csv(bundle,"tier1_state_actionability_sessions.csv",state_actionability_sessions); _write_csv(bundle,"tier1_state_actionability_summary.csv",state_actionability_summary); _write_csv(bundle,"tier1_state_actionability_episode_segments.csv",state_actionability_segments); _write_csv(bundle,"tier1_downside_event_sessions.csv",downside_event_sessions); _write_csv(bundle,"tier1_downside_event_summary.csv",downside_event_summary); _write_csv(bundle,"tier1_downside_event_overlap.csv",downside_event_overlap); _write_csv(bundle,"tier1_pairwise_summary.csv",pairwise_summary); _write_csv(bundle,"tier1_event_diagnostics.csv",event_rows); _write_csv(bundle,"tier1_event_summary.csv",event_summary); _write_csv(bundle,"tier1_event_horizon_summary.csv",event_horizons); _write_csv(bundle,"tier1_event_condition_summary.csv",event_conditions); _write_csv(bundle,"tier1_breakout_opportunities.csv",breakout_opportunities); _write_csv(bundle,"tier1_breakout_opportunity_summary.csv",breakout_opportunity_summary); _write_csv(bundle,"tier1_role_aware_evidence.csv",evidence_matrix); _write_csv(bundle,"tier1_tactical_baseline_comparisons.csv",tactical_comparisons); _write_csv(bundle,"tier1_tactical_override_summary.csv",tactical_summary); _write_csv(bundle,"tier1_baseline_state_leaderboard.csv",baseline_leaderboard); _write_csv(bundle,"tier1_defensive_baseline_comparisons.csv",defensive_comparisons); _write_csv(bundle,"tier1_tactical_horizon_comparisons.csv",tactical_horizon_comparisons); _write_csv(bundle,"tier1_tactical_horizon_summary.csv",tactical_horizon_summary); _write_csv(bundle,"tier1_locked_tactical_validation.csv",locked_tactical_validation); _write_csv(bundle,"tier1_defensive_distinctness.csv",defensive_distinctness); _write_csv(bundle,"tier1_baseline_era_details.csv",baseline_era_details); _write_csv(bundle,"tier1_baseline_era_recurrence.csv",baseline_era_recurrence); _write_csv(bundle,"tier1_baseline_confirmation_sensitivity.csv",baseline_confirmation_sensitivity); _write_csv(bundle,"tier1_state_transition_timing.csv",transition_timing_rows); _write_csv(bundle,"tier1_generation_candidate_map.csv",generation_candidate_map)

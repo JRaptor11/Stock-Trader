@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 import statistics
 from collections import defaultdict
+from itertools import combinations
 
 
 BUCKET_LABELS = ("Q1_LOW", "Q2", "Q3", "Q4", "Q5_HIGH")
@@ -22,9 +23,21 @@ DEFAULT_PAIR_DIMENSIONS = (
     ("trend_acceleration_5d_bucket", "volatility_change_5d_bucket"),
     ("breadth_50d_change_5d_bucket", "correlation_20d_change_5d_bucket"),
     ("momentum_dispersion_63d_bucket", "correlation_20d_bucket"),
+    (
+        "cross_asset_directional_magnitude_252d_bucket",
+        "cross_asset_correlation_60d_bucket",
+    ),
 )
 
 TRANSITION_LAG = 5
+LITERATURE_LONG_WINDOW = 756
+LITERATURE_MEDIUM_WINDOW = 252
+LITERATURE_EQUITY_BREADTH_SYMBOLS = (
+    "XLY", "XLP", "XLE", "XLF", "XLV", "XLI", "XLB", "XLK", "XLU",
+)
+LITERATURE_CROSS_ASSET_SYMBOLS = (
+    "SPY", "QQQ", "IWM", "TLT", "IEF", "GLD", "DBC", "EFA", "EEM", "VNQ",
+)
 
 
 def _returns(values: list[float], window: int) -> list[float]:
@@ -46,6 +59,74 @@ def _period_return(values: list[float], window: int) -> float | None:
 def _annualized_volatility(values: list[float], window: int) -> float | None:
     returns = _returns(values, window)
     return statistics.stdev(returns) * math.sqrt(252) if len(returns) >= window - 1 and len(returns) > 1 else None
+
+
+def literature_momentum_state(values: list[float]) -> str | None:
+    """Classify the predeclared 36-month trend / relative-volatility state.
+
+    The definition is the direct daily-data translation of the literature
+    replication: positive trailing 36-month market return and trailing
+    12-month realized volatility no greater than trailing 36-month realized
+    volatility.  The four labels preserve the full 2x2 comparison instead of
+    retaining only the favorable cell.
+    """
+    long_return = _period_return(values, LITERATURE_LONG_WINDOW)
+    medium_volatility = _annualized_volatility(values, LITERATURE_MEDIUM_WINDOW)
+    long_volatility = _annualized_volatility(values, LITERATURE_LONG_WINDOW)
+    if None in (long_return, medium_volatility, long_volatility):
+        return None
+    trend = "UP" if long_return > 0 else "DOWN"
+    relative_volatility = "LOW_RELATIVE_VOL" if medium_volatility <= long_volatility else "HIGH_RELATIVE_VOL"
+    return f"{trend}_{relative_volatility}"
+
+
+def _equity_breadth(
+    histories: dict[str, list[float]], *, offset: int = 0, lookback: int = 50,
+) -> float | None:
+    observations = []
+    for symbol in LITERATURE_EQUITY_BREADTH_SYMBOLS:
+        values = histories.get(symbol, [])
+        end = len(values) - offset
+        if end < lookback:
+            continue
+        observations.append(values[end - 1] > statistics.fmean(values[end - lookback:end]))
+    return sum(observations) / len(observations) if observations else None
+
+
+def literature_panic_rebound_hazard(
+    histories: dict[str, list[float]], benchmark: str = "SPY",
+) -> bool | None:
+    """Return the frozen causal panic-rebound guard adaptation.
+
+    Daniel and Moskowitz document momentum crash risk after market declines,
+    elevated volatility, and sharp rebounds.  Their conditional beta model is
+    not directly tradable with this ETF-only engine, so Stage A deliberately
+    labels this transparent rule an *adaptation*: a recent 10-session loss of
+    at least 8%, three consecutive rising closes, a close above its 10-session
+    mean, and improving lagged 50-session sector breadth.  Every input is
+    available at the decision close.
+    """
+    values = histories.get(benchmark, [])
+    if len(values) < 56:
+        return None
+    declines = [
+        _period_return(values[: index + 1], 10)
+        for index in range(max(10, len(values) - 5), len(values))
+    ]
+    three_up = all(
+        values[index] > values[index - 1]
+        for index in range(len(values) - 2, len(values))
+    )
+    breadth_now = _equity_breadth(histories)
+    breadth_prior = _equity_breadth(histories, offset=5)
+    if breadth_now is None or breadth_prior is None:
+        return None
+    return bool(
+        any(value is not None and value <= -0.08 for value in declines)
+        and three_up
+        and values[-1] > statistics.fmean(values[-10:])
+        and breadth_now > breadth_prior
+    )
 
 
 def _percentile_bucket(value: float | None, history: list[float], minimum_history: int) -> tuple[float | None, str | None]:
@@ -94,6 +175,53 @@ def _cross_sectional_features(histories: dict[str, list[float]], benchmark: str)
     }
 
 
+def _cross_asset_trend_features(
+    histories: dict[str, list[float]], symbols: tuple[str, ...],
+) -> dict[str, float | None]:
+    """Frozen causal trend-strength and diversification diagnostics.
+
+    Directional magnitude is the mean absolute 252-session total return over
+    the fixed liquid cross-asset roster. Correlation is the mean valid
+    pairwise correlation of trailing 60-session daily returns over that same
+    roster. At least three assets are required so a partial cohort cannot be
+    mislabeled as a cross-asset observation.
+    """
+    roster = tuple(symbol for symbol in symbols if symbol in histories)
+    directional_returns = [
+        value for symbol in roster
+        if (value := _period_return(histories[symbol], 252)) is not None
+    ]
+    return_series = {
+        symbol: _returns(histories[symbol], 60)
+        for symbol in roster if len(histories[symbol]) > 60
+    }
+    correlations = []
+    for first, second in combinations(return_series, 2):
+        if len(return_series[first]) != 60 or len(return_series[second]) != 60:
+            continue
+        value = _correlation(return_series[first], return_series[second])
+        if value is not None:
+            correlations.append(value)
+    # Stage A freezes a ten-asset roster.  Do not silently turn a missing fund
+    # into a different diagnostic universe: a value exists only when every
+    # requested asset has the complete lookback.
+    enough_directional = bool(symbols) and len(directional_returns) == len(symbols)
+    enough_correlation = bool(symbols) and len(return_series) == len(symbols) and bool(correlations)
+    return {
+        "cross_asset_directional_magnitude_252d": (
+            statistics.fmean(abs(value) for value in directional_returns)
+            if enough_directional else None
+        ),
+        "cross_asset_positive_trend_share_252d": (
+            sum(value > 0 for value in directional_returns) / len(directional_returns)
+            if enough_directional else None
+        ),
+        "cross_asset_correlation_60d": (
+            statistics.fmean(correlations) if enough_correlation else None
+        ),
+    }
+
+
 def _transition_features(snapshot: dict, prior_snapshots: list[dict], lag: int = TRANSITION_LAG) -> dict[str, float | None]:
     """Measure causal state changes versus the snapshot five sessions earlier."""
     prior = prior_snapshots[-lag] if len(prior_snapshots) >= lag else {}
@@ -116,9 +244,12 @@ def _transition_features(snapshot: dict, prior_snapshots: list[dict], lag: int =
 def causal_market_conditions(
     dates: list[str], bars: dict, symbols: tuple[str, ...], benchmark: str = "SPY",
     minimum_bucket_history: int = 60,
+    diagnostic_symbols: tuple[str, ...] = (),
 ) -> dict[str, dict]:
     """Return a causal continuous feature snapshot and expanding buckets per day."""
-    histories = {symbol: [] for symbol in symbols}
+    state_symbols = tuple(symbols)
+    history_symbols = tuple(dict.fromkeys((*state_symbols, *diagnostic_symbols)))
+    histories = {symbol: [] for symbol in history_symbols}
     feature_history: dict[str, list[float]] = defaultdict(list)
     conditions: dict[str, dict] = {}
     prior_snapshots: list[dict] = []
@@ -128,16 +259,27 @@ def causal_market_conditions(
         if benchmark_history:
             vol20 = _annualized_volatility(benchmark_history, 20)
             vol60 = _annualized_volatility(benchmark_history, 60)
+            vol252 = _annualized_volatility(benchmark_history, LITERATURE_MEDIUM_WINDOW)
+            vol756 = _annualized_volatility(benchmark_history, LITERATURE_LONG_WINDOW)
             snapshot = {
                 "date": day,
                 "trend_20d_return": _period_return(benchmark_history, 20),
                 "trend_63d_return": _period_return(benchmark_history, 63),
+                "trend_756d_return": _period_return(benchmark_history, LITERATURE_LONG_WINDOW),
                 "trend_200d_distance": _distance_from_mean(benchmark_history, 200),
                 "volatility_20d": vol20,
                 "volatility_60d": vol60,
+                "volatility_252d": vol252,
+                "volatility_756d": vol756,
+                "volatility_252_to_756_ratio": (
+                    vol252 / vol756 if vol252 is not None and vol756 else None
+                ),
                 "volatility_expansion": vol20 / vol60 if vol20 is not None and vol60 else None,
                 "prior_market_gap": previous_gap,
-                **_cross_sectional_features(histories, benchmark),
+                **_cross_sectional_features(
+                    {symbol: histories[symbol] for symbol in state_symbols}, benchmark
+                ),
+                **_cross_asset_trend_features(histories, diagnostic_symbols),
             }
             snapshot.update(_transition_features(snapshot, prior_snapshots))
             for feature, value in tuple(snapshot.items()):
@@ -146,6 +288,16 @@ def causal_market_conditions(
                 percentile, bucket = _percentile_bucket(value, feature_history[feature], minimum_bucket_history)
                 snapshot[f"{feature}_percentile"] = percentile
                 snapshot[f"{feature}_bucket"] = bucket
+            # These two predeclared categorical diagnostics are intentionally
+            # not expanding-percentile buckets. Their economic definitions are
+            # fixed before the Stage A return analysis.
+            snapshot["literature_momentum_state_bucket"] = literature_momentum_state(
+                benchmark_history
+            )
+            hazard = literature_panic_rebound_hazard(histories, benchmark)
+            snapshot["literature_panic_rebound_hazard_bucket"] = (
+                "HAZARD" if hazard is True else "NO_HAZARD" if hazard is False else None
+            )
             conditions[day] = snapshot
             prior_snapshots.append({
                 key: value for key, value in snapshot.items()
@@ -158,7 +310,7 @@ def causal_market_conditions(
         today = bars[day]
         if benchmark in today and benchmark_history:
             previous_gap = today[benchmark]["open"] / benchmark_history[-1] - 1.0
-        for symbol in symbols:
+        for symbol in history_symbols:
             if symbol in today:
                 histories[symbol].append(float(today[symbol]["close"]))
     return conditions

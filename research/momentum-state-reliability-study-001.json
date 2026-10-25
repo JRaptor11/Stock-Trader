@@ -1,0 +1,37 @@
+{
+  "study_id": "MOMENTUM_STATE_RELIABILITY_STUDY_001",
+  "status": "frozen_before_analysis",
+  "generation_015_status": "paused_and_unchanged",
+  "purpose": "Test whether the three strongest existing state-strategy observations beat SPY through recurring episode-level reliability or through fragile concentrated payoffs.",
+  "source_archives": [
+    "long-term-baseline-mechanisms-phase-010-prehistory-yahoo-results.zip",
+    "long-term-baseline-mechanisms-phase-010-modern-core-v2-yahoo-results.zip"
+  ],
+  "hypotheses": [
+    {"id": "REL_MOM_BULL_DECELERATING", "strategy": "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE", "state_field": "trend_state", "state": "BULL_DECELERATING"},
+    {"id": "TREND_BEAR_RECOVERING", "strategy": "DIVERSIFIED_TREND", "state_field": "trend_state", "state": "BEAR_RECOVERING"},
+    {"id": "REL_MOM_BULL_ACCEL_HIGH_VOL_BROAD", "strategy": "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE", "state_field": "core_state", "state": "BULL_ACCELERATING__HIGH_VOL__BROAD_BREADTH"}
+  ],
+  "non_overlapping_blocks": [
+    ["OLDER_2008_2010", "prehistory", "2008-05-30", "2010-12-31"],
+    ["MODERN_2012_2014", "modern", "2012-01-01", "2014-12-31"],
+    ["MODERN_2015_2017", "modern", "2015-01-01", "2017-12-31"],
+    ["MODERN_2018_2020", "modern", "2018-01-01", "2020-12-31"],
+    ["MODERN_2021_2023", "modern", "2021-01-01", "2023-12-31"],
+    ["MODERN_2024_CURRENT", "modern", "2024-01-01", "9999-12-31"]
+  ],
+  "costs_bps": [10.0, 20.0],
+  "activation_lags_sessions": [0, 1, 3],
+  "primary": {"cost_bps": 10.0, "activation_lag_sessions": 0},
+  "reliability_gate": {
+    "minimum_episodes": 20,
+    "minimum_eligible_blocks": 3,
+    "minimum_positive_blocks": 2,
+    "minimum_episode_win_rate": 0.60,
+    "minimum_median_episode_excess": 0.0,
+    "minimum_profit_factor": 1.25,
+    "minimum_20bps_one_session_lag_win_rate": 0.55,
+    "require_positive_20bps_one_session_lag_median": true
+  },
+  "effects": {"router": false, "paper_trading": false, "promotion": false, "parameter_retuning": false}
+}

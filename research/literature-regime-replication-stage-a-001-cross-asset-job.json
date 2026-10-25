@@ -1,0 +1,76 @@
+{
+  "job_id": "literature-regime-replication-stage-a-001-cross-asset-2026-10-09",
+  "engine": "tier1_etf_daily",
+  "bars_csv": "literature_stage_a_adjusted_daily_2011_2026-10-09.csv",
+  "data_source": "Adjusted daily OHLCV through 2026-10-09; provider and source hash must be retained in the uploaded dataset audit record.",
+  "experiment": {
+    "hypothesis_id": "LITERATURE_REGIME_REPLICATION_STAGE_A_001",
+    "trial_id": "cross-asset-mechanisms-2026-10-09",
+    "holdout_policy": "All observations through 2026-10-09 are consumed retrospective evidence; chronological folds are stability diagnostics, not untouched holdout.",
+    "evidence_status": {
+      "classification": "retrospective_consumed",
+      "consumed_through": "2026-10-09",
+      "untouched_holdout_consumed": false
+    },
+    "tested_variants": [
+      {"variant_id": "spy-buy-hold-control", "strategy": "SPY_BUY_HOLD", "role": "benchmark", "frozen_definition": {"target_weights": {"SPY": 1.0}, "parameter_source": "existing engine strategy unchanged"}},
+      {"variant_id": "static-60-30-10-control", "strategy": "STATIC_60_30_10", "role": "stability_control", "frozen_definition": {"target_weights": {"SPY": 0.6, "IEF": 0.3, "GLD": 0.1}, "rebalance": "monthly", "parameter_source": "existing engine strategy unchanged"}},
+      {"variant_id": "incumbent-relative-momentum-control", "strategy": "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE", "role": "momentum_control", "frozen_definition": {"momentum_score": "arithmetic mean of lagged 63-, 126-, and 252-session total returns", "risk_roster": ["SPY", "QQQ", "IWM", "TLT", "IEF", "GLD", "DBC", "EFA", "EEM", "VNQ"], "absolute_trend_sessions": 200, "risk_eligibility": "score > max(0, best defensive score) and price above 200-session mean", "holdings": "top three eligible assets, equal weighted", "defensive_roster": ["BIL", "IEF", "GLD"], "no_risk_target": "highest-score defensive ETF", "rebalance": "monthly"}},
+      {"variant_id": "up-low-relative-vol-momentum", "strategy": "LITERATURE_UP_LOW_VOL_RELATIVE_MOMENTUM", "role": "literature_condition_adaptation", "frozen_definition": {"underlying_strategy": "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE", "activation": "lagged 756-session SPY return > 0 and lagged 252-session realized volatility <= lagged 756-session realized volatility", "inactive_target_weights": {"SHY": 1.0}, "rebalance": "monthly"}},
+      {"variant_id": "panic-rebound-guarded-momentum", "strategy": "LITERATURE_PANIC_REBOUND_GUARDED_MOMENTUM", "role": "literature_informed_guard_adaptation", "frozen_definition": {"underlying_strategy": "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE", "hazard": "a 10-session SPY loss <= -8% observed within the latest five closes, followed by three rising closes, SPY above its 10-session mean, and improving lagged 50-session sector breadth", "hazard_target_weights": {"SHY": 1.0}, "rebalance": "monthly plus hazard-state transitions"}},
+      {"variant_id": "incumbent-diversified-trend-control", "strategy": "DIVERSIFIED_TREND", "role": "trend_control", "frozen_definition": {"momentum_score": "arithmetic mean of lagged 63-, 126-, and 252-session total returns", "absolute_trend_sessions": 200, "eligible_assets": ["SPY", "QQQ", "IWM", "TLT", "IEF", "GLD", "DBC", "EFA", "EEM", "VNQ"], "activation_gate": "at least one asset has positive momentum score and price above its 200-session mean", "weighting": "after activation, equal weight across every asset above its 200-session mean; otherwise SHY", "rebalance": "monthly"}},
+      {"variant_id": "twelve-month-long-flat-trend", "strategy": "LITERATURE_12M_LONG_FLAT_TREND", "role": "literature_trend_adaptation", "frozen_definition": {"signal_lookback_sessions": 252, "eligible_assets": ["SPY", "QQQ", "IWM", "TLT", "IEF", "GLD", "DBC", "EFA", "EEM", "VNQ"], "weighting": "fixed one-tenth slot per positive-signal asset with inactive slots in SHY", "rebalance": "monthly"}}
+    ]
+  },
+  "research_evaluation": {
+    "cohort": "cross_asset_mechanisms",
+    "baseline_strategy": "SPY_BUY_HOLD",
+    "preserve_all_strategy_roles": true,
+    "router": false,
+    "primary_partition": "full",
+    "generation_015": "paused",
+    "primary_condition_hypotheses": [
+      "MOMENTUM_UP_LOW_RELATIVE_VOL_CELL",
+      "PANIC_REBOUND_GUARD_CELL",
+      "TREND_STRONG_DIVERSIFIED_CELL"
+    ]
+  },
+  "tier1_config": {
+    "initial_cash": 100000.0,
+    "universe_name": "ETF_LONG_TERM_CROSS_ASSET_HISTORY",
+    "market_state_universe_name": "ETF_LONG_TERM_STATE_CANONICAL",
+    "benchmark_symbol": "SPY",
+    "cash_proxy_symbol": "SHY",
+    "rebalance_frequency": "monthly",
+    "volatility_lookback_days": 60,
+    "volatility_target_annualized": 0.12,
+    "regime_high_volatility_annualized": 0.18,
+    "trend_lookback_days": 200,
+    "momentum_lookbacks_days": [63, 126, 252],
+    "sector_holdings": 3,
+    "cross_asset_holdings": 3,
+    "factor_holdings": 2,
+    "industry_holdings": 3,
+    "no_trade_band": 0.02,
+    "cost_ladder_bps": [1.0, 5.0, 10.0, 20.0],
+    "primary_cost_bps": 10.0,
+    "required_common_start_date": "2011-01-03",
+    "minimum_common_coverage_pct": 99.0,
+    "minimum_scored_sessions": 2800,
+    "rolling_window_sessions": 756,
+    "walk_forward_train_sessions": 756,
+    "walk_forward_test_sessions": 126,
+    "walk_forward_step_sessions": 126,
+    "hierarchical_state_validation": false,
+    "diagnostic_profile": "baseline_core",
+    "strategy_names": [
+      "SPY_BUY_HOLD",
+      "STATIC_60_30_10",
+      "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+      "LITERATURE_UP_LOW_VOL_RELATIVE_MOMENTUM",
+      "LITERATURE_PANIC_REBOUND_GUARDED_MOMENTUM",
+      "DIVERSIFIED_TREND",
+      "LITERATURE_12M_LONG_FLAT_TREND"
+    ]
+  }
+}

@@ -1,0 +1,66 @@
+{
+  "job_id": "literature-regime-replication-stage-a-001-quality-2026-10-09",
+  "engine": "tier1_etf_daily",
+  "bars_csv": "literature_stage_a_adjusted_daily_2011_2026-10-09.csv",
+  "data_source": "Adjusted daily OHLCV through 2026-10-09; provider and source hash must be retained in the uploaded dataset audit record.",
+  "experiment": {
+    "hypothesis_id": "LITERATURE_REGIME_REPLICATION_STAGE_A_001",
+    "trial_id": "quality-proxy-2026-10-09",
+    "holdout_policy": "All observations through 2026-10-09 are consumed retrospective evidence; QUAL is a long-only ETF proxy and not an implementation of QMJ.",
+    "evidence_status": {
+      "classification": "retrospective_consumed",
+      "consumed_through": "2026-10-09",
+      "untouched_holdout_consumed": false
+    },
+    "tested_variants": [
+      {"variant_id": "spy-buy-hold-control", "strategy": "SPY_BUY_HOLD", "role": "benchmark", "frozen_definition": {"target_weights": {"SPY": 1.0}, "parameter_source": "existing engine strategy unchanged"}},
+      {"variant_id": "qual-buy-hold-proxy", "strategy": "QUAL_BUY_HOLD", "role": "long_only_quality_proxy", "frozen_definition": {"target_weights": {"QUAL": 1.0}, "interpretation": "long-only ETF proxy, not QMJ"}},
+      {"variant_id": "value-quality-static-control", "strategy": "VALUE_QUALITY_STATIC", "role": "mixed_factor_control", "frozen_definition": {"target_weights": {"VLUE": 0.5, "QUAL": 0.5}, "rebalance": "quarterly", "parameter_source": "existing engine strategy unchanged"}},
+      {"variant_id": "usmv-buy-hold-control", "strategy": "USMV_BUY_HOLD", "role": "generic_defensiveness_control", "frozen_definition": {"target_weights": {"USMV": 1.0}, "parameter_source": "existing engine strategy unchanged"}}
+    ]
+  },
+  "research_evaluation": {
+    "cohort": "quality_proxy",
+    "baseline_strategy": "SPY_BUY_HOLD",
+    "preserve_all_strategy_roles": true,
+    "router": false,
+    "primary_partition": "full",
+    "generation_015": "paused",
+    "primary_condition_hypotheses": ["QUALITY_PROXY_STRESS_CELL"]
+  },
+  "tier1_config": {
+    "initial_cash": 100000.0,
+    "universe_name": "ETF_LONG_TERM_FACTOR_HISTORY",
+    "market_state_universe_name": "ETF_LONG_TERM_STATE_CANONICAL",
+    "benchmark_symbol": "SPY",
+    "cash_proxy_symbol": "SHY",
+    "rebalance_frequency": "monthly",
+    "volatility_lookback_days": 60,
+    "volatility_target_annualized": 0.12,
+    "regime_high_volatility_annualized": 0.18,
+    "trend_lookback_days": 200,
+    "momentum_lookbacks_days": [63, 126, 252],
+    "sector_holdings": 3,
+    "cross_asset_holdings": 3,
+    "factor_holdings": 2,
+    "industry_holdings": 3,
+    "no_trade_band": 0.02,
+    "cost_ladder_bps": [1.0, 5.0, 10.0, 20.0],
+    "primary_cost_bps": 10.0,
+    "required_common_start_date": "2014-01-02",
+    "minimum_common_coverage_pct": 99.0,
+    "minimum_scored_sessions": 2800,
+    "rolling_window_sessions": 756,
+    "walk_forward_train_sessions": 756,
+    "walk_forward_test_sessions": 126,
+    "walk_forward_step_sessions": 126,
+    "hierarchical_state_validation": false,
+    "diagnostic_profile": "baseline_core",
+    "strategy_names": [
+      "SPY_BUY_HOLD",
+      "QUAL_BUY_HOLD",
+      "VALUE_QUALITY_STATIC",
+      "USMV_BUY_HOLD"
+    ]
+  }
+}

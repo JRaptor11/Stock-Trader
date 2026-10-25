@@ -1,0 +1,182 @@
+{
+  "study_id": "LITERATURE_REGIME_REPLICATION_STAGE_A_001",
+  "status": "frozen_before_return_analysis",
+  "frozen_at": "2026-10-13T00:00:00Z",
+  "benchmark_strategy": "SPY_BUY_HOLD",
+  "generation_015_status": "paused_and_unchanged",
+  "purpose": "Test a compact set of literature-motivated long-term mechanisms and the market conditions in which they add value, without building a router, searching parameter grids, or removing existing strategy families.",
+  "evidence_observed_through": "2026-10-09",
+  "hypotheses": [
+    {
+      "id": "A1_MOMENTUM_UP_LOW_RELATIVE_VOL",
+      "strategy": "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+      "dimension": "literature_momentum_state_bucket",
+      "bucket": "UP_LOW_RELATIVE_VOL",
+      "cohort": "cross_asset_mechanisms",
+      "expected_direction": "positive excess return versus SPY at 10 basis points",
+      "interpretation": "Direct condition test; it does not by itself validate the filtered tradable adaptation."
+    },
+    {
+      "id": "A2_GUARDED_MOMENTUM_HAZARD",
+      "strategy": "LITERATURE_PANIC_REBOUND_GUARDED_MOMENTUM",
+      "dimension": "literature_panic_rebound_hazard_bucket",
+      "bucket": "HAZARD",
+      "cohort": "cross_asset_mechanisms",
+      "expected_direction": "positive excess return versus SPY at 10 basis points",
+      "secondary_comparator": "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+      "interpretation": "Focused validator uses SPY as the common benchmark; the unguarded incumbent remains the predeclared paired diagnostic."
+    },
+    {
+      "id": "A3_TREND_HIGH_DIRECTIONAL_MAGNITUDE",
+      "strategy": "LITERATURE_12M_LONG_FLAT_TREND",
+      "dimension": "cross_asset_directional_magnitude_252d_bucket",
+      "bucket": "Q5_HIGH",
+      "cohort": "cross_asset_mechanisms",
+      "expected_direction": "positive excess return versus SPY at 10 basis points",
+      "secondary_comparator": "DIVERSIFIED_TREND"
+    },
+    {
+      "id": "A4_TREND_LOW_CROSS_ASSET_CORRELATION",
+      "strategy": "LITERATURE_12M_LONG_FLAT_TREND",
+      "dimension": "cross_asset_correlation_60d_bucket",
+      "bucket": "Q1_LOW",
+      "cohort": "cross_asset_mechanisms",
+      "expected_direction": "positive excess return versus SPY at 10 basis points",
+      "secondary_comparator": "DIVERSIFIED_TREND"
+    },
+    {
+      "id": "A5_QUALITY_PROXY_DOWN_HIGH_RELATIVE_VOL",
+      "strategy": "QUAL_BUY_HOLD",
+      "dimension": "literature_momentum_state_bucket",
+      "bucket": "DOWN_HIGH_RELATIVE_VOL",
+      "cohort": "quality_proxy",
+      "expected_direction": "positive excess return versus SPY at 10 basis points",
+      "secondary_comparators": ["VALUE_QUALITY_STATIC", "USMV_BUY_HOLD"],
+      "interpretation": "Long-only QUAL ETF proxy diagnostic, not QMJ."
+    }
+  ],
+  "frozen_hypotheses": [
+    {
+      "id": "UP_LOW_VOL_RELATIVE_MOMENTUM",
+      "strategy": "LITERATURE_UP_LOW_VOL_RELATIVE_MOMENTUM",
+      "classification": "direct_condition_replication_with_existing_portfolio",
+      "rule": "Use the unchanged incumbent cross-asset relative-momentum target only when the lagged 756-session SPY return is positive and lagged 252-session annualized realized volatility is no greater than lagged 756-session annualized realized volatility; otherwise hold SHY.",
+      "primary_comparators": ["CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE", "SPY_BUY_HOLD"]
+    },
+    {
+      "id": "PANIC_REBOUND_MOMENTUM_GUARD",
+      "strategy": "LITERATURE_PANIC_REBOUND_GUARDED_MOMENTUM",
+      "classification": "literature_informed_etf_engine_adaptation_not_exact_paper_replication",
+      "rule": "Use the unchanged incumbent cross-asset relative-momentum target except during a causal hazard defined by a recent 10-session SPY loss of at least 8%, three rising closes, SPY above its 10-session mean, and improving 50-session sector breadth; hold SHY during the hazard.",
+      "primary_comparators": ["CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE", "SPY_BUY_HOLD"]
+    },
+    {
+      "id": "TWELVE_MONTH_LONG_FLAT_TREND",
+      "strategy": "LITERATURE_12M_LONG_FLAT_TREND",
+      "classification": "long_only_tradable_adaptation",
+      "rule": "At each monthly decision, give every frozen cross-asset ETF a fixed equal slot when its lagged 252-session total return is positive and leave inactive slots in SHY.",
+      "primary_comparators": ["DIVERSIFIED_TREND", "SPY_BUY_HOLD"]
+    },
+    {
+      "id": "QUALITY_PROXY_CONDITIONAL_DIAGNOSTIC",
+      "strategy": "QUAL_BUY_HOLD",
+      "classification": "long_only_quality_etf_proxy_not_qmj",
+      "rule": "Evaluate the existing QUAL ETF buy-and-hold path by the frozen causal market conditions. Do not label this long-only ETF proxy as the academic long-short Quality Minus Junk factor.",
+      "primary_comparators": ["SPY_BUY_HOLD", "VALUE_QUALITY_STATIC", "USMV_BUY_HOLD"]
+    }
+  ],
+  "market_condition_diagnostics": {
+    "literature_momentum_state_bucket": [
+      "UP_LOW_RELATIVE_VOL",
+      "UP_HIGH_RELATIVE_VOL",
+      "DOWN_LOW_RELATIVE_VOL",
+      "DOWN_HIGH_RELATIVE_VOL"
+    ],
+    "literature_panic_rebound_hazard_bucket": ["HAZARD", "NO_HAZARD"],
+    "cross_asset_directional_magnitude_252d_bucket": [
+      "Q1_LOW", "Q2", "Q3", "Q4", "Q5_HIGH"
+    ],
+    "cross_asset_correlation_60d_bucket": [
+      "Q1_LOW", "Q2", "Q3", "Q4", "Q5_HIGH"
+    ],
+    "cross_asset_trend_roster": [
+      "SPY", "QQQ", "IWM", "TLT", "IEF", "GLD", "DBC", "EFA", "EEM", "VNQ"
+    ],
+    "cross_asset_directional_magnitude_definition": "Mean absolute lagged 252-session total return across every member of the exact frozen roster; unavailable when any member lacks the full lookback.",
+    "cross_asset_correlation_definition": "Mean pairwise correlation of lagged 60-session daily returns across every member of the exact frozen roster; unavailable when any member lacks the full lookback.",
+    "causality": "Every label assigned to session t uses closes and breadth available through session t-1."
+  },
+  "primary_condition_hypotheses": [
+    {
+      "id": "MOMENTUM_UP_LOW_RELATIVE_VOL_CELL",
+      "candidate": "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+      "comparators": ["SPY_BUY_HOLD"],
+      "condition": {
+        "dimension": "literature_momentum_state_bucket",
+        "included_buckets": ["UP_LOW_RELATIVE_VOL"]
+      },
+      "frozen_expected_direction": "Positive 10-basis-point net excess return versus SPY, with stronger excess than in each of the other three reported momentum-state cells.",
+      "scope": "direct literature condition test; the filtered tradable adaptation is reported separately"
+    },
+    {
+      "id": "PANIC_REBOUND_GUARD_CELL",
+      "candidate": "LITERATURE_PANIC_REBOUND_GUARDED_MOMENTUM",
+      "comparators": ["CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE"],
+      "condition": {
+        "dimension": "literature_panic_rebound_hazard_bucket",
+        "included_buckets": ["HAZARD"]
+      },
+      "frozen_expected_direction": "Higher 10-basis-point net compounded return and a less severe conditional left tail than the unguarded incumbent during hazard sessions.",
+      "scope": "ETF-engine adaptation, not an exact replication of the paper's conditional-beta model"
+    },
+    {
+      "id": "TREND_STRONG_DIVERSIFIED_CELL",
+      "candidate": "LITERATURE_12M_LONG_FLAT_TREND",
+      "comparators": ["DIVERSIFIED_TREND", "SPY_BUY_HOLD"],
+      "condition": {
+        "dimension_1": "cross_asset_directional_magnitude_252d_bucket",
+        "included_buckets_1": ["Q5_HIGH"],
+        "dimension_2": "cross_asset_correlation_60d_bucket",
+        "included_buckets_2": ["Q1_LOW"]
+      },
+      "frozen_expected_direction": "Positive 10-basis-point net excess return versus both comparators in the highest-directional-magnitude, lowest-correlation cell, with positive excess recurring across independent episodes.",
+      "scope": "long-only tradable trend adaptation; all other magnitude/correlation cells remain reported"
+    },
+    {
+      "id": "QUALITY_PROXY_STRESS_CELL",
+      "candidate": "QUAL_BUY_HOLD",
+      "comparators": ["SPY_BUY_HOLD", "VALUE_QUALITY_STATIC", "USMV_BUY_HOLD"],
+      "condition": {
+        "dimension": "literature_momentum_state_bucket",
+        "included_buckets": ["DOWN_HIGH_RELATIVE_VOL"]
+      },
+      "frozen_expected_direction": "QUAL has positive 10-basis-point net excess return versus SPY in the exact down-market, high-relative-volatility cell; other controls distinguish quality-proxy evidence from generic defensiveness.",
+      "scope": "long-only ETF proxy diagnostic, not QMJ"
+    }
+  ],
+  "research_design": {
+    "cohorts": ["cross_asset_mechanisms", "quality_proxy"],
+    "cost_ladder_bps": [1.0, 5.0, 10.0, 20.0],
+    "primary_cost_bps": 10.0,
+    "rebalance_semantics": "signal at completed close, fill at next available open",
+    "comparisons": "synchronized paths, condition scorecards, independent state episodes, chronological folds, cost sensitivity, and family-wide multiplicity controls",
+    "parameter_search": false,
+    "router": false,
+    "paper_trading": false
+  },
+  "holdout_policy": {
+    "retrospective_data_status": "consumed_for_research",
+    "consumed_through": "2026-10-09",
+    "historical_folds_are_untouched_holdout": false,
+    "historical_folds_purpose": "recurrence and stability diagnostics only",
+    "prospective_holdout_earliest_start": "2026-10-12",
+    "promotion_rule": "No Stage A historical result authorizes routing, paper trading, or promotion. Any surviving exact rule must be frozen into a separately registered prospective evaluation."
+  },
+  "interpretation_guardrails": [
+    "Report all four momentum-condition cells, not only the favorable cell.",
+    "Report the unguarded momentum control beside the guarded adaptation.",
+    "Treat QUAL as a noisy long-only quality proxy and never as QMJ.",
+    "Do not create parameter variants after viewing Stage A returns.",
+    "Generation 015 remains paused and is not modified by this study."
+  ]
+}

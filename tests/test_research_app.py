@@ -14,13 +14,17 @@ try:
     from fastapi.testclient import TestClient
     from research.app import (
         app, health, runtime, runtime_diagnostics, _deprioritize_worker,
-        _health_egress_usage, _upload_status_snapshot, require_coordinator_ready,
+        DatasetAmbiguityError, _health_egress_usage, _restore_dataset,
+        _upload_status_snapshot, _validate_restored_audit_state,
+        require_coordinator_ready,
     )
 except ImportError:
     TestClient = None
     app = None
     runtime = None
     _upload_status_snapshot = None
+
+from research.experiment_audit import append_job_trials
 
 
 class _EgressStore:
@@ -123,6 +127,53 @@ class StatusSnapshotTests(unittest.TestCase):
             self.assertEqual("previous", digest)
 
 
+class _AmbiguousDatasetStore:
+    durable = True
+
+    def list_keys(self, _prefix=""):
+        return [
+            "datasets/" + "1" * 64 + "-bars.csv",
+            "datasets/" + "2" * 64 + "-bars.csv",
+        ]
+
+
+@unittest.skipIf(_upload_status_snapshot is None, "FastAPI dependencies are not installed")
+class AuditRecoveryTests(unittest.TestCase):
+    def test_job_anchor_rejects_valid_prefix_rollback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            trial = root / "audit" / "trial-ledger.jsonl"
+            first_job = {"job_id": "one", "bars_csv": "bars.csv"}
+            first = append_job_trials(trial, first_job)
+            prefix = trial.read_bytes()
+            second_job = {"job_id": "two", "bars_csv": "bars.csv"}
+            second = append_job_trials(trial, second_job)
+            self.assertNotEqual(first["chain_sha256"], second["chain_sha256"])
+            trial.write_bytes(prefix)
+            (root / "jobs").mkdir()
+            (root / "results").mkdir()
+            (root / "jobs" / "two.json").write_text(json.dumps({
+                **second_job,
+                "_experiment_audit": {
+                    "trial_chain_sha256": second["chain_sha256"],
+                    "holdout_chain_sha256": None,
+                },
+            }), encoding="utf-8")
+            with patch.object(runtime, "job_root", root / "jobs"), patch.object(
+                runtime, "results_root", root / "results"
+            ), patch.object(runtime, "audit_root", root / "audit"):
+                with self.assertRaisesRegex(Exception, "rollback or truncation"):
+                    _validate_restored_audit_state()
+
+    def test_ambiguous_durable_filename_requires_expected_hash(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(runtime, "data_root", Path(directory)), patch.object(
+                runtime, "store", _AmbiguousDatasetStore()
+            ):
+                with self.assertRaisesRegex(DatasetAmbiguityError, "multiple durable datasets"):
+                    _restore_dataset("bars.csv")
+
+
 @unittest.skipIf(TestClient is None, "FastAPI test dependencies are not installed")
 class ResearchAppTests(unittest.TestCase):
     token = "test-research-token-at-least-24-characters"
@@ -173,6 +224,11 @@ class ResearchAppTests(unittest.TestCase):
                     },
                 })
                 self.assertEqual(submitted.status_code, 202, submitted.text)
+                audit = submitted.json()["experiment_audit"]
+                self.assertTrue(audit["trial_chain_sha256"])
+                self.assertEqual(1, audit["trial_records_added"])
+                self.assertFalse(audit["variant_enumeration_complete"])
+                self.assertTrue(runtime.trial_ledger_path.is_file())
                 # Windows CI and instrumented replay builds can spend more than
                 # ten seconds finalizing diagnostics. Never tear down the test
                 # directory while the subprocess still owns spill files.
@@ -193,6 +249,106 @@ class ResearchAppTests(unittest.TestCase):
                 while runtime.active_job_id is not None and time.monotonic()<coordinator_deadline:
                     time.sleep(.05)
                 self.assertIsNone(runtime.active_job_id,"coordinator did not finish final status handling")
+            runtime.active_job_id = None
+
+    def test_job_acceptance_rejects_reused_holdout_before_queueing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = {
+                "SERVICE_MODE": "historical_research",
+                "BROKER_EXECUTION_ENABLED": "false",
+                "RESEARCH_API_TOKEN": self.token,
+                "RESEARCH_DATA_DIR": str(root / "data"),
+                "RESEARCH_JOB_DIR": str(root / "jobs"),
+                "RESEARCH_RESULTS_DIR": str(root / "results"),
+            }
+            with patch.dict(os.environ, env, clear=False), TestClient(app) as client:
+                headers = {"Authorization": f"Bearer {self.token}"}
+                uploaded = client.put(
+                    "/api/datasets/bars.csv", content=self._bars(), headers=headers,
+                )
+                self.assertEqual(200, uploaded.status_code, uploaded.text)
+
+                def job(job_id, consumer_id, start_date, end_date):
+                    return {
+                        "job_id": job_id, "bars_csv": "bars.csv",
+                        "experiment": {
+                            "hypothesis_id": "AUDIT_ACCEPTANCE_TEST",
+                            "holdout_consumption": {
+                                "holdout_id": f"holdout-{job_id}",
+                                "consumer_id": consumer_id,
+                                "dataset_id": "bars", "universe_id": "test-universe",
+                                "frequency": "5m", "start_date": start_date,
+                                "end_date": end_date, "purpose": "locked validation",
+                            },
+                        },
+                    }
+
+                with patch("research.app._start_next_job"):
+                    first = client.post(
+                        "/api/jobs", headers=headers,
+                        json=job("audit-one", "study-one", "2026-01-01", "2026-06-30"),
+                    )
+                    second = client.post(
+                        "/api/jobs", headers=headers,
+                        json=job("audit-two", "study-two", "2026-06-01", "2026-12-31"),
+                    )
+                self.assertEqual(202, first.status_code, first.text)
+                self.assertEqual(409, second.status_code, second.text)
+                self.assertIn("study-one", second.json()["detail"])
+                self.assertFalse((runtime.job_root / "audit-two.json").exists())
+                self.assertTrue(runtime.holdout_registry_path.is_file())
+            runtime.active_job_id = None
+
+    def test_job_audit_binds_exact_dataset_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = {
+                "SERVICE_MODE": "historical_research",
+                "BROKER_EXECUTION_ENABLED": "false",
+                "RESEARCH_API_TOKEN": self.token,
+                "RESEARCH_DATA_DIR": str(root / "data"),
+                "RESEARCH_JOB_DIR": str(root / "jobs"),
+                "RESEARCH_RESULTS_DIR": str(root / "results"),
+            }
+            with patch.dict(os.environ, env, clear=False), TestClient(app) as client:
+                headers = {"Authorization": f"Bearer {self.token}"}
+                uploaded = client.put(
+                    "/api/datasets/bars.csv", content=self._bars(), headers=headers,
+                )
+                self.assertEqual(200, uploaded.status_code, uploaded.text)
+                digest = uploaded.json()["sha256"]
+                with patch("research.app._start_next_job"):
+                    response = client.post("/api/jobs", headers=headers, json={
+                        "job_id": "dataset-bound", "bars_csv": "bars.csv",
+                    })
+                self.assertEqual(202, response.status_code, response.text)
+                durable_job = json.loads(
+                    (runtime.job_root / "dataset-bound.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual(digest, durable_job["dataset_sha256"]["bars_csv"])
+                self.assertEqual(
+                    response.json()["experiment_audit"]["trial_chain_sha256"],
+                    durable_job["_experiment_audit"]["trial_chain_sha256"],
+                )
+                with patch("research.app._start_next_job"):
+                    retried = client.post("/api/jobs", headers=headers, json={
+                        "job_id": "dataset-bound", "bars_csv": "bars.csv",
+                    })
+                self.assertEqual(202, retried.status_code, retried.text)
+                self.assertTrue(retried.json()["idempotent_retry"])
+                self.assertEqual(
+                    response.json()["experiment_audit"]["trial_chain_sha256"],
+                    retried.json()["experiment_audit"]["trial_chain_sha256"],
+                )
+
+                with patch("research.app._start_next_job"):
+                    mismatch = client.post("/api/jobs", headers=headers, json={
+                        "job_id": "dataset-mismatch", "bars_csv": "bars.csv",
+                        "dataset_sha256": {"bars_csv": "0" * 64},
+                    })
+                self.assertEqual(409, mismatch.status_code, mismatch.text)
+                self.assertFalse((runtime.job_root / "dataset-mismatch.json").exists())
             runtime.active_job_id = None
 
     def test_research_app_refuses_execution_enabled(self):
