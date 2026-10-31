@@ -6863,10 +6863,18 @@ async def run_layer_monitor(
                 "last_phase": "waiting_for_boundary",
             })
             if not app_state["stream"]["shutdown_event"].is_set():
+                def refresh_boundary_heartbeat(next_run_at):
+                    monitor_state.update({
+                        "heartbeat_at": datetime.now(timezone.utc).isoformat(),
+                        "last_phase": "waiting_for_boundary",
+                        "next_cycle_at": next_run_at.isoformat(),
+                    })
+
                 await sleep_until_next_layer_boundary(
                     shutdown_event=app_state["stream"]["shutdown_event"],
                     interval_seconds=interval_seconds,
                     min_spacing_seconds=0.0,
+                    heartbeat_callback=refresh_boundary_heartbeat,
                 )
 
     monitor_state.update({

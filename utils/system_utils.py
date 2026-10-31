@@ -38,6 +38,10 @@ def resource_snapshot(process: psutil.Process | None = None) -> dict:
     layers = app_state.get("layers", {})
     buffer = app_state.get("market_data", {}).get("buffer")
     market = buffer.snapshot() if buffer is not None else {}
+    market_memory = (
+        buffer.memory_stats()
+        if buffer is not None and hasattr(buffer, "memory_stats") else {}
+    )
     return {
         "rss_mb": round(memory.rss / MB, 2),
         "vms_mb": round(memory.vms / MB, 2),
@@ -56,6 +60,7 @@ def resource_snapshot(process: psutil.Process | None = None) -> dict:
             }
             for symbol, values in market.items()
         },
+        "market_data_memory": market_memory,
     }
 
 
@@ -66,12 +71,11 @@ def monitor_system_resources(interval: int = 60) -> None:
     """
     process = psutil.Process(os.getpid())
 
-    mem_alert_mb = _env_float("MEMORY_ALERT_MB", 500)
-    mem_recovery_mb = _env_float("MEMORY_RECOVERY_MB", mem_alert_mb - 50)
-    alert_cooldown_seconds = _env_float("RESOURCE_ALERT_COOLDOWN_SECONDS", 1800)
+    mem_alert_mb = _env_float("MEMORY_ALERT_MB", 450)
+    mem_recovery_mb = _env_float("MEMORY_RECOVERY_MB", mem_alert_mb - 40)
+    pressure_trade_id_limit = int(_env_float("MEMORY_PRESSURE_TRADE_IDS_PER_SYMBOL", 1000))
     cpu_alert_percent = _env_float("CPU_ALERT_PERCENT", 80)
     memory_alert_active = False
-    last_memory_alert_at = 0.0
 
     shutdown_event = app_state["stream"].get("shutdown_event")
     if shutdown_event is None:
@@ -90,23 +94,27 @@ def monitor_system_resources(interval: int = 60) -> None:
 
             if mem_mb > mem_alert_mb:
                 before_trim_mb = mem_mb
+                buffer = app_state.get("market_data", {}).get("buffer")
+                compaction = None
+                if buffer is not None and hasattr(buffer, "compact_for_memory_pressure"):
+                    compaction = buffer.compact_for_memory_pressure(
+                        pressure_trade_id_limit
+                    )
                 _trim_process_memory()
                 mem_mb = process.memory_info().rss / MB
                 logging.info(
-                    "[ResourceMonitor] Memory reclaim: %.2f MB -> %.2f MB",
-                    before_trim_mb, mem_mb,
+                    "[ResourceMonitor] Memory reclaim: %.2f MB -> %.2f MB | compaction=%s",
+                    before_trim_mb, mem_mb, compaction,
                 )
 
             logging.info("[MONITOR] Memory: %.2f MB | CPU: %.2f%%", mem_mb, cpu_percent)
-            now = time.monotonic()
-
             if mem_mb > mem_alert_mb:
-                if not memory_alert_active or now - last_memory_alert_at >= alert_cooldown_seconds:
+                if not memory_alert_active:
                     send_email_alert(
                         "⚠️ High Memory Usage",
-                        f"Memory usage at {mem_mb:.2f} MB after reclamation.",
+                        f"Memory usage at {mem_mb:.2f} MB after safe reclamation. "
+                        "No strategy price or bar history was removed.",
                     )
-                    last_memory_alert_at = now
                 memory_alert_active = True
             elif memory_alert_active and mem_mb <= mem_recovery_mb:
                 send_email_alert(
@@ -114,7 +122,6 @@ def monitor_system_resources(interval: int = 60) -> None:
                     f"Memory usage recovered to {mem_mb:.2f} MB.",
                 )
                 memory_alert_active = False
-                last_memory_alert_at = 0.0
             if cpu_percent > cpu_alert_percent:
                 send_email_alert("⚠️ High CPU Usage", f"CPU usage at {cpu_percent:.2f}%.")
 

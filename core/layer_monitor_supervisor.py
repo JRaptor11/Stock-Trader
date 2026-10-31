@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from core.state import app_state
 
@@ -19,6 +19,27 @@ def _parse_utc_timestamp(value):
         return None
 
 
+def layer_monitor_liveness(monitor_state, *, stall_seconds: float = 900.0) -> dict:
+    """Describe heartbeat age while honoring an intentional boundary wait."""
+    now = datetime.now(timezone.utc)
+    heartbeat = _parse_utc_timestamp(monitor_state.get("heartbeat_at"))
+    next_cycle = _parse_utc_timestamp(monitor_state.get("next_cycle_at"))
+    age_seconds = (now - heartbeat).total_seconds() if heartbeat else None
+    waiting_for_boundary = monitor_state.get("last_phase") == "waiting_for_boundary"
+    boundary_wait_valid = bool(
+        waiting_for_boundary and next_cycle is not None
+        and now <= next_cycle + timedelta(seconds=max(60.0, float(stall_seconds) / 3.0))
+    )
+    stale = not boundary_wait_valid and (
+        heartbeat is None or age_seconds > float(stall_seconds)
+    )
+    return {
+        "heartbeat_at": heartbeat.isoformat() if heartbeat else None,
+        "heartbeat_age_seconds": age_seconds,
+        "next_cycle_at": next_cycle.isoformat() if next_cycle else None,
+        "boundary_wait_valid": boundary_wait_valid,
+        "stale": stale,
+    }
 async def run_layer_monitor_supervisor(
     monitor_factory,
     alert_sender,
@@ -56,7 +77,6 @@ async def run_layer_monitor_supervisor(
                         restart_reason = f"task_exception:{type(exc).__name__}:{exc}"
                     break
 
-                heartbeat = _parse_utc_timestamp(monitor_state.get("heartbeat_at"))
                 run_24_7 = bool(
                     app_state.get("execution", {}).get("layer_monitor_run_24_7", True)
                 )
@@ -64,15 +84,13 @@ async def run_layer_monitor_supervisor(
                     app_state.get("layers", {}).get("rebalance", {}).get("market_is_open", False)
                 )
                 should_be_advancing = run_24_7 or market_is_open
-                age_seconds = (
-                    (datetime.now(timezone.utc) - heartbeat).total_seconds()
-                    if heartbeat else None
+                liveness = layer_monitor_liveness(
+                    monitor_state, stall_seconds=stall_seconds
                 )
-                if should_be_advancing and (
-                    heartbeat is None or age_seconds > stall_seconds
-                ):
+                age_seconds = liveness["heartbeat_age_seconds"]
+                if should_be_advancing and liveness["stale"]:
                     restart_reason = (
-                        "missing_heartbeat" if heartbeat is None
+                        "missing_heartbeat" if age_seconds is None
                         else f"stale_heartbeat:{age_seconds:.1f}s"
                     )
                     child.cancel()

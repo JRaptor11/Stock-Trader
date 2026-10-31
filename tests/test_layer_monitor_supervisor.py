@@ -1,11 +1,12 @@
 import asyncio
 import threading
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, Mock, patch
 
 from core.state import app_state
 from core.app_state_init import initialize_layer_state
-from core.layer_monitor_supervisor import run_layer_monitor_supervisor
+from core.layer_monitor_supervisor import layer_monitor_liveness, run_layer_monitor_supervisor
 
 
 class LayerInitializationTests(unittest.TestCase):
@@ -98,6 +99,26 @@ class LayerMonitorSupervisorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, calls)
         self.assertEqual("missing_heartbeat", monitor["last_restart_reason"])
         alert.assert_awaited_once()
+
+    def test_intentional_boundary_wait_is_not_classified_as_stalled(self):
+        now = datetime.now(timezone.utc)
+        liveness = layer_monitor_liveness({
+            "heartbeat_at": (now - timedelta(hours=1)).isoformat(),
+            "last_phase": "waiting_for_boundary",
+            "next_cycle_at": (now + timedelta(minutes=1)).isoformat(),
+        }, stall_seconds=10)
+        self.assertTrue(liveness["boundary_wait_valid"])
+        self.assertFalse(liveness["stale"])
+
+    def test_expired_boundary_wait_is_classified_as_stalled(self):
+        now = datetime.now(timezone.utc)
+        liveness = layer_monitor_liveness({
+            "heartbeat_at": (now - timedelta(hours=1)).isoformat(),
+            "last_phase": "waiting_for_boundary",
+            "next_cycle_at": (now - timedelta(minutes=2)).isoformat(),
+        }, stall_seconds=10)
+        self.assertFalse(liveness["boundary_wait_valid"])
+        self.assertTrue(liveness["stale"])
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from core.state import app_state
+from core.layer_monitor_supervisor import layer_monitor_liveness
 from market.stream import ThreadedAlpacaStream
 from config import runtime_config as config
 from integrations.alerts import send_email_alert
@@ -289,16 +290,8 @@ async def health_check(credentials: str = Depends(verify_credentials)):
     monitor = app_state.get("layers", {}).get("monitor", {})
     monitor_task = app_state.get("main", {}).get("layer_monitor_task")
     heartbeat = monitor.get("heartbeat_at")
-    heartbeat_age_seconds = None
-    try:
-        parsed = datetime.fromisoformat(str(heartbeat).replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        heartbeat_age_seconds = max(
-            0.0, (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds()
-        )
-    except (TypeError, ValueError):
-        pass
+    liveness = layer_monitor_liveness(monitor, stall_seconds=900)
+    heartbeat_age_seconds = liveness["heartbeat_age_seconds"]
     run_24_7 = bool(
         app_state.get("execution", {}).get("layer_monitor_run_24_7", True)
     )
@@ -308,13 +301,15 @@ async def health_check(credentials: str = Depends(verify_credentials)):
     monitor_running = bool(monitor_task is not None and not monitor_task.done())
     monitor_stalled = bool(
         (run_24_7 or market_is_open)
-        and (heartbeat_age_seconds is None or heartbeat_age_seconds > 900)
+        and liveness["stale"]
     )
     status["layer_monitor"] = {
         "running": monitor_running,
         "heartbeat": not monitor_stalled,
         "last_update": heartbeat,
         "heartbeat_age_seconds": heartbeat_age_seconds,
+        "next_cycle_at": liveness["next_cycle_at"],
+        "boundary_wait_valid": liveness["boundary_wait_valid"],
         "phase": monitor.get("last_phase"),
         "restart_count": monitor.get("restart_count", 0),
         "last_restart_reason": monitor.get("last_restart_reason"),
@@ -488,26 +483,13 @@ async def layer_status(credentials: str = Depends(verify_credentials)):
     monitor_task = main.get("layer_monitor_task")
     if monitor_task is None or monitor_task.done():
         issues.append("layer_monitor_not_running")
-    heartbeat_age_seconds = None
-    try:
-        heartbeat = datetime.fromisoformat(
-            str(monitor.get("heartbeat_at")).replace("Z", "+00:00")
-        )
-        if heartbeat.tzinfo is None:
-            heartbeat = heartbeat.replace(tzinfo=timezone.utc)
-        heartbeat_age_seconds = max(
-            0.0,
-            (datetime.now(timezone.utc) - heartbeat.astimezone(timezone.utc)).total_seconds(),
-        )
-    except (TypeError, ValueError):
-        pass
+    liveness = layer_monitor_liveness(monitor, stall_seconds=900)
+    heartbeat_age_seconds = liveness["heartbeat_age_seconds"]
     should_be_advancing = bool(
         execution.get("layer_monitor_run_24_7", True)
         or rebalance.get("market_is_open", False)
     )
-    if should_be_advancing and (
-        heartbeat_age_seconds is None or heartbeat_age_seconds > 900
-    ):
+    if should_be_advancing and liveness["stale"]:
         issues.append("layer_monitor_stalled")
 
     status = "ok" if not issues else "degraded"
@@ -540,6 +522,8 @@ async def layer_status(credentials: str = Depends(verify_credentials)):
             "started_at": monitor.get("started_at"),
             "heartbeat_at": monitor.get("heartbeat_at"),
             "heartbeat_age_seconds": heartbeat_age_seconds,
+            "next_cycle_at": liveness["next_cycle_at"],
+            "boundary_wait_valid": liveness["boundary_wait_valid"],
             "last_cycle_started_at": monitor.get("last_cycle_started_at"),
             "last_cycle_finished_at": monitor.get("last_cycle_finished_at"),
             "last_phase": monitor.get("last_phase"),

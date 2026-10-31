@@ -75,6 +75,8 @@ async def sleep_until_next_layer_boundary(
     shutdown_event,
     interval_seconds: int,
     min_spacing_seconds: float = 180.0,
+    heartbeat_callback=None,
+    heartbeat_interval_seconds: float = 30.0,
 ) -> None:
     interval_seconds = normalize_layer_interval_seconds(interval_seconds)
 
@@ -106,10 +108,21 @@ async def sleep_until_next_layer_boundary(
         interval_seconds,
     )
 
-    try:
-        await asyncio.wait_for(
-            asyncio.to_thread(shutdown_event.wait, sleep_seconds),
-            timeout=sleep_seconds + 5,
-        )
-    except asyncio.TimeoutError:
-        pass
+    heartbeat_interval_seconds = max(1.0, float(heartbeat_interval_seconds))
+    while not shutdown_event.is_set():
+        now = datetime.now(timezone.utc)
+        remaining = max(0.0, (next_run_at - now).total_seconds())
+        if heartbeat_callback is not None:
+            heartbeat_callback(next_run_at)
+        if remaining <= 0:
+            break
+        wait_seconds = min(remaining, heartbeat_interval_seconds)
+        try:
+            stopped = await asyncio.wait_for(
+                asyncio.to_thread(shutdown_event.wait, wait_seconds),
+                timeout=wait_seconds + 5,
+            )
+            if stopped:
+                break
+        except asyncio.TimeoutError:
+            pass

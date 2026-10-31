@@ -31,7 +31,7 @@ class MarketDataBuffer:
         maxlen_prices: int = 25,
         maxlen_volumes: int = 25,
         live_bar_lateness_grace_seconds: float | None = None,
-        max_recent_trade_ids_per_symbol: int = 5000,
+        max_recent_trade_ids_per_symbol: int = 2000,
     ):
         self._lock = threading.Lock()
 
@@ -86,7 +86,7 @@ class MarketDataBuffer:
             100,
             int(
                 max_recent_trade_ids_per_symbol
-                or 5000
+                or 2000
             ),
         )
 
@@ -1510,6 +1510,42 @@ class MarketDataBuffer:
                 self._maxlen_volumes = int(volumes_maxlen)
                 for dq in self._volumes.values():
                     dq.set_maxlen(self._maxlen_volumes)
+
+
+    def compact_for_memory_pressure(self, max_trade_ids_per_symbol: int = 1000) -> dict:
+        """Trim deduplication metadata without changing strategy price/bar history."""
+        limit = max(100, int(max_trade_ids_per_symbol))
+        removed = 0
+        with self._lock:
+            self._max_recent_trade_ids_per_symbol = min(
+                self._max_recent_trade_ids_per_symbol, limit
+            )
+            for symbol, queue in self._recent_trade_ids.items():
+                seen = self._recent_trade_id_sets.get(symbol, set())
+                while len(queue) > self._max_recent_trade_ids_per_symbol:
+                    seen.discard(queue.popleft())
+                    removed += 1
+        return {
+            "removed_trade_ids": removed,
+            "max_trade_ids_per_symbol": self._max_recent_trade_ids_per_symbol,
+            "strategy_history_changed": False,
+        }
+
+
+    def memory_stats(self) -> dict:
+        with self._lock:
+            return {
+                "price_points": sum(len(values) for values in self._prices.values()),
+                "volume_points": sum(len(values) for values in self._volumes.values()),
+                "live_1m_bars": sum(
+                    len(values) for values in self._live_bars.get(60, {}).values()
+                ),
+                "live_5m_bars": sum(
+                    len(values) for values in self._live_bars.get(300, {}).values()
+                ),
+                "recent_trade_ids": sum(len(values) for values in self._recent_trade_ids.values()),
+                "recent_trade_id_limit_per_symbol": self._max_recent_trade_ids_per_symbol,
+            }
 
 
     def snapshot(self) -> dict:
