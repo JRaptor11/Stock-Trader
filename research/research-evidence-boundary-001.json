@@ -1,0 +1,21 @@
+{
+  "policy_id": "RESEARCH_EVIDENCE_BOUNDARY_001",
+  "effective_date": "2026-10-31",
+  "new_or_revised_hypotheses_consumed_through": "2026-10-30",
+  "generation_015_status": "paused",
+  "rules": {
+    "historical_results_already_viewed_are_untouched": false,
+    "existing_frozen_forward_ledgers_may_continue": true,
+    "forward_observations_may_be_used_to_retune_same_strategy": false,
+    "new_or_revised_strategy_requires_new_forward_or_external_evidence": true,
+    "retrospective_positive_cells_are_exploratory": true,
+    "router_authorized": false,
+    "paper_trading_authorized": false,
+    "live_trading_authorized": false
+  },
+  "notes": [
+    "This boundary is conservative and applies to new or revised hypotheses.",
+    "Existing frozen strategies retain their original forward start dates and append-only ledgers.",
+    "The historical experiment catalog is a reconstructed lower bound because original pre-ledger search order is not fully recoverable."
+  ]
+}

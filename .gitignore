@@ -84,3 +84,17 @@ replay_output/
 research_data/
 research_jobs/
 research_results/
+
+# ===============================
+# Generated research validation artifacts
+# ===============================
+# Local smoke tests, memory probes, extracted archives, and replay outputs are
+# reproducible artifacts.  Keep declarations, job definitions, and analysis
+# code in Git; keep generated payloads out of the source history.
+.memory-*-results/
+.phase*-smoke.zip
+.prehistory-validation/
+.nested-validation-test-tmp/
+.phase*-test-tmp/
+.test-*-tmp/
+audit-test-temp/

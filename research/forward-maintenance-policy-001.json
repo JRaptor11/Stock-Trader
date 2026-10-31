@@ -1,0 +1,29 @@
+{
+  "policy_id": "FORWARD_MAINTENANCE_POLICY_001",
+  "effective_date": "2026-10-31",
+  "purpose": "Fail closed when any maintained prospective track is stale, corrupt, configuration-inconsistent, or broker-enabled.",
+  "service_shadow": {
+    "cadence": "daily",
+    "endpoint": "/api/shadow/status",
+    "broker_orders_enabled": false
+  },
+  "ledgers": [
+    {"id": "phase001-cross-asset", "cadence": "weekly", "date_field": "as_of_date", "path": "{workspace_root}/long-term-forward-shadow/cross_asset_relative_momentum_defensive.jsonl"},
+    {"id": "phase001-industry", "cadence": "weekly", "date_field": "as_of_date", "path": "{workspace_root}/long-term-forward-shadow/industry_etf_momentum.jsonl"},
+    {"id": "phase001-sector", "cadence": "weekly", "date_field": "as_of_date", "path": "{workspace_root}/long-term-forward-shadow/sector_etf_rotation.jsonl"},
+    {"id": "phase001-inflation", "cadence": "weekly", "date_field": "as_of_date", "path": "{workspace_root}/long-term-forward-shadow/static_inflation_aware.jsonl"},
+    {"id": "phase001-value-quality", "cadence": "weekly", "date_field": "as_of_date", "path": "{workspace_root}/long-term-forward-shadow/value_quality_static.jsonl"},
+    {"id": "static-60-30-10", "cadence": "daily", "date_field": "session", "path": "{workspace_root}/static-60-30-10-forward-shadow/ledger.jsonl", "state_path": "{workspace_root}/static-60-30-10-forward-shadow/state.json"},
+    {"id": "qqq-bull-leadership", "cadence": "daily", "date_field": "session", "path": "{workspace_root}/qqq-bull-leadership-forward-validation-001/ledger.jsonl", "state_path": "{workspace_root}/qqq-bull-leadership-forward-validation-001/state.json"},
+    {"id": "turning-point", "cadence": "daily", "date_field": "session", "path": "{workspace_root}/long-term-turning-point-forward-validation-001/ledger.jsonl"}
+  ],
+  "fail_closed_conditions": [
+    "missing expected session",
+    "broken hash chain",
+    "record hash mismatch",
+    "configuration drift",
+    "rolling-state disagreement",
+    "broker or trading approval enabled"
+  ],
+  "effects": {"router": false, "paper_trading": false, "live_trading": false, "broker_orders_enabled": false}
+}

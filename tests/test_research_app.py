@@ -74,6 +74,8 @@ class HealthResponsivenessTests(unittest.TestCase):
             payload=runtime_diagnostics()
         self.assertEqual(2,payload["queued_jobs"])
         self.assertEqual(123,payload["r2_egress"]["used_bytes"])
+        self.assertRegex(payload["python_version"], r"^\d+\.\d+\.\d+")
+        self.assertTrue(payload["python_implementation"])
 
     def test_posix_worker_is_deprioritized(self):
         process=type("Process",(),{"pid":42})()

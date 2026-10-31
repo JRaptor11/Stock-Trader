@@ -8,6 +8,7 @@ import hmac
 import json
 import logging
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -305,6 +306,8 @@ def health() -> dict:
         "process_uptime_seconds": round(time.monotonic() - PROCESS_STARTED_MONOTONIC, 3),
         "startup_completed_at": runtime.startup_completed_at,
         "startup_duration_seconds": runtime.startup_duration_seconds,
+        "python_version": platform.python_version(),
+        "python_implementation": platform.python_implementation(),
         "render_service_id": os.getenv("RENDER_SERVICE_ID"),
         "render_instance_id": os.getenv("RENDER_INSTANCE_ID"),
         "render_deploy_id": os.getenv("RENDER_DEPLOY_ID"),

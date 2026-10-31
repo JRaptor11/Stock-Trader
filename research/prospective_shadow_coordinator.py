@@ -46,7 +46,10 @@ class ProspectiveShadowCoordinator:
 
     def _empty(self) -> dict:
         symbols = resolve_universe(self.config.universe_name)
-        return {"schema_version": 1, "last_session": None, "expected_next_session": None,
+        return {"schema_version": 2, "last_session": None, "expected_next_session": None,
+                "readiness": {"status": "not_initialized",
+                              "activation_session": None,
+                              "manifest_sha256": None},
                 "histories": {symbol: [] for symbol in symbols},
                 "pending": {}, "market_state": {"active": None, "pending": None,
                                                     "pending_count": 0}, "portfolios": {
@@ -82,8 +85,51 @@ class ProspectiveShadowCoordinator:
             state["market_state"].setdefault("active", None)
             state["market_state"].setdefault("pending", None)
             state["market_state"].setdefault("pending_count", 0)
-        state.setdefault("schema_version", 1)
+        if not isinstance(state.get("readiness"), dict):
+            # Version-1 states predate the explicit lifecycle. A state with no
+            # executed plan is still between bootstrap and activation; once any
+            # frozen plan has executed, the one-time readiness gate is complete.
+            processed_plans = [
+                plan_id
+                for portfolio in (state.get("portfolios") or {}).values()
+                for plan_id in (portfolio.get("processed_plans") or [])
+            ]
+            activation_required = bool(
+                state.get("last_session") and pending and not processed_plans
+            )
+            state["readiness"] = {
+                "status": (
+                    "required" if activation_required else
+                    "legacy_completed" if state.get("last_session") else
+                    "not_initialized"
+                ),
+                "activation_session": (
+                    state.get("expected_next_session") if activation_required else None
+                ),
+                "manifest_sha256": None,
+            }
+        else:
+            state["readiness"].setdefault("status", "not_initialized")
+            state["readiness"].setdefault("activation_session", None)
+            state["readiness"].setdefault("manifest_sha256", None)
+        state["schema_version"] = max(2, int(state.get("schema_version", 1)))
         return state
+
+    def _readiness_path(self, session: str) -> Path:
+        return self.root / f"readiness-{session}.json"
+
+    def _load_readiness_manifest(self, session: str) -> dict | None:
+        path = self._readiness_path(session)
+        if not path.exists() and self.store.durable:
+            self.store.download_file(f"shadow/readiness-{session}.json", path)
+        if not path.exists():
+            return None
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        unsigned = {key: value for key, value in manifest.items()
+                    if key != "manifest_sha256"}
+        if manifest.get("manifest_sha256") != _hash(unsigned):
+            raise ValueError("readiness manifest hash verification failed")
+        return manifest
 
     def _save(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
@@ -99,6 +145,13 @@ class ProspectiveShadowCoordinator:
 
     def create_readiness_manifest(self, expected_session: str) -> dict:
         """Freeze the existing prospective state and rehearse it without mutation."""
+        readiness = self.state.get("readiness") or {}
+        if readiness.get("status") != "required":
+            raise ValueError(
+                "readiness manifest is accepted only for the one-time activation session"
+            )
+        if readiness.get("activation_session") != expected_session:
+            raise ValueError("readiness session does not match the frozen activation session")
         if self.state.get("expected_next_session") != expected_session:
             raise ValueError(
                 "readiness session does not match the coordinator's expected next session"
@@ -186,7 +239,13 @@ class ProspectiveShadowCoordinator:
         }
         unsigned = dict(payload)
         payload["manifest_sha256"] = _hash(unsigned)
-        path = self.root / f"readiness-{expected_session}.json"
+        failing_checks = sorted(name for name, passed in checks.items() if not passed)
+        if failing_checks:
+            raise ValueError(
+                "readiness checks failed; manifest was not persisted: "
+                + ", ".join(failing_checks)
+            )
+        path = self._readiness_path(expected_session)
         if not path.exists() and self.store.durable:
             self.store.download_file(
                 f"shadow/readiness-{expected_session}.json", path
@@ -239,6 +298,15 @@ class ProspectiveShadowCoordinator:
                 if not isinstance(values, list) or len(values) > self.maximum_history:
                     raise ValueError("bootstrap history exceeds the rolling-history limit")
                 self.state["histories"][symbol] = [float(value) for value in values]
+        readiness = self.state.get("readiness") or {}
+        activation_session = readiness.get("activation_session")
+        activation_manifest = None
+        if readiness.get("status") == "required" and session == activation_session:
+            activation_manifest = self._load_readiness_manifest(session)
+            if activation_manifest is None:
+                raise ValueError("required activation readiness manifest is missing")
+            if not all((activation_manifest.get("checks") or {}).values()):
+                raise ValueError("activation readiness manifest contains failed checks")
         bars = payload["bars"]
         previous_session = self.state["last_session"]
         required_symbols = set(resolve_universe(self.config.universe_name))
@@ -373,6 +441,18 @@ class ProspectiveShadowCoordinator:
                            "rebalance": True, "cadence": cadence})
         self.state["last_session"] = session
         self.state["expected_next_session"] = next_session
+        if previous_session is None:
+            self.state["readiness"] = {
+                "status": "required",
+                "activation_session": next_session,
+                "manifest_sha256": None,
+            }
+        elif activation_manifest is not None:
+            self.state["readiness"] = {
+                "status": "completed",
+                "activation_session": activation_session,
+                "manifest_sha256": activation_manifest["manifest_sha256"],
+            }
         self._save()
         bundle = persist_compact_session_bundle(
             session=session, strategy_records=records, store=self.store,
@@ -391,6 +471,14 @@ class ProspectiveShadowCoordinator:
                 "warnings": warnings, "bundle": bundle}
 
     def status(self) -> dict:
+        readiness = dict(self.state.get("readiness") or {})
+        activation_session = readiness.get("activation_session")
+        manifest_available = False
+        if readiness.get("status") == "required" and activation_session:
+            try:
+                manifest_available = self._load_readiness_manifest(activation_session) is not None
+            except ValueError:
+                manifest_available = False
         return {"last_session": self.state["last_session"],
                 "expected_next_session": self.state.get("expected_next_session"),
                 "strategies": list(STRATEGIES),
@@ -398,8 +486,6 @@ class ProspectiveShadowCoordinator:
                     key: value["execution_session"]
                     for key, value in self.state["pending"].items()},
                 "market_state": self.state.get("market_state"),
-                "readiness_manifest_available": bool(
-                    self.state.get("expected_next_session") and
-                    (self.root / f"readiness-{self.state['expected_next_session']}.json").exists()
-                ),
+                "readiness": readiness,
+                "readiness_manifest_available": manifest_available,
                 "broker_orders_enabled": False}

@@ -61,6 +61,7 @@ class CoordinatorTests(unittest.TestCase):
                                      "close": price, "volume": 1_000_000}
                             for symbol in symbols}}
             first = coordinator.process_session(payload("2026-09-25", "2026-09-28", 100))
+            coordinator.create_readiness_manifest("2026-09-28")
             second = coordinator.process_session(payload("2026-09-28", "2026-09-29", 101))
             self.assertEqual("processed", first["status"])
             self.assertEqual("processed", second["status"])
@@ -118,6 +119,7 @@ class CoordinatorTests(unittest.TestCase):
                                      "close": 100, "volume": 1_000_000}
                              for symbol in symbols}})
             submit("2026-09-25", "2026-09-28")
+            coordinator.create_readiness_manifest("2026-09-28")
             submit("2026-09-28", "2026-09-29")
             self.assertEqual({}, coordinator.status()["pending_execution_sessions"])
             submit("2026-09-29", "2026-09-30")
@@ -205,7 +207,18 @@ class CoordinatorTests(unittest.TestCase):
             self.assertEqual("unchanged", second["status"])
             self.assertTrue(all(first["checks"].values()))
             self.assertEqual(before, json.dumps(coordinator.state, sort_keys=True))
-            with self.assertRaisesRegex(ValueError, "expected next session"):
+            with self.assertRaisesRegex(ValueError, "frozen activation session"):
+                coordinator.create_readiness_manifest("2026-09-29")
+            coordinator.process_session({
+                **payload,
+                "session": "2026-09-28",
+                "next_session": "2026-09-29",
+                "source_observed_at": "2026-09-28T21:05:00Z",
+            })
+            status = coordinator.status()
+            self.assertEqual("completed", status["readiness"]["status"])
+            self.assertFalse(status["readiness_manifest_available"])
+            with self.assertRaisesRegex(ValueError, "one-time activation"):
                 coordinator.create_readiness_manifest("2026-09-29")
         finally:
             for path in sorted(root.rglob("*"), reverse=True):
@@ -242,6 +255,30 @@ class CoordinatorTests(unittest.TestCase):
                 elif path.is_dir(): path.rmdir()
             root.rmdir()
 
+    def test_failed_readiness_is_not_persisted(self):
+        root = Path(".test-prospective-coordinator") / uuid.uuid4().hex
+        root.mkdir(parents=True)
+        try:
+            coordinator = ProspectiveShadowCoordinator(root, Store())
+            symbols = tuple(coordinator.state["histories"])
+            coordinator.process_session({
+                "session": "2026-09-25", "next_session": "2026-09-28",
+                "source_observed_at": "2026-09-25T21:05:00Z",
+                "code_revision": "test", "state_evidence": self.evidence,
+                "bars": {symbol: {"open": 100, "high": 100, "low": 100,
+                                  "close": 100, "volume": 1_000_000}
+                         for symbol in symbols},
+            })
+            coordinator.state["pending"].clear()
+            with self.assertRaisesRegex(ValueError, "manifest was not persisted"):
+                coordinator.create_readiness_manifest("2026-09-28")
+            self.assertFalse((root / "readiness-2026-09-28.json").exists())
+        finally:
+            for path in sorted(root.rglob("*"), reverse=True):
+                if path.is_file(): path.unlink()
+                elif path.is_dir(): path.rmdir()
+            root.rmdir()
+
     def test_legacy_state_infers_one_unambiguous_pending_session(self):
         root = Path(".test-prospective-coordinator") / uuid.uuid4().hex
         root.mkdir(parents=True)
@@ -257,6 +294,10 @@ class CoordinatorTests(unittest.TestCase):
                 json.dump(seed, handle)
             restored = ProspectiveShadowCoordinator(root, Store())
             self.assertEqual("2026-09-28", restored.state["expected_next_session"])
+            self.assertEqual("required", restored.state["readiness"]["status"])
+            self.assertEqual(
+                "2026-09-28", restored.state["readiness"]["activation_session"]
+            )
             self.assertEqual(
                 {"active": None, "pending": None, "pending_count": 0},
                 restored.state["market_state"],

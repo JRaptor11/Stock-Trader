@@ -1,0 +1,3145 @@
+{
+  "schema_version": 1,
+  "catalog_id": "RESEARCH_PROGRAM_CATALOG_001",
+  "as_of_date": "2026-10-31",
+  "new_or_revised_hypotheses_consumed_through": "2026-10-30",
+  "policy": {
+    "preledger_lineage_is_reconstructed_lower_bound": true,
+    "original_acceptance_order_is_unknown": true,
+    "historical_results_already_viewed_are_not_untouched": true,
+    "existing_frozen_forward_ledgers_may_continue": true,
+    "forward_observations_may_not_be_reused_to_retune_the_same_strategy": true
+  },
+  "family_count": 44,
+  "job_count": 65,
+  "declaration_count": 35,
+  "families": [
+    {
+      "family_id": "BEAR_RECOVERING_SPECIALIST_VALIDATION_PHASE_012",
+      "declarations": [
+        {
+          "source_path": "research/bear-recovering-specialist-validation-phase-012.json",
+          "source_sha256": "8b9a47769e9e7c46a8497f6d2356b6ec57934f7c2e068578283e75cae85b72f2",
+          "family_id": "BEAR_RECOVERING_SPECIALIST_VALIDATION_PHASE_012",
+          "status": "locked_before_phase_012_analysis",
+          "evidence_class": "retrospective_consumed"
+        }
+      ],
+      "jobs": [],
+      "job_count": 0,
+      "declared_job_variants_lower_bound": 0,
+      "contains_unenumerated_jobs": false
+    },
+    {
+      "family_id": "BEAR_RECOVERY_STATE_TIMING_PHASE_013",
+      "declarations": [
+        {
+          "source_path": "research/bear-recovery-state-timing-phase-013.json",
+          "source_sha256": "5c83d90c9d17d876c75aab19f906adac3cb7aad59b398a9ee1b55526e1a928a5",
+          "family_id": "BEAR_RECOVERY_STATE_TIMING_PHASE_013",
+          "status": "locked_before_phase_013_analysis",
+          "evidence_class": "retrospective_consumed"
+        }
+      ],
+      "jobs": [],
+      "job_count": 0,
+      "declared_job_variants_lower_bound": 0,
+      "contains_unenumerated_jobs": false
+    },
+    {
+      "family_id": "BREAKOUT_CONCEPTS_GENERATION_009",
+      "declarations": [],
+      "jobs": [
+        {
+          "source_path": "research/breakout-concepts-generation-009-job.json",
+          "source_sha256": "9a072a44709aed8e2b91563331a6d57bc1d7ad916b2acb0f9330e7e44baf8197",
+          "job_id": "breakout-concepts-generation-009-history-2026-09-15",
+          "family_id": "BREAKOUT_CONCEPTS_GENERATION_009",
+          "trial_id": "breakout-concepts-generation-009",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "general_daily_concepts_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily OHLCV; retrospective research ending 2026-09-03",
+          "universe": "ETF_GENERAL_CONCEPTS",
+          "market_state_universe": null,
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "STATIC_MULTI_SLEEVE",
+            "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+            "SECTOR_PRICE_BREAKOUT_20D",
+            "DONCHIAN_TREND_BREAKOUT",
+            "VOLATILITY_CONTRACTION_BREAKOUT",
+            "RELATIVE_STRENGTH_BREAKOUT",
+            "VOLUME_EXPANSION_BREAKOUT",
+            "VOLATILITY_ADJUSTED_ACCELERATION_BREAKOUT",
+            "OVERNIGHT_GAP_CONTINUATION",
+            "CROSS_SECTIONAL_ABNORMAL_RETURN_BREAKOUT",
+            "SECTOR_PARTICIPATION_BREAKOUT",
+            "MARKET_CONFIRMED_SECTOR_BREAKOUT"
+          ],
+          "strategy_count": 13,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2018-06-19",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        }
+      ],
+      "job_count": 1,
+      "declared_job_variants_lower_bound": 13,
+      "contains_unenumerated_jobs": true
+    },
+    {
+      "family_id": "DAILY_EVENT_CONCEPTS_GENERATION_006",
+      "declarations": [],
+      "jobs": [
+        {
+          "source_path": "research/daily-event-concepts-generation-006-job.json",
+          "source_sha256": "467fb5a403781f6de2a411553f2e357c5808f732dab3032ff42ed520629748f4",
+          "job_id": "daily-event-concepts-generation-006-history-2026-09-11",
+          "family_id": "DAILY_EVENT_CONCEPTS_GENERATION_006",
+          "trial_id": "daily-event-concepts-generation-006",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "general_daily_concepts_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily chart endpoint; retrospective research ending 2026-09-03",
+          "universe": "ETF_GENERAL_CONCEPTS",
+          "market_state_universe": null,
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "STATIC_MULTI_SLEEVE",
+            "CROSS_ASSET_DUAL_MOMENTUM",
+            "SECTOR_PRICE_BREAKOUT_20D",
+            "MARKET_DIP_REBOUND_1D",
+            "VOLATILITY_CONTRACTION_BREAKOUT",
+            "DONCHIAN_TREND_BREAKOUT",
+            "SECTOR_MOMENTUM_ACCELERATION",
+            "BREADTH_THRUST_RECOVERY",
+            "OVERSOLD_TREND_REBOUND",
+            "BREADTH_DETERIORATION_DEFENSIVE"
+          ],
+          "strategy_count": 11,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2018-06-19",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        }
+      ],
+      "job_count": 1,
+      "declared_job_variants_lower_bound": 11,
+      "contains_unenumerated_jobs": true
+    },
+    {
+      "family_id": "DAILY_EVENT_STRATEGIES",
+      "declarations": [],
+      "jobs": [
+        {
+          "source_path": "research/daily-event-generation-004-job.json",
+          "source_sha256": "3b558218f2223ccae337403e805e5b011b668018cff9c32ae27483e82d4df0ab",
+          "job_id": "daily-event-generation-004-history-2026-09-10",
+          "family_id": "DAILY_EVENT_STRATEGIES",
+          "trial_id": "daily-event-generation-004",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "tier2_multi_sleeve_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily chart endpoint; retrospective research ending 2026-09-03",
+          "universe": "ETF_TIER2_MULTI_SLEEVE",
+          "market_state_universe": null,
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "STATIC_MULTI_SLEEVE",
+            "STATIC_60_30_10",
+            "INVERSE_VOLATILITY_BALANCED",
+            "SECTOR_PRICE_BREAKOUT_20D",
+            "MARKET_DIP_REBOUND_1D"
+          ],
+          "strategy_count": 6,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2018-06-19",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        }
+      ],
+      "job_count": 1,
+      "declared_job_variants_lower_bound": 6,
+      "contains_unenumerated_jobs": true
+    },
+    {
+      "family_id": "DOWNSIDE_EVENT_ACTIONABILITY_PHASE_009",
+      "declarations": [
+        {
+          "source_path": "research/downside-event-actionability-phase-009.json",
+          "source_sha256": "278b142299dd7a74f300b94a3300ec39d005d546844c491fb987e8d0976e20e0",
+          "family_id": "DOWNSIDE_EVENT_ACTIONABILITY_PHASE_009",
+          "status": "locked_before_return_analysis",
+          "evidence_class": "retrospective_consumed"
+        }
+      ],
+      "jobs": [
+        {
+          "source_path": "research/downside-event-actionability-phase-009-modern-job.json",
+          "source_sha256": "874fb8b1431bddb4464bc51567b50099a4f2619d40579d581426cd725f82befa",
+          "job_id": "downside-event-actionability-phase-009-modern-yahoo",
+          "family_id": "DOWNSIDE_EVENT_ACTIONABILITY_PHASE_009",
+          "trial_id": "modern-locked-event-taxonomy",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "long_term_research_expanded_adjusted_daily_2011_current.csv",
+          "data_source": "Yahoo adjusted daily chart data; modern downside-event audit",
+          "universe": "ETF_LONG_TERM_STATE_SPECIALISTS_EXACT",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD"
+          ],
+          "strategy_count": 1,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2011-01-03",
+          "discovery_end_date": "2020-12-31",
+          "holdout_start_date": "2021-01-01",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            10.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/downside-event-actionability-phase-009-prehistory-job.json",
+          "source_sha256": "1dc1bfcfe05ff11be77d09d7005602e77f979130b222196a66d4d65daa4aa235",
+          "job_id": "downside-event-actionability-phase-009-prehistory-yahoo",
+          "family_id": "DOWNSIDE_EVENT_ACTIONABILITY_PHASE_009",
+          "trial_id": "prehistory-locked-event-taxonomy",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "long_term_prehistory_validation_1998_2012_1d_yahoo.csv",
+          "data_source": "Yahoo adjusted daily chart data; older downside-event audit",
+          "universe": "ETF_LONG_TERM_STATE_SPECIALISTS_EXACT",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD"
+          ],
+          "strategy_count": 1,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2007-05-30",
+          "discovery_end_date": "2010-12-31",
+          "holdout_start_date": "2011-01-01",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            10.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        }
+      ],
+      "job_count": 2,
+      "declared_job_variants_lower_bound": 2,
+      "contains_unenumerated_jobs": true
+    },
+    {
+      "family_id": "DOWNSIDE_OPPORTUNITY_GENERATION_007",
+      "declarations": [],
+      "jobs": [
+        {
+          "source_path": "research/downside-opportunity-generation-007-job.json",
+          "source_sha256": "9571e796637fda4e57f8cbb47d9c6b2ac257bc35834ba69e04cb6f02c4553384",
+          "job_id": "downside-opportunity-generation-007-history-2026-09-15",
+          "family_id": "DOWNSIDE_OPPORTUNITY_GENERATION_007",
+          "trial_id": "downside-opportunity-generation-007",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "general_daily_concepts_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily chart endpoint; retrospective research ending 2026-09-03",
+          "universe": "ETF_GENERAL_CONCEPTS",
+          "market_state_universe": null,
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "STATIC_MULTI_SLEEVE",
+            "CROSS_ASSET_DUAL_MOMENTUM",
+            "DONCHIAN_TREND_BREAKOUT",
+            "BREADTH_THRUST_RECOVERY",
+            "OVERSOLD_TREND_REBOUND",
+            "EQUITY_TREND_DEFENSIVE",
+            "DRAWDOWN_BRAKE",
+            "VOLATILITY_SHOCK_DEFENSIVE",
+            "TREND_PULLBACK_REBOUND",
+            "FAILED_BREAKDOWN_RECOVERY",
+            "DEFENSIVE_ASSET_BREAKOUT"
+          ],
+          "strategy_count": 12,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2018-06-19",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        }
+      ],
+      "job_count": 1,
+      "declared_job_variants_lower_bound": 12,
+      "contains_unenumerated_jobs": true
+    },
+    {
+      "family_id": "FULLY_INVESTED_EQUITY_BASELINE_STUDY_001",
+      "declarations": [
+        {
+          "source_path": "research/fully-invested-equity-baseline-study-001.json",
+          "source_sha256": "a333f48150d18c7164770ba2e5fc83abf5df65b1fa661fb85f7f3fd6e4fc453d",
+          "family_id": "FULLY_INVESTED_EQUITY_BASELINE_STUDY_001",
+          "status": "locked_before_data_download_and_return_analysis",
+          "evidence_class": "retrospective_consumed"
+        }
+      ],
+      "jobs": [],
+      "job_count": 0,
+      "declared_job_variants_lower_bound": 0,
+      "contains_unenumerated_jobs": false
+    },
+    {
+      "family_id": "FULL_ROSTER_STATE_RELIABILITY_STUDY_001",
+      "declarations": [
+        {
+          "source_path": "research/full-roster-state-reliability-study-001.json",
+          "source_sha256": "77083dabb705d74aa395b9a7ff4497bf2704752ccf193ea2fa598f397458e799",
+          "family_id": "FULL_ROSTER_STATE_RELIABILITY_STUDY_001",
+          "status": "locked_before_full_roster_state_reliability_analysis",
+          "evidence_class": "retrospective_consumed"
+        }
+      ],
+      "jobs": [],
+      "job_count": 0,
+      "declared_job_variants_lower_bound": 0,
+      "contains_unenumerated_jobs": false
+    },
+    {
+      "family_id": "GENERAL_CONCEPTS_GENERATION_008",
+      "declarations": [],
+      "jobs": [
+        {
+          "source_path": "research/general-concepts-generation-008-job.json",
+          "source_sha256": "9da8f175e2776cb9bc1cd492910800683b038c4797f1752ff9eb66d95f6b6e44",
+          "job_id": "general-concepts-generation-008-history-2026-09-15",
+          "family_id": "GENERAL_CONCEPTS_GENERATION_008",
+          "trial_id": "general-concepts-generation-008",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "general_daily_concepts_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily chart endpoint; retrospective research ending 2026-09-03",
+          "universe": "ETF_GENERAL_CONCEPTS",
+          "market_state_universe": null,
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "STATIC_MULTI_SLEEVE",
+            "CROSS_ASSET_DUAL_MOMENTUM",
+            "DONCHIAN_TREND_BREAKOUT",
+            "VOLATILITY_CONTRACTION_BREAKOUT",
+            "FAILED_BREAKDOWN_RECOVERY",
+            "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+            "TREND_VOLATILITY_SCALED_EQUITY",
+            "DEFENSIVE_TREND_PERSISTENCE",
+            "BREADTH_DIVERGENCE_DEFENSIVE",
+            "RELATIVE_STRENGTH_BREAKOUT",
+            "CONFIRMED_CRASH_RECOVERY"
+          ],
+          "strategy_count": 12,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2018-06-19",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        }
+      ],
+      "job_count": 1,
+      "declared_job_variants_lower_bound": 12,
+      "contains_unenumerated_jobs": true
+    },
+    {
+      "family_id": "GENERAL_DAILY_CONCEPTS",
+      "declarations": [],
+      "jobs": [
+        {
+          "source_path": "research/general-daily-concepts-generation-005-job.json",
+          "source_sha256": "a31dea336ad18a075e2edae8c93a8bb763138c16580b065af78fb16f22e1454e",
+          "job_id": "general-daily-concepts-generation-005-history-2026-09-10",
+          "family_id": "GENERAL_DAILY_CONCEPTS",
+          "trial_id": "general-daily-concepts-generation-005",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "general_daily_concepts_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily chart endpoint; retrospective research ending 2026-09-03",
+          "universe": "ETF_GENERAL_CONCEPTS",
+          "market_state_universe": null,
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "STATIC_MULTI_SLEEVE",
+            "STATIC_60_30_10",
+            "INVERSE_VOLATILITY_BALANCED",
+            "VOL_MANAGED_SPY",
+            "ETF_DUAL_MOMENTUM",
+            "CROSS_ASSET_DUAL_MOMENTUM",
+            "DIVERSIFIED_TREND",
+            "SECTOR_ETF_ROTATION",
+            "FACTOR_ETF_MOMENTUM",
+            "INDUSTRY_ETF_MOMENTUM",
+            "SECTOR_SHORT_TERM_REVERSAL",
+            "SECTOR_PRICE_BREAKOUT_20D",
+            "MARKET_DIP_REBOUND_1D"
+          ],
+          "strategy_count": 14,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2018-06-19",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        }
+      ],
+      "job_count": 1,
+      "declared_job_variants_lower_bound": 14,
+      "contains_unenumerated_jobs": true
+    },
+    {
+      "family_id": "INDEPENDENT_DAILY_FAMILIES",
+      "declarations": [],
+      "jobs": [
+        {
+          "source_path": "research/independent-daily-generation-003-job.json",
+          "source_sha256": "6ff6c0e68e905c64ae7cd9d37188f5c8078dc67ba8fdbf462d2cbd763c0c1554",
+          "job_id": "independent-daily-generation-003-history-2026-09-10",
+          "family_id": "INDEPENDENT_DAILY_FAMILIES",
+          "trial_id": "independent-daily-generation-003",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "tier2_multi_sleeve_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily chart endpoint; retrospective discovery ending 2026-09-03",
+          "universe": "ETF_TIER2_MULTI_SLEEVE",
+          "market_state_universe": null,
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "STATIC_MULTI_SLEEVE",
+            "STATIC_60_30_10",
+            "INVERSE_VOLATILITY_BALANCED",
+            "SECTOR_SHORT_TERM_REVERSAL"
+          ],
+          "strategy_count": 5,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2018-06-19",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        }
+      ],
+      "job_count": 1,
+      "declared_job_variants_lower_bound": 5,
+      "contains_unenumerated_jobs": true
+    },
+    {
+      "family_id": "INTRADAY_STRATEGY_ISOLATION",
+      "declarations": [
+        {
+          "source_path": "research/intraday-strategy-generation-001.json",
+          "source_sha256": "37210bbc73ace566231f18d02c8e472be84dc3cc7890ed802e07758b52522ec1",
+          "family_id": "INTRADAY_STRATEGY_ISOLATION",
+          "status": "research_only",
+          "evidence_class": "retrospective_consumed"
+        },
+        {
+          "source_path": "research/intraday-strategy-generation-002.json",
+          "source_sha256": "70196e08228c026ba295b32cd9310177c4b0f59f8671d58ad118c81316b82ba6",
+          "family_id": "INTRADAY_STRATEGY_ISOLATION",
+          "status": "research_only",
+          "evidence_class": "retrospective_consumed"
+        }
+      ],
+      "jobs": [
+        {
+          "source_path": "research/intraday-strategy-generation-001-job.json",
+          "source_sha256": "55a41989e7edfcf1b8e73f6719a4fee7e81bf3adb01775626d1cfd0c32d6fe3f",
+          "job_id": "intraday-strategy-generation-001-baseline10-2024-2026-v2",
+          "family_id": "INTRADAY_STRATEGY_ISOLATION",
+          "trial_id": "intraday-generation-001-baseline10-bounded-replay",
+          "engine": "intraday_strategy_isolation",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "baseline_2024-01-01_2026-08-21_5m_iex.csv",
+          "data_source": null,
+          "universe": null,
+          "market_state_universe": null,
+          "strategies": [
+            "OPENING_RANGE_BREAKOUT",
+            "RELATIVE_VOLUME_BREAKOUT",
+            "VWAP_MEAN_REVERSION"
+          ],
+          "strategy_count": 3,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": null,
+          "discovery_end_date": "2025-12-31",
+          "holdout_start_date": "2026-01-01",
+          "forward_start_date": null,
+          "cost_ladder_bps": null,
+          "primary_cost_bps": null,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/intraday-strategy-generation-002-job.json",
+          "source_sha256": "aeb75bcc010c6cb3c93ace370eff621f95cece974c99db035e481933e9215c2f",
+          "job_id": "intraday-strategy-generation-002-template",
+          "family_id": "INTRADAY_STRATEGY_ISOLATION",
+          "trial_id": "intraday-generation-002-isolated-mechanisms",
+          "engine": "intraday_strategy_isolation",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "SET_TO_DURABLE_DIVERSIFIED_30_PLUS_SPY_5M_DATASET.csv",
+          "data_source": null,
+          "universe": null,
+          "market_state_universe": null,
+          "strategies": [
+            "OPENING_RANGE_BREAKOUT",
+            "OPENING_RANGE_BREAKOUT_CONFIRMATION",
+            "RELATIVE_VOLUME_BREAKOUT",
+            "VOLATILITY_COMPRESSION_BREAKOUT",
+            "VWAP_MEAN_REVERSION",
+            "VWAP_RECLAIM",
+            "SHORT_TERM_REVERSAL"
+          ],
+          "strategy_count": 7,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": null,
+          "discovery_end_date": "2025-12-31",
+          "holdout_start_date": "2026-01-01",
+          "forward_start_date": null,
+          "cost_ladder_bps": null,
+          "primary_cost_bps": null,
+          "router_authority": false
+        }
+      ],
+      "job_count": 2,
+      "declared_job_variants_lower_bound": 10,
+      "contains_unenumerated_jobs": true
+    },
+    {
+      "family_id": "ISOLATED_DEEP_VALIDATION_GENERATION_011",
+      "declarations": [],
+      "jobs": [
+        {
+          "source_path": "research/isolated-deep-validation-generation-011-baseline-job.json",
+          "source_sha256": "0e6f3673e7abc51fed5e8cfaaec2a076fb1605802c4ae2eafded5b004defac85",
+          "job_id": "isolated-deep-validation-generation-011-baseline-history-2026-09-15",
+          "family_id": "ISOLATED_DEEP_VALIDATION_GENERATION_011",
+          "trial_id": "isolated-deep-validation-generation-011-baseline",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "general_daily_concepts_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily OHLCV; retrospective research ending 2026-09-03",
+          "universe": "ETF_GENERAL_CONCEPTS",
+          "market_state_universe": null,
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+            "CROSS_ASSET_DUAL_MOMENTUM",
+            "INDUSTRY_ETF_MOMENTUM",
+            "FACTOR_ETF_MOMENTUM",
+            "STATIC_MULTI_SLEEVE"
+          ],
+          "strategy_count": 6,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2018-06-19",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/isolated-deep-validation-generation-011-defensive-job.json",
+          "source_sha256": "aa5816a319c03a353932b616b637abd3854933f8a8bdcbf58859f78f9acd51e9",
+          "job_id": "isolated-deep-validation-generation-011-defensive-history-2026-09-15",
+          "family_id": "ISOLATED_DEEP_VALIDATION_GENERATION_011",
+          "trial_id": "isolated-deep-validation-generation-011-defensive",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "general_daily_concepts_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily OHLCV; retrospective research ending 2026-09-03",
+          "universe": "ETF_GENERAL_CONCEPTS",
+          "market_state_universe": null,
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+            "BREADTH_DETERIORATION_DEFENSIVE",
+            "EQUITY_TREND_DEFENSIVE",
+            "DRAWDOWN_BRAKE",
+            "VOLATILITY_SHOCK_DEFENSIVE",
+            "DEFENSIVE_ASSET_BREAKOUT",
+            "TREND_VOLATILITY_SCALED_EQUITY",
+            "DEFENSIVE_TREND_PERSISTENCE",
+            "BREADTH_DIVERGENCE_DEFENSIVE"
+          ],
+          "strategy_count": 10,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2018-06-19",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/isolated-deep-validation-generation-011-tactical-job.json",
+          "source_sha256": "b575a6ddd5b7ca1d60e537a3cbe8099ed4fc104fbc5b8aa3d3c4184fdc4e8572",
+          "job_id": "isolated-deep-validation-generation-011-tactical-history-2026-09-15",
+          "family_id": "ISOLATED_DEEP_VALIDATION_GENERATION_011",
+          "trial_id": "isolated-deep-validation-generation-011-tactical",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "general_daily_concepts_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily OHLCV; retrospective research ending 2026-09-03",
+          "universe": "ETF_GENERAL_CONCEPTS",
+          "market_state_universe": null,
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+            "SECTOR_SHORT_TERM_REVERSAL",
+            "SECTOR_PRICE_BREAKOUT_20D",
+            "MARKET_DIP_REBOUND_1D",
+            "VOLATILITY_CONTRACTION_BREAKOUT",
+            "DONCHIAN_TREND_BREAKOUT",
+            "SECTOR_MOMENTUM_ACCELERATION",
+            "BREADTH_THRUST_RECOVERY",
+            "OVERSOLD_TREND_REBOUND",
+            "TREND_PULLBACK_REBOUND",
+            "FAILED_BREAKDOWN_RECOVERY",
+            "RELATIVE_STRENGTH_BREAKOUT",
+            "CONFIRMED_CRASH_RECOVERY",
+            "VOLUME_EXPANSION_BREAKOUT",
+            "VOLATILITY_ADJUSTED_ACCELERATION_BREAKOUT",
+            "OVERNIGHT_GAP_CONTINUATION",
+            "CROSS_SECTIONAL_ABNORMAL_RETURN_BREAKOUT",
+            "SECTOR_PARTICIPATION_BREAKOUT",
+            "MARKET_CONFIRMED_SECTOR_BREAKOUT"
+          ],
+          "strategy_count": 20,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2018-06-19",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        }
+      ],
+      "job_count": 3,
+      "declared_job_variants_lower_bound": 36,
+      "contains_unenumerated_jobs": true
+    },
+    {
+      "family_id": "LEGACY_STATE_CLAIMS_REASSESSMENT_001",
+      "declarations": [
+        {
+          "source_path": "research/legacy-state-claims-reassessment-001.json",
+          "source_sha256": "6237c49674fe9105c18d2aa7a0fead9c16aa141c2883c3753f91232086f13bb7",
+          "family_id": "LEGACY_STATE_CLAIMS_REASSESSMENT_001",
+          "status": "locked_before_reanalysis",
+          "evidence_class": "retrospective_consumed"
+        }
+      ],
+      "jobs": [],
+      "job_count": 0,
+      "declared_job_variants_lower_bound": 0,
+      "contains_unenumerated_jobs": false
+    },
+    {
+      "family_id": "LITERATURE_REGIME_REPLICATION_STAGE_A_001",
+      "declarations": [
+        {
+          "source_path": "research/literature-regime-replication-stage-a-001.json",
+          "source_sha256": "cfeeb925a24d25a13e7d3c07b6d905819147fa4f4982c8132430c1b8a939e715",
+          "family_id": "LITERATURE_REGIME_REPLICATION_STAGE_A_001",
+          "status": "frozen_before_return_analysis",
+          "evidence_class": "retrospective_consumed"
+        }
+      ],
+      "jobs": [
+        {
+          "source_path": "research/literature-regime-replication-stage-a-001-cross-asset-job.json",
+          "source_sha256": "e1e29a7fc038e7efcaf7559ee89db52f7a8cf2d6de243835910058a0de422624",
+          "job_id": "literature-regime-replication-stage-a-001-cross-asset-2026-10-09",
+          "family_id": "LITERATURE_REGIME_REPLICATION_STAGE_A_001",
+          "trial_id": "cross-asset-mechanisms-2026-10-09",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "literature_stage_a_adjusted_daily_2011_2026-10-09.csv",
+          "data_source": "Adjusted daily OHLCV through 2026-10-09; provider and source hash must be retained in the uploaded dataset audit record.",
+          "universe": "ETF_LONG_TERM_CROSS_ASSET_HISTORY",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "STATIC_60_30_10",
+            "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+            "LITERATURE_UP_LOW_VOL_RELATIVE_MOMENTUM",
+            "LITERATURE_PANIC_REBOUND_GUARDED_MOMENTUM",
+            "DIVERSIFIED_TREND",
+            "LITERATURE_12M_LONG_FLAT_TREND"
+          ],
+          "strategy_count": 7,
+          "variant_enumeration_complete": true,
+          "enumerated_variant_count": 7,
+          "required_common_start_date": "2011-01-03",
+          "discovery_end_date": null,
+          "holdout_start_date": null,
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/literature-regime-replication-stage-a-001-quality-job.json",
+          "source_sha256": "bdc3cf3355d48f909101d2c1fb8b2644e22971023180e266a9455841576d8670",
+          "job_id": "literature-regime-replication-stage-a-001-quality-2026-10-09",
+          "family_id": "LITERATURE_REGIME_REPLICATION_STAGE_A_001",
+          "trial_id": "quality-proxy-2026-10-09",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "literature_stage_a_adjusted_daily_2011_2026-10-09.csv",
+          "data_source": "Adjusted daily OHLCV through 2026-10-09; provider and source hash must be retained in the uploaded dataset audit record.",
+          "universe": "ETF_LONG_TERM_FACTOR_HISTORY",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "QUAL_BUY_HOLD",
+            "VALUE_QUALITY_STATIC",
+            "USMV_BUY_HOLD"
+          ],
+          "strategy_count": 4,
+          "variant_enumeration_complete": true,
+          "enumerated_variant_count": 4,
+          "required_common_start_date": "2014-01-02",
+          "discovery_end_date": null,
+          "holdout_start_date": null,
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        }
+      ],
+      "job_count": 2,
+      "declared_job_variants_lower_bound": 11,
+      "contains_unenumerated_jobs": false
+    },
+    {
+      "family_id": "LOCKED_ISOLATED_VALIDATION_GENERATION_012",
+      "declarations": [],
+      "jobs": [
+        {
+          "source_path": "research/locked-isolated-validation-generation-012-defensive-job.json",
+          "source_sha256": "4076acc1488f854f38c603bd840ae2654bc4ec9547f1c7f21fa766c3ea6db70f",
+          "job_id": "locked-isolated-validation-generation-012-defensive-history-2026-09-15",
+          "family_id": "LOCKED_ISOLATED_VALIDATION_GENERATION_012",
+          "trial_id": "locked-isolated-validation-generation-012-defensive",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "general_daily_concepts_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily OHLCV; retrospective research ending 2026-09-03",
+          "universe": "ETF_GENERAL_CONCEPTS",
+          "market_state_universe": null,
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+            "BREADTH_DETERIORATION_DEFENSIVE",
+            "EQUITY_TREND_DEFENSIVE",
+            "DRAWDOWN_BRAKE",
+            "VOLATILITY_SHOCK_DEFENSIVE",
+            "DEFENSIVE_ASSET_BREAKOUT",
+            "TREND_VOLATILITY_SCALED_EQUITY",
+            "DEFENSIVE_TREND_PERSISTENCE",
+            "BREADTH_DIVERGENCE_DEFENSIVE"
+          ],
+          "strategy_count": 10,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2018-06-19",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/locked-isolated-validation-generation-012-tactical-job.json",
+          "source_sha256": "e749a9c0bbdd91ca217be277f7cedcaa0e9fed208c5dadbe396fc6f14406faa7",
+          "job_id": "locked-isolated-validation-generation-012-tactical-history-2026-09-15",
+          "family_id": "LOCKED_ISOLATED_VALIDATION_GENERATION_012",
+          "trial_id": "locked-isolated-validation-generation-012-tactical",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "general_daily_concepts_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily OHLCV; retrospective research ending 2026-09-03",
+          "universe": "ETF_GENERAL_CONCEPTS",
+          "market_state_universe": null,
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+            "SECTOR_SHORT_TERM_REVERSAL",
+            "SECTOR_PRICE_BREAKOUT_20D",
+            "MARKET_DIP_REBOUND_1D",
+            "VOLATILITY_CONTRACTION_BREAKOUT",
+            "DONCHIAN_TREND_BREAKOUT",
+            "SECTOR_MOMENTUM_ACCELERATION",
+            "BREADTH_THRUST_RECOVERY",
+            "OVERSOLD_TREND_REBOUND",
+            "TREND_PULLBACK_REBOUND",
+            "FAILED_BREAKDOWN_RECOVERY",
+            "RELATIVE_STRENGTH_BREAKOUT",
+            "CONFIRMED_CRASH_RECOVERY",
+            "VOLUME_EXPANSION_BREAKOUT",
+            "VOLATILITY_ADJUSTED_ACCELERATION_BREAKOUT",
+            "OVERNIGHT_GAP_CONTINUATION",
+            "CROSS_SECTIONAL_ABNORMAL_RETURN_BREAKOUT",
+            "SECTOR_PARTICIPATION_BREAKOUT",
+            "MARKET_CONFIRMED_SECTOR_BREAKOUT"
+          ],
+          "strategy_count": 20,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2018-06-19",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        }
+      ],
+      "job_count": 2,
+      "declared_job_variants_lower_bound": 30,
+      "contains_unenumerated_jobs": true
+    },
+    {
+      "family_id": "LONG-TERM-ENGINE-STUDY-001",
+      "declarations": [
+        {
+          "source_path": "research/long-term-engine-study-001.json",
+          "source_sha256": "9d302bcd78958611d1110689003959f97bc52e14883389dc9f8d1d7e01702ca1",
+          "family_id": "LONG-TERM-ENGINE-STUDY-001",
+          "status": "research_only",
+          "evidence_class": "retrospective_consumed"
+        }
+      ],
+      "jobs": [],
+      "job_count": 0,
+      "declared_job_variants_lower_bound": 0,
+      "contains_unenumerated_jobs": false
+    },
+    {
+      "family_id": "LONG_TERM_ALLOCATION_GAP_REPLICATION_001",
+      "declarations": [
+        {
+          "source_path": "research/long-term-allocation-gap-replication-001.json",
+          "source_sha256": "b018d2f465719e2c11cdef50aa31f6768ca25023a67b63d23436ad87fc7e503f",
+          "family_id": "LONG_TERM_ALLOCATION_GAP_REPLICATION_001",
+          "status": "locked_before_allocation_gap_replication",
+          "evidence_class": "retrospective_consumed"
+        }
+      ],
+      "jobs": [
+        {
+          "source_path": "research/long-term-allocation-gap-replication-001-modern-job.json",
+          "source_sha256": "d601d55e77627fc245f8e5fee2a927da614128a076b724ee667bede271952902",
+          "job_id": "long-term-allocation-gap-replication-001-modern-local",
+          "family_id": "LONG_TERM_ALLOCATION_GAP_REPLICATION_001",
+          "trial_id": "modern-locked-allocation-controls",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "long_term_research_expanded_adjusted_daily_2011_current.csv",
+          "data_source": "Preserved adjusted daily archive through 2026-09-17; modern allocation-gap replication",
+          "universe": "ETF_LONG_TERM_STATE_SPECIALISTS_EXACT",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "QQQ_BUY_HOLD",
+            "IWM_BUY_HOLD",
+            "BIL_BUY_HOLD",
+            "IEF_BUY_HOLD",
+            "TLT_BUY_HOLD",
+            "GLD_BUY_HOLD"
+          ],
+          "strategy_count": 7,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2011-01-03",
+          "discovery_end_date": "2023-12-31",
+          "holdout_start_date": "2024-01-01",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/long-term-allocation-gap-replication-001-prehistory-job.json",
+          "source_sha256": "9d05011d7bc7cc6bfedca110a1e44b409e3fa23555cebe6f27b1c57c9d9174da",
+          "job_id": "long-term-allocation-gap-replication-001-prehistory-local",
+          "family_id": "LONG_TERM_ALLOCATION_GAP_REPLICATION_001",
+          "trial_id": "prehistory-locked-allocation-controls",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "long_term_prehistory_validation_1998_2012_1d_yahoo.csv",
+          "data_source": "Preserved Yahoo adjusted daily archive; older allocation-gap replication",
+          "universe": "ETF_LONG_TERM_STATE_SPECIALISTS_EXACT",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "QQQ_BUY_HOLD",
+            "IWM_BUY_HOLD",
+            "BIL_BUY_HOLD",
+            "IEF_BUY_HOLD",
+            "TLT_BUY_HOLD",
+            "GLD_BUY_HOLD"
+          ],
+          "strategy_count": 7,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2007-05-30",
+          "discovery_end_date": "2010-12-31",
+          "holdout_start_date": "2011-01-01",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        }
+      ],
+      "job_count": 2,
+      "declared_job_variants_lower_bound": 14,
+      "contains_unenumerated_jobs": true
+    },
+    {
+      "family_id": "LONG_TERM_BASELINE_MECHANISMS_PHASE_010",
+      "declarations": [
+        {
+          "source_path": "research/long-term-baseline-mechanisms-phase-010.json",
+          "source_sha256": "3fe1c433cc501bff8b48f1a13b74f31e3e83f8609211bfaa6b523302c4176bdc",
+          "family_id": "LONG_TERM_BASELINE_MECHANISMS_PHASE_010",
+          "status": "locked_before_return_analysis",
+          "evidence_class": "retrospective_consumed"
+        }
+      ],
+      "jobs": [
+        {
+          "source_path": "research/long-term-baseline-mechanisms-phase-010-modern-job.json",
+          "source_sha256": "88b408d7cffb26381676b46fa977c1ea2a2617cc7eccd366b60f3b6e2f556ffb",
+          "job_id": "long-term-baseline-mechanisms-phase-010-modern-yahoo",
+          "family_id": "LONG_TERM_BASELINE_MECHANISMS_PHASE_010",
+          "trial_id": "modern-replication-baseline-mechanisms",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "long_term_research_expanded_adjusted_daily_2011_current.csv",
+          "data_source": "Yahoo adjusted daily chart data; modern baseline-mechanism replication era",
+          "universe": "ETF_LONG_TERM_STATE_SPECIALISTS_EXACT",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "GLOBAL_EQUITY_STATIC",
+            "STATIC_60_30_10",
+            "INVERSE_VOLATILITY_BALANCED",
+            "STATIC_INFLATION_AWARE",
+            "VOL_MANAGED_SPY",
+            "CROSS_ASSET_DUAL_MOMENTUM",
+            "DIVERSIFIED_TREND",
+            "REGIME_BALANCED",
+            "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE"
+          ],
+          "strategy_count": 10,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2011-01-03",
+          "discovery_end_date": "2020-12-31",
+          "holdout_start_date": "2021-01-01",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/long-term-baseline-mechanisms-phase-010-prehistory-job.json",
+          "source_sha256": "3e71993e2c7f2f5abc8660f36420f2acedab8a8faa8e517ba1e2409f059a9c38",
+          "job_id": "long-term-baseline-mechanisms-phase-010-prehistory-yahoo",
+          "family_id": "LONG_TERM_BASELINE_MECHANISMS_PHASE_010",
+          "trial_id": "older-locked-baseline-mechanisms",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "long_term_prehistory_validation_1998_2012_1d_yahoo.csv",
+          "data_source": "Yahoo adjusted daily chart data; older locked baseline-mechanism evidence",
+          "universe": "ETF_LONG_TERM_STATE_SPECIALISTS_EXACT",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "GLOBAL_EQUITY_STATIC",
+            "STATIC_60_30_10",
+            "INVERSE_VOLATILITY_BALANCED",
+            "STATIC_INFLATION_AWARE",
+            "VOL_MANAGED_SPY",
+            "CROSS_ASSET_DUAL_MOMENTUM",
+            "DIVERSIFIED_TREND",
+            "REGIME_BALANCED",
+            "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE"
+          ],
+          "strategy_count": 10,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2007-05-30",
+          "discovery_end_date": "2010-12-31",
+          "holdout_start_date": "2011-01-01",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        }
+      ],
+      "job_count": 2,
+      "declared_job_variants_lower_bound": 20,
+      "contains_unenumerated_jobs": true
+    },
+    {
+      "family_id": "LONG_TERM_CANONICAL_STATE_VALIDATION_003",
+      "declarations": [
+        {
+          "source_path": "research/long-term-canonical-state-validation-003.json",
+          "source_sha256": "b341a3045783c1a8f0dd3cba963cae19070183636010ff99671b201c54d66531",
+          "family_id": "LONG_TERM_CANONICAL_STATE_VALIDATION_003",
+          "status": "ready_for_historical_validation",
+          "evidence_class": "retrospective_consumed"
+        }
+      ],
+      "jobs": [
+        {
+          "source_path": "research/long-term-canonical-state-validation-003-cross-asset-job.json",
+          "source_sha256": "1e58af92bd6e2583c67158ec406984f74e74d4c2dbdec177db3caadf39ad9340",
+          "job_id": "long-term-canonical-state-validation-003-cross-asset",
+          "family_id": "LONG_TERM_CANONICAL_STATE_VALIDATION_003",
+          "trial_id": "cross-asset-canonical-state",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "general_daily_concepts_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily OHLCV; frozen canonical-state retrospective validation",
+          "universe": "ETF_LONG_TERM_CROSS_ASSET_HISTORY",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "GLOBAL_EQUITY_STATIC",
+            "STATIC_60_30_10",
+            "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+            "CROSS_ASSET_DUAL_MOMENTUM",
+            "DIVERSIFIED_TREND",
+            "VOL_MANAGED_SPY",
+            "INVERSE_VOLATILITY_BALANCED",
+            "STATIC_INFLATION_AWARE"
+          ],
+          "strategy_count": 9,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2013-01-02",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/long-term-canonical-state-validation-003-factor-job.json",
+          "source_sha256": "b182b5f01a2cfd32c7149b2a7109bdd85ab4cb4cf29d0971772619223459ce00",
+          "job_id": "long-term-canonical-state-validation-003-factor",
+          "family_id": "LONG_TERM_CANONICAL_STATE_VALIDATION_003",
+          "trial_id": "factor-canonical-state",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "general_daily_concepts_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily OHLCV; frozen canonical-state retrospective validation",
+          "universe": "ETF_LONG_TERM_FACTOR_HISTORY",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "VALUE_QUALITY_STATIC",
+            "MULTIFACTOR_STATIC",
+            "LOW_VOLATILITY_EQUITY"
+          ],
+          "strategy_count": 4,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2013-07-18",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/long-term-canonical-state-validation-003-industry-job.json",
+          "source_sha256": "c176e44c97953b193d0a8de0e78c6d918a7d753547a0c75ef1a6c3c5a160ff73",
+          "job_id": "long-term-canonical-state-validation-003-industry",
+          "family_id": "LONG_TERM_CANONICAL_STATE_VALIDATION_003",
+          "trial_id": "industry-canonical-state",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "general_daily_concepts_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily OHLCV; frozen canonical-state retrospective validation",
+          "universe": "ETF_LONG_TERM_INDUSTRY_HISTORY",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "INDUSTRY_ETF_MOMENTUM"
+          ],
+          "strategy_count": 2,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2013-01-02",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/long-term-canonical-state-validation-003-sector-job.json",
+          "source_sha256": "e1f23b80ba1e49e96de65aac08370165fb2f41483056bccbe53da3841f6e5ca9",
+          "job_id": "long-term-canonical-state-validation-003-sector",
+          "family_id": "LONG_TERM_CANONICAL_STATE_VALIDATION_003",
+          "trial_id": "sector-canonical-state",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "general_daily_concepts_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily OHLCV; frozen canonical-state retrospective validation",
+          "universe": "ETF_LONG_TERM_SECTOR_HISTORY",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "SECTOR_ETF_ROTATION"
+          ],
+          "strategy_count": 2,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2018-06-19",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        }
+      ],
+      "job_count": 4,
+      "declared_job_variants_lower_bound": 17,
+      "contains_unenumerated_jobs": true
+    },
+    {
+      "family_id": "LONG_TERM_CONDITION_MAPPING_PHASE_002",
+      "declarations": [
+        {
+          "source_path": "research/long-term-condition-mapping-phase-002.json",
+          "source_sha256": "9e19f08b92e43c37e5189cf929b2456e7fd44a874aa576345226aca6d1465ad5",
+          "family_id": "LONG_TERM_CONDITION_MAPPING_PHASE_002",
+          "status": "ready_for_data_acquisition",
+          "evidence_class": "retrospective_consumed"
+        }
+      ],
+      "jobs": [
+        {
+          "source_path": "research/long-term-condition-mapping-phase-002-direct-job.json",
+          "source_sha256": "2e4d76641028bca729f2b9f8effa184d29e2340b886f6e30c18ddbdfacc39224",
+          "job_id": "long-term-condition-mapping-phase-002-direct-shared-window",
+          "family_id": "LONG_TERM_CONDITION_MAPPING_PHASE_002",
+          "trial_id": "direct-shared-window",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "long_term_research_expanded_adjusted_daily_2011_current.csv",
+          "data_source": "Adjusted daily OHLCV; frozen direct market-state comparison",
+          "universe": "ETF_LONG_TERM_RESEARCH_EXPANDED",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "GLOBAL_EQUITY_STATIC",
+            "STATIC_60_30_10",
+            "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+            "CROSS_ASSET_DUAL_MOMENTUM",
+            "DIVERSIFIED_TREND",
+            "VOL_MANAGED_SPY",
+            "INVERSE_VOLATILITY_BALANCED",
+            "STATIC_INFLATION_AWARE",
+            "VALUE_QUALITY_STATIC",
+            "MULTIFACTOR_STATIC",
+            "LOW_VOLATILITY_EQUITY",
+            "INDUSTRY_ETF_MOMENTUM",
+            "SECTOR_ETF_ROTATION",
+            "BIL_BUY_HOLD",
+            "SHY_BUY_HOLD",
+            "IEF_BUY_HOLD",
+            "TLT_BUY_HOLD",
+            "TIP_BUY_HOLD",
+            "GLD_BUY_HOLD",
+            "VIG_BUY_HOLD",
+            "SPLV_BUY_HOLD",
+            "QQQ_BUY_HOLD",
+            "IWM_BUY_HOLD",
+            "DBC_BUY_HOLD",
+            "VNQ_BUY_HOLD",
+            "EFA_BUY_HOLD",
+            "EEM_BUY_HOLD",
+            "XLC_BUY_HOLD",
+            "XLY_BUY_HOLD",
+            "XLP_BUY_HOLD",
+            "XLE_BUY_HOLD",
+            "XLF_BUY_HOLD",
+            "XLV_BUY_HOLD",
+            "XLI_BUY_HOLD",
+            "XLB_BUY_HOLD",
+            "XLRE_BUY_HOLD",
+            "XLK_BUY_HOLD",
+            "XLU_BUY_HOLD",
+            "MTUM_BUY_HOLD",
+            "QUAL_BUY_HOLD",
+            "VLUE_BUY_HOLD",
+            "USMV_BUY_HOLD",
+            "IWF_BUY_HOLD",
+            "IWD_BUY_HOLD"
+          ],
+          "strategy_count": 45,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2018-06-19",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        }
+      ],
+      "job_count": 1,
+      "declared_job_variants_lower_bound": 45,
+      "contains_unenumerated_jobs": true
+    },
+    {
+      "family_id": "LONG_TERM_EARLY_DOWNSIDE_REASSESSMENT_001",
+      "declarations": [
+        {
+          "source_path": "research/long-term-early-downside-reassessment-001.json",
+          "source_sha256": "cf472a4605a224c7dfbcca8d6b3487ef461cf5d87c6b4fdea4ef3e12c21fc534",
+          "family_id": "LONG_TERM_EARLY_DOWNSIDE_REASSESSMENT_001",
+          "status": "frozen_before_reassessment",
+          "evidence_class": "retrospective_consumed"
+        }
+      ],
+      "jobs": [],
+      "job_count": 0,
+      "declared_job_variants_lower_bound": 0,
+      "contains_unenumerated_jobs": false
+    },
+    {
+      "family_id": "LONG_TERM_ENGINE_STUDY_001",
+      "declarations": [],
+      "jobs": [
+        {
+          "source_path": "research/long-term-engine-study-001-job.json",
+          "source_sha256": "575434ded8731668ad9d2a7aae9099f0311c9e53cabcd3fe567b9f02c28aee1f",
+          "job_id": "long-term-engine-study-001-history",
+          "family_id": "LONG_TERM_ENGINE_STUDY_001",
+          "trial_id": "long-term-engine-study-001-history",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "general_daily_concepts_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily OHLCV; retrospective research ending 2026-09-03",
+          "universe": "ETF_GENERAL_CONCEPTS",
+          "market_state_universe": null,
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "GLOBAL_EQUITY_STATIC",
+            "STATIC_60_30_10",
+            "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+            "CROSS_ASSET_DUAL_MOMENTUM",
+            "SECTOR_ETF_ROTATION",
+            "INDUSTRY_ETF_MOMENTUM",
+            "DIVERSIFIED_TREND",
+            "VALUE_QUALITY_STATIC",
+            "MULTIFACTOR_STATIC",
+            "LOW_VOLATILITY_EQUITY",
+            "VOL_MANAGED_SPY",
+            "INVERSE_VOLATILITY_BALANCED",
+            "STATIC_INFLATION_AWARE"
+          ],
+          "strategy_count": 14,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2018-06-19",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        }
+      ],
+      "job_count": 1,
+      "declared_job_variants_lower_bound": 14,
+      "contains_unenumerated_jobs": true
+    },
+    {
+      "family_id": "LONG_TERM_EXECUTION_AWARE_ISOLATED_STRATEGIES_001",
+      "declarations": [
+        {
+          "source_path": "research/long-term-execution-aware-isolated-strategies-001.json",
+          "source_sha256": "979910024f8b88c0699f9d542fcdcd9262afe7bc23bdc68f995ac414fae6fd11",
+          "family_id": "LONG_TERM_EXECUTION_AWARE_ISOLATED_STRATEGIES_001",
+          "status": "locked_before_historical_execution",
+          "evidence_class": "retrospective_consumed"
+        }
+      ],
+      "jobs": [
+        {
+          "source_path": "research/long-term-execution-aware-isolated-strategies-001-modern-job.json",
+          "source_sha256": "86fb24200dda18259c0149a8379cf210b723d2b5ebaeb1fc0e323b751dae7ea5",
+          "job_id": "long-term-execution-aware-isolated-strategies-001-modern-local",
+          "family_id": "LONG_TERM_EXECUTION_AWARE_ISOLATED_STRATEGIES_001",
+          "trial_id": "modern-locked-complete-strategies",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "long_term_research_expanded_adjusted_daily_2011_current.csv",
+          "data_source": "Preserved adjusted daily archive through 2026-09-17; modern execution-aware strategy development",
+          "universe": "ETF_LONG_TERM_STATE_SPECIALISTS_EXACT",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "QQQ_BUY_HOLD",
+            "BIL_BUY_HOLD",
+            "QQQ_BULL_TREND_LEADERSHIP",
+            "QQQ_BULL_DECELERATION_EXPLORATORY",
+            "BIL_RAW_BEAR_DETERIORATION",
+            "BIL_THREE_DAY_BEAR_DETERIORATION",
+            "BIL_RAW_TRANSITION_OR_BEAR_DETERIORATION"
+          ],
+          "strategy_count": 8,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2011-01-03",
+          "discovery_end_date": "2023-12-31",
+          "holdout_start_date": "2024-01-01",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/long-term-execution-aware-isolated-strategies-001-prehistory-job.json",
+          "source_sha256": "c8fcdc27ea415834b13623275ad4b61b184da65005c9ff1c6777b16ea0a7acaf",
+          "job_id": "long-term-execution-aware-isolated-strategies-001-prehistory-local",
+          "family_id": "LONG_TERM_EXECUTION_AWARE_ISOLATED_STRATEGIES_001",
+          "trial_id": "prehistory-locked-complete-strategies",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "long_term_prehistory_validation_1998_2012_1d_yahoo.csv",
+          "data_source": "Preserved Yahoo adjusted daily archive; older execution-aware strategy development",
+          "universe": "ETF_LONG_TERM_STATE_SPECIALISTS_EXACT",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "QQQ_BUY_HOLD",
+            "BIL_BUY_HOLD",
+            "QQQ_BULL_TREND_LEADERSHIP",
+            "QQQ_BULL_DECELERATION_EXPLORATORY",
+            "BIL_RAW_BEAR_DETERIORATION",
+            "BIL_THREE_DAY_BEAR_DETERIORATION",
+            "BIL_RAW_TRANSITION_OR_BEAR_DETERIORATION"
+          ],
+          "strategy_count": 8,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2007-05-30",
+          "discovery_end_date": "2010-12-31",
+          "holdout_start_date": "2011-01-01",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        }
+      ],
+      "job_count": 2,
+      "declared_job_variants_lower_bound": 16,
+      "contains_unenumerated_jobs": true
+    },
+    {
+      "family_id": "LONG_TERM_EXECUTION_AWARE_ISOLATED_STRATEGIES_002",
+      "declarations": [
+        {
+          "source_path": "research/long-term-execution-aware-isolated-strategies-002.json",
+          "source_sha256": "b9f258427aac8fa2d751b50b7a69928ca490febf36adb3b3de930bb4f64670c8",
+          "family_id": "LONG_TERM_EXECUTION_AWARE_ISOLATED_STRATEGIES_002",
+          "status": "locked_before_historical_execution",
+          "evidence_class": "retrospective_consumed"
+        }
+      ],
+      "jobs": [
+        {
+          "source_path": "research/long-term-execution-aware-isolated-strategies-002-modern-job.json",
+          "source_sha256": "0b1e465ed3e57f88a3561656f284f61376caa4601362ae93bef7d94bd3d78848",
+          "job_id": "long-term-execution-aware-isolated-strategies-002-modern-local",
+          "family_id": "LONG_TERM_EXECUTION_AWARE_ISOLATED_STRATEGIES_002",
+          "trial_id": "modern-locked-complete-strategies-2pct-band",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "long_term_research_expanded_adjusted_daily_2011_current.csv",
+          "data_source": "Preserved adjusted daily archive through 2026-09-17; corrected execution-aware strategy development",
+          "universe": "ETF_LONG_TERM_STATE_SPECIALISTS_EXACT",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "QQQ_BUY_HOLD",
+            "BIL_BUY_HOLD",
+            "QQQ_BULL_TREND_LEADERSHIP",
+            "QQQ_BULL_DECELERATION_EXPLORATORY",
+            "BIL_RAW_BEAR_DETERIORATION",
+            "BIL_THREE_DAY_BEAR_DETERIORATION",
+            "BIL_RAW_TRANSITION_OR_BEAR_DETERIORATION"
+          ],
+          "strategy_count": 8,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2011-01-03",
+          "discovery_end_date": "2023-12-31",
+          "holdout_start_date": "2024-01-01",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/long-term-execution-aware-isolated-strategies-002-prehistory-job.json",
+          "source_sha256": "b2776512fc3d1298762345728722140b414757da4a514272f4ac76599f2e330f",
+          "job_id": "long-term-execution-aware-isolated-strategies-002-prehistory-local",
+          "family_id": "LONG_TERM_EXECUTION_AWARE_ISOLATED_STRATEGIES_002",
+          "trial_id": "prehistory-locked-complete-strategies-2pct-band",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "long_term_prehistory_validation_1998_2012_1d_yahoo.csv",
+          "data_source": "Preserved Yahoo adjusted daily archive; corrected execution-aware strategy development",
+          "universe": "ETF_LONG_TERM_STATE_SPECIALISTS_EXACT",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "QQQ_BUY_HOLD",
+            "BIL_BUY_HOLD",
+            "QQQ_BULL_TREND_LEADERSHIP",
+            "QQQ_BULL_DECELERATION_EXPLORATORY",
+            "BIL_RAW_BEAR_DETERIORATION",
+            "BIL_THREE_DAY_BEAR_DETERIORATION",
+            "BIL_RAW_TRANSITION_OR_BEAR_DETERIORATION"
+          ],
+          "strategy_count": 8,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2007-05-30",
+          "discovery_end_date": "2010-12-31",
+          "holdout_start_date": "2011-01-01",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        }
+      ],
+      "job_count": 2,
+      "declared_job_variants_lower_bound": 16,
+      "contains_unenumerated_jobs": true
+    },
+    {
+      "family_id": "LONG_TERM_HIERARCHICAL_VALIDATION_004",
+      "declarations": [
+        {
+          "source_path": "research/long-term-hierarchical-validation-004.json",
+          "source_sha256": "6cdad90939dee979812794b02f168ed9219414a7c1d9b4dcff54900b46adc742",
+          "family_id": "LONG_TERM_HIERARCHICAL_VALIDATION_004",
+          "status": "ready_for_historical_validation",
+          "evidence_class": "retrospective_consumed"
+        }
+      ],
+      "jobs": [
+        {
+          "source_path": "research/long-term-hierarchical-validation-004-baseline-job.json",
+          "source_sha256": "082a0e878c07e3bd812e890db214c275ca2d2365151d736a1283b9069d95e9ed",
+          "job_id": "long-term-hierarchical-validation-004-baseline",
+          "family_id": "LONG_TERM_HIERARCHICAL_VALIDATION_004",
+          "trial_id": "baseline-risk-control-hierarchy",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "general_daily_concepts_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily OHLCV; locked hierarchical validation",
+          "universe": "ETF_LONG_TERM_CROSS_ASSET_HISTORY",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+            "STATIC_60_30_10",
+            "STATIC_INFLATION_AWARE"
+          ],
+          "strategy_count": 4,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2013-01-02",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/long-term-hierarchical-validation-004-factor-job.json",
+          "source_sha256": "f47e6584dd53e507c8db007866c7917d65287c3287b34c355df475426802a3fe",
+          "job_id": "long-term-hierarchical-validation-004-factor",
+          "family_id": "LONG_TERM_HIERARCHICAL_VALIDATION_004",
+          "trial_id": "factor-hierarchy",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "general_daily_concepts_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily OHLCV; locked hierarchical validation",
+          "universe": "ETF_LONG_TERM_FACTOR_HISTORY",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "VALUE_QUALITY_STATIC",
+            "MULTIFACTOR_STATIC",
+            "LOW_VOLATILITY_EQUITY"
+          ],
+          "strategy_count": 4,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2013-07-18",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/long-term-hierarchical-validation-004-industry-job.json",
+          "source_sha256": "bc451a1030683c49f4cb65988ff10ec4456ab01cdd14f6428948e0fa59f3d389",
+          "job_id": "long-term-hierarchical-validation-004-industry",
+          "family_id": "LONG_TERM_HIERARCHICAL_VALIDATION_004",
+          "trial_id": "industry-hierarchy",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "general_daily_concepts_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily OHLCV; locked hierarchical validation",
+          "universe": "ETF_LONG_TERM_INDUSTRY_HISTORY",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "INDUSTRY_ETF_MOMENTUM"
+          ],
+          "strategy_count": 2,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2013-01-02",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/long-term-hierarchical-validation-004-sector-job.json",
+          "source_sha256": "3f1519cf2f200d88b351786ac7df2959a7d09890ab0e223e33275c6b50003dd6",
+          "job_id": "long-term-hierarchical-validation-004-sector",
+          "family_id": "LONG_TERM_HIERARCHICAL_VALIDATION_004",
+          "trial_id": "sector-hierarchy",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "general_daily_concepts_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily OHLCV; locked hierarchical validation",
+          "universe": "ETF_LONG_TERM_SECTOR_HISTORY",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "SECTOR_ETF_ROTATION"
+          ],
+          "strategy_count": 2,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2018-06-19",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        }
+      ],
+      "job_count": 4,
+      "declared_job_variants_lower_bound": 12,
+      "contains_unenumerated_jobs": true
+    },
+    {
+      "family_id": "LONG_TERM_LOCKED_VALIDATION_005",
+      "declarations": [
+        {
+          "source_path": "research/long-term-locked-validation-005.json",
+          "source_sha256": "ae9342040f11f8c516966cce13dbe844e9200a56d95d8843335f510551ef9130",
+          "family_id": "LONG_TERM_LOCKED_VALIDATION_005",
+          "status": "ready_for_source_replication_and_forward_validation",
+          "evidence_class": "retrospective_consumed"
+        }
+      ],
+      "jobs": [
+        {
+          "source_path": "research/long-term-locked-validation-005-baseline-job.json",
+          "source_sha256": "d79ca92dffb1921d21a0366a6ee28c8cb9d6b74494608c05635232bad2c5b69f",
+          "job_id": "long-term-locked-validation-005-baseline-iex",
+          "family_id": "LONG_TERM_LOCKED_VALIDATION_005",
+          "trial_id": "baseline-source-replication",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "prospective_forward",
+          "dataset": "long_term_locked_replication_2016_2026-09-25_1d_iex.csv",
+          "data_source": "Alpaca adjusted 1Day IEX; locked Phase 005 source replication",
+          "universe": "ETF_LONG_TERM_CROSS_ASSET_HISTORY",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE"
+          ],
+          "strategy_count": 2,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2020-07-27",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": "2026-09-28",
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/long-term-locked-validation-005-factor-job.json",
+          "source_sha256": "bf0a8dc0a6857961199f5fa1d845e39e6471d73f3f7024cf0c0fec36965e8e1e",
+          "job_id": "long-term-locked-validation-005-factor-iex",
+          "family_id": "LONG_TERM_LOCKED_VALIDATION_005",
+          "trial_id": "factor-source-replication",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "prospective_forward",
+          "dataset": "long_term_locked_replication_2016_2026-09-25_1d_iex.csv",
+          "data_source": "Alpaca adjusted 1Day IEX; locked Phase 005 source replication",
+          "universe": "ETF_LONG_TERM_FACTOR_HISTORY",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "VALUE_QUALITY_STATIC",
+            "MULTIFACTOR_STATIC"
+          ],
+          "strategy_count": 3,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2020-07-27",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": "2026-09-28",
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/long-term-locked-validation-005-industry-job.json",
+          "source_sha256": "81662874d8cf12ccae1c06c5d34389bd70ae66f3baf96ddd84ca6b3d24694fb1",
+          "job_id": "long-term-locked-validation-005-industry-iex",
+          "family_id": "LONG_TERM_LOCKED_VALIDATION_005",
+          "trial_id": "industry-source-replication",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "prospective_forward",
+          "dataset": "long_term_locked_replication_2016_2026-09-25_1d_iex.csv",
+          "data_source": "Alpaca adjusted 1Day IEX; locked Phase 005 source replication",
+          "universe": "ETF_LONG_TERM_INDUSTRY_HISTORY",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "INDUSTRY_ETF_MOMENTUM"
+          ],
+          "strategy_count": 2,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2020-07-27",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": "2026-09-28",
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        }
+      ],
+      "job_count": 3,
+      "declared_job_variants_lower_bound": 7,
+      "contains_unenumerated_jobs": true
+    },
+    {
+      "family_id": "LONG_TERM_MULTI_ERA_VALIDATION_PHASE_011",
+      "declarations": [
+        {
+          "source_path": "research/long-term-multi-era-validation-phase-011.json",
+          "source_sha256": "13c3cd1d866729af3c54b6b7b2b938360cd675ca45fda072ac7b4d32e22c8d33",
+          "family_id": "LONG_TERM_MULTI_ERA_VALIDATION_PHASE_011",
+          "status": "locked_before_phase_011_analysis",
+          "evidence_class": "retrospective_consumed"
+        }
+      ],
+      "jobs": [],
+      "job_count": 0,
+      "declared_job_variants_lower_bound": 0,
+      "contains_unenumerated_jobs": false
+    },
+    {
+      "family_id": "LONG_TERM_NOVEL_DOWNSIDE_MECHANISMS_001",
+      "declarations": [
+        {
+          "source_path": "research/long-term-novel-downside-mechanisms-001.json",
+          "source_sha256": "07ff244e3e4ddbd8d6b6dc4ad629094198d7c0760113b96ff7f7051e97b4ed38",
+          "family_id": "LONG_TERM_NOVEL_DOWNSIDE_MECHANISMS_001",
+          "status": "frozen_before_return_analysis",
+          "evidence_class": "retrospective_consumed"
+        }
+      ],
+      "jobs": [
+        {
+          "source_path": "research/long-term-novel-downside-mechanisms-001-modern-job.json",
+          "source_sha256": "e37b872707a8f1415c4a87a51a0ca59eea3dabe6fc8f35546c7fe39561648345",
+          "job_id": "long-term-novel-downside-mechanisms-001-modern-yahoo",
+          "family_id": "LONG_TERM_NOVEL_DOWNSIDE_MECHANISMS_001",
+          "trial_id": "turning-point-modern-exact",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "long_term_research_expanded_adjusted_daily_2011_current.csv",
+          "data_source": "Yahoo adjusted daily chart data; modern multi-regime replication era",
+          "universe": "ETF_LONG_TERM_STATE_SPECIALISTS_EXACT",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "STATIC_60_30_10",
+            "VOL_MANAGED_SPY",
+            "TURNING_POINT_SLOW_EQUITY",
+            "TURNING_POINT_FAST_EQUITY",
+            "TURNING_POINT_MEDIUM_EQUITY",
+            "TURNING_POINT_MEDIUM_ADAPTIVE_DEFENSE"
+          ],
+          "strategy_count": 7,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2011-01-03",
+          "discovery_end_date": "2020-12-31",
+          "holdout_start_date": "2021-01-01",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/long-term-novel-downside-mechanisms-001-prehistory-job.json",
+          "source_sha256": "c77fa2dfb1f46fcd67441d8e02cede038529793dc27211f5299f90c647131ffe",
+          "job_id": "long-term-novel-downside-mechanisms-001-prehistory-yahoo",
+          "family_id": "LONG_TERM_NOVEL_DOWNSIDE_MECHANISMS_001",
+          "trial_id": "turning-point-prehistory-exact",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "long_term_prehistory_validation_1998_2012_1d_yahoo.csv",
+          "data_source": "Yahoo adjusted daily chart data; locked older validation era",
+          "universe": "ETF_LONG_TERM_STATE_SPECIALISTS_EXACT",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "STATIC_60_30_10",
+            "VOL_MANAGED_SPY",
+            "TURNING_POINT_SLOW_EQUITY",
+            "TURNING_POINT_FAST_EQUITY",
+            "TURNING_POINT_MEDIUM_EQUITY",
+            "TURNING_POINT_MEDIUM_ADAPTIVE_DEFENSE"
+          ],
+          "strategy_count": 7,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2007-05-30",
+          "discovery_end_date": "2010-12-31",
+          "holdout_start_date": "2011-01-01",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        }
+      ],
+      "job_count": 2,
+      "declared_job_variants_lower_bound": 14,
+      "contains_unenumerated_jobs": true
+    },
+    {
+      "family_id": "LONG_TERM_PORTFOLIO_INSURANCE_PHASE_014",
+      "declarations": [
+        {
+          "source_path": "research/long-term-portfolio-insurance-phase-014.json",
+          "source_sha256": "7fcebb8c3f57acd6f9fa96f52b23a99056a28166381d35cdbd679c6e965bf48e",
+          "family_id": "LONG_TERM_PORTFOLIO_INSURANCE_PHASE_014",
+          "status": "locked_before_return_analysis",
+          "evidence_class": "retrospective_consumed"
+        }
+      ],
+      "jobs": [],
+      "job_count": 0,
+      "declared_job_variants_lower_bound": 0,
+      "contains_unenumerated_jobs": false
+    },
+    {
+      "family_id": "LONG_TERM_PREHISTORY_VALIDATION_006",
+      "declarations": [
+        {
+          "source_path": "research/long-term-prehistory-validation-006.json",
+          "source_sha256": "6d5c92a8c1e88bb936c37e67a1ad17c4caa68013180cac4179370725699b557e",
+          "family_id": "LONG_TERM_PREHISTORY_VALIDATION_006",
+          "status": "locked_before_return_analysis",
+          "evidence_class": "retrospective_consumed"
+        }
+      ],
+      "jobs": [
+        {
+          "source_path": "research/long-term-prehistory-validation-006-cross-asset-job.json",
+          "source_sha256": "587ad201dad842ca7db0dd211f57e7be1695c5234c0fa47fdbfb1e14ffc7ceed",
+          "job_id": "long-term-prehistory-validation-006-cross-asset-yahoo",
+          "family_id": "LONG_TERM_PREHISTORY_VALIDATION_006",
+          "trial_id": "cross-asset-exact-prehistory",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "long_term_prehistory_validation_1998_2012_1d_yahoo.csv",
+          "data_source": "Yahoo adjusted daily chart data; validation only",
+          "universe": "ETF_LONG_TERM_PREHISTORY_CROSS_ASSET",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE"
+          ],
+          "strategy_count": 2,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2007-05-30",
+          "discovery_end_date": "2010-12-31",
+          "holdout_start_date": "2011-01-01",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/long-term-prehistory-validation-006-industry-job.json",
+          "source_sha256": "7b736caa18b8963ca7df36f5a993301f609d2daa59979612cf1cf48d185a5f78",
+          "job_id": "long-term-prehistory-validation-006-industry-yahoo",
+          "family_id": "LONG_TERM_PREHISTORY_VALIDATION_006",
+          "trial_id": "industry-exact-prehistory",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "long_term_prehistory_validation_1998_2012_1d_yahoo.csv",
+          "data_source": "Yahoo adjusted daily chart data; validation only",
+          "universe": "ETF_LONG_TERM_PREHISTORY_INDUSTRY",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "INDUSTRY_ETF_MOMENTUM"
+          ],
+          "strategy_count": 2,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2006-06-22",
+          "discovery_end_date": "2010-12-31",
+          "holdout_start_date": "2011-01-01",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/long-term-prehistory-validation-006-inflation-job.json",
+          "source_sha256": "cfdba6785c6e6373d48fbf289447de31826934649ff6bfcd7785eb87d2e069e8",
+          "job_id": "long-term-prehistory-validation-006-inflation-yahoo",
+          "family_id": "LONG_TERM_PREHISTORY_VALIDATION_006",
+          "trial_id": "inflation-aware-exact-prehistory",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "long_term_prehistory_validation_1998_2012_1d_yahoo.csv",
+          "data_source": "Yahoo adjusted daily chart data; validation only",
+          "universe": "ETF_LONG_TERM_PREHISTORY_INFLATION",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "STATIC_INFLATION_AWARE"
+          ],
+          "strategy_count": 2,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2006-02-06",
+          "discovery_end_date": "2010-12-31",
+          "holdout_start_date": "2011-01-01",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/long-term-prehistory-validation-006-sector-job.json",
+          "source_sha256": "d7c785aa9b6fa017f0dfc4588c485e327843155d2d3a14714dfbb1025bcb361a",
+          "job_id": "long-term-prehistory-validation-006-sector-yahoo",
+          "family_id": "LONG_TERM_PREHISTORY_VALIDATION_006",
+          "trial_id": "sector-exact-prehistory",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "long_term_prehistory_validation_1998_2012_1d_yahoo.csv",
+          "data_source": "Yahoo adjusted daily chart data; validation only",
+          "universe": "ETF_LONG_TERM_PREHISTORY_SECTOR",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "SECTOR_ETF_ROTATION"
+          ],
+          "strategy_count": 2,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2002-07-30",
+          "discovery_end_date": "2009-12-31",
+          "holdout_start_date": "2010-01-01",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        }
+      ],
+      "job_count": 4,
+      "declared_job_variants_lower_bound": 8,
+      "contains_unenumerated_jobs": true
+    },
+    {
+      "family_id": "LONG_TERM_STATE_ACTIONABILITY_PHASE_008",
+      "declarations": [
+        {
+          "source_path": "research/long-term-state-actionability-phase-008.json",
+          "source_sha256": "d5a4f2fb8133e22ce070730b1faec63aff85d5dd624cf5bfcebfe6b52b9e220f",
+          "family_id": "LONG_TERM_STATE_ACTIONABILITY_PHASE_008",
+          "status": "locked_before_return_analysis",
+          "evidence_class": "retrospective_consumed"
+        }
+      ],
+      "jobs": [
+        {
+          "source_path": "research/long-term-state-actionability-phase-008-modern-job.json",
+          "source_sha256": "f630d367aef732570e9b1e99b46c90b0f4f5ac0c0d8cb15ef405fa21cb051fd6",
+          "job_id": "long-term-state-actionability-phase-008-modern-yahoo",
+          "family_id": "LONG_TERM_STATE_ACTIONABILITY_PHASE_008",
+          "trial_id": "bear-transition-modern-locked",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "long_term_research_expanded_adjusted_daily_2011_current.csv",
+          "data_source": "Yahoo adjusted daily chart data; modern multi-regime state-actionability audit",
+          "universe": "ETF_LONG_TERM_STATE_SPECIALISTS_EXACT",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "STATIC_INFLATION_AWARE",
+            "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+            "INDUSTRY_ETF_MOMENTUM",
+            "SECTOR_ETF_ROTATION",
+            "VOL_MANAGED_SPY",
+            "EQUITY_TREND_DEFENSIVE",
+            "DRAWDOWN_BRAKE",
+            "VOLATILITY_SHOCK_DEFENSIVE",
+            "BREADTH_DETERIORATION_DEFENSIVE",
+            "DEFENSIVE_TREND_PERSISTENCE"
+          ],
+          "strategy_count": 11,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2011-01-03",
+          "discovery_end_date": "2020-12-31",
+          "holdout_start_date": "2021-01-01",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/long-term-state-actionability-phase-008-prehistory-job.json",
+          "source_sha256": "bc3754c07212e8afbe2ce7c55702ba7ff2bf647499835555fdd24e2e4189b25d",
+          "job_id": "long-term-state-actionability-phase-008-prehistory-yahoo",
+          "family_id": "LONG_TERM_STATE_ACTIONABILITY_PHASE_008",
+          "trial_id": "bear-transition-prehistory-locked",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "long_term_prehistory_validation_1998_2012_1d_yahoo.csv",
+          "data_source": "Yahoo adjusted daily chart data; older state-actionability audit",
+          "universe": "ETF_LONG_TERM_STATE_SPECIALISTS_EXACT",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "STATIC_INFLATION_AWARE",
+            "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+            "INDUSTRY_ETF_MOMENTUM",
+            "SECTOR_ETF_ROTATION",
+            "VOL_MANAGED_SPY",
+            "EQUITY_TREND_DEFENSIVE",
+            "DRAWDOWN_BRAKE",
+            "VOLATILITY_SHOCK_DEFENSIVE",
+            "BREADTH_DETERIORATION_DEFENSIVE",
+            "DEFENSIVE_TREND_PERSISTENCE"
+          ],
+          "strategy_count": 11,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2007-05-30",
+          "discovery_end_date": "2010-12-31",
+          "holdout_start_date": "2011-01-01",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        }
+      ],
+      "job_count": 2,
+      "declared_job_variants_lower_bound": 22,
+      "contains_unenumerated_jobs": true
+    },
+    {
+      "family_id": "LONG_TERM_STATE_SPECIALISTS_PHASE_007",
+      "declarations": [
+        {
+          "source_path": "research/long-term-state-specialists-phase-007.json",
+          "source_sha256": "bd52d162998075b30dae5597f9e99645fb08ff90f5477ce7e579aeef89aa5c42",
+          "family_id": "LONG_TERM_STATE_SPECIALISTS_PHASE_007",
+          "status": "locked_before_return_analysis",
+          "evidence_class": "retrospective_consumed"
+        }
+      ],
+      "jobs": [
+        {
+          "source_path": "research/long-term-state-specialists-phase-007-modern-job.json",
+          "source_sha256": "9888a685e6389dabf7eb4859bfb8a8db740ea2f8f6bbe8a3934a321bede1e70c",
+          "job_id": "long-term-state-specialists-phase-007-modern-yahoo",
+          "family_id": "LONG_TERM_STATE_SPECIALISTS_PHASE_007",
+          "trial_id": "bear-deteriorating-modern-exact",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "long_term_research_expanded_adjusted_daily_2011_current.csv",
+          "data_source": "Yahoo adjusted daily chart data; modern multi-regime replication era",
+          "universe": "ETF_LONG_TERM_STATE_SPECIALISTS_EXACT",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "STATIC_INFLATION_AWARE",
+            "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+            "INDUSTRY_ETF_MOMENTUM",
+            "SECTOR_ETF_ROTATION",
+            "VOL_MANAGED_SPY",
+            "EQUITY_TREND_DEFENSIVE",
+            "DRAWDOWN_BRAKE",
+            "VOLATILITY_SHOCK_DEFENSIVE",
+            "BREADTH_DETERIORATION_DEFENSIVE",
+            "DEFENSIVE_TREND_PERSISTENCE"
+          ],
+          "strategy_count": 11,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2011-01-03",
+          "discovery_end_date": "2020-12-31",
+          "holdout_start_date": "2021-01-01",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/long-term-state-specialists-phase-007-prehistory-job.json",
+          "source_sha256": "03c43ca86a7d699bf26e7c61f3504f1df65dcffbfa5cebaa05b79e7dc05bad3a",
+          "job_id": "long-term-state-specialists-phase-007-prehistory-yahoo",
+          "family_id": "LONG_TERM_STATE_SPECIALISTS_PHASE_007",
+          "trial_id": "bear-deteriorating-prehistory-exact",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "long_term_prehistory_validation_1998_2012_1d_yahoo.csv",
+          "data_source": "Yahoo adjusted daily chart data; locked older validation era",
+          "universe": "ETF_LONG_TERM_STATE_SPECIALISTS_EXACT",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "STATIC_INFLATION_AWARE",
+            "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+            "INDUSTRY_ETF_MOMENTUM",
+            "SECTOR_ETF_ROTATION",
+            "VOL_MANAGED_SPY",
+            "EQUITY_TREND_DEFENSIVE",
+            "DRAWDOWN_BRAKE",
+            "VOLATILITY_SHOCK_DEFENSIVE",
+            "BREADTH_DETERIORATION_DEFENSIVE",
+            "DEFENSIVE_TREND_PERSISTENCE"
+          ],
+          "strategy_count": 11,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2007-05-30",
+          "discovery_end_date": "2010-12-31",
+          "holdout_start_date": "2011-01-01",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        }
+      ],
+      "job_count": 2,
+      "declared_job_variants_lower_bound": 22,
+      "contains_unenumerated_jobs": true
+    },
+    {
+      "family_id": "LONG_TERM_TURNING_POINT_FORWARD_VALIDATION_001",
+      "declarations": [
+        {
+          "source_path": "research/long-term-turning-point-forward-validation-001.json",
+          "source_sha256": "a54d21a3509869d64a151cd88da0ba33a8bebd271c3a2a63a7142489a9dd3329",
+          "family_id": "LONG_TERM_TURNING_POINT_FORWARD_VALIDATION_001",
+          "status": "frozen_prospective_shadow",
+          "evidence_class": "prospective_forward"
+        }
+      ],
+      "jobs": [
+        {
+          "source_path": "research/long-term-turning-point-forward-validation-001-job.json",
+          "source_sha256": "dfbfa1cff2aa6198d2909405d9d52b02fff48ecd87649750f31fb8018836932a",
+          "job_id": "long-term-turning-point-forward-validation-001-latest",
+          "family_id": "LONG_TERM_TURNING_POINT_FORWARD_VALIDATION_001",
+          "trial_id": "prospective-latest-exact",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "prospective_forward",
+          "dataset": "long_term_research_expanded_adjusted_daily_2011_current.csv",
+          "data_source": "adjusted daily research bars through latest completed session",
+          "universe": "ETF_LONG_TERM_STATE_SPECIALISTS_EXACT",
+          "market_state_universe": "ETF_LONG_TERM_STATE_CANONICAL",
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "TURNING_POINT_SLOW_EQUITY",
+            "TURNING_POINT_FAST_EQUITY",
+            "TURNING_POINT_MEDIUM_EQUITY",
+            "TURNING_POINT_MEDIUM_ADAPTIVE_DEFENSE"
+          ],
+          "strategy_count": 5,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2013-01-02",
+          "discovery_end_date": "2026-10-29",
+          "holdout_start_date": "2026-10-30",
+          "forward_start_date": "2026-10-30",
+          "cost_ladder_bps": [
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        }
+      ],
+      "job_count": 1,
+      "declared_job_variants_lower_bound": 5,
+      "contains_unenumerated_jobs": true
+    },
+    {
+      "family_id": "LONG_TERM_VALIDATION_PHASE_001",
+      "declarations": [
+        {
+          "source_path": "research/long-term-validation-phase-001.json",
+          "source_sha256": "0772dae3c3845554e0e1ef5e1b1834251b69fb7088d1f7a3fc9e32aa65d424a2",
+          "family_id": "LONG_TERM_VALIDATION_PHASE_001",
+          "status": "ready_for_historical_validation",
+          "evidence_class": "retrospective_consumed"
+        }
+      ],
+      "jobs": [
+        {
+          "source_path": "research/long-term-validation-phase-001-cross-asset-job.json",
+          "source_sha256": "8b9ed9ee1cdd66715cafb30269785ed66b61aaf06038a7ef389f64f7ec5434dc",
+          "job_id": "long-term-validation-phase-001-cross-asset-history",
+          "family_id": "LONG_TERM_VALIDATION_PHASE_001",
+          "trial_id": "cross-asset-history",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "general_daily_concepts_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily OHLCV; frozen retrospective validation",
+          "universe": "ETF_LONG_TERM_CROSS_ASSET_HISTORY",
+          "market_state_universe": null,
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "GLOBAL_EQUITY_STATIC",
+            "STATIC_60_30_10",
+            "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+            "CROSS_ASSET_DUAL_MOMENTUM",
+            "DIVERSIFIED_TREND",
+            "VOL_MANAGED_SPY",
+            "INVERSE_VOLATILITY_BALANCED",
+            "STATIC_INFLATION_AWARE"
+          ],
+          "strategy_count": 9,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2013-01-02",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/long-term-validation-phase-001-factor-job.json",
+          "source_sha256": "46d18d5f967e64854052dc9cb052eac034f49423d9d91cd79b0214c5afdd454a",
+          "job_id": "long-term-validation-phase-001-factor-history",
+          "family_id": "LONG_TERM_VALIDATION_PHASE_001",
+          "trial_id": "factor-history",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "general_daily_concepts_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily OHLCV; frozen retrospective validation",
+          "universe": "ETF_LONG_TERM_FACTOR_HISTORY",
+          "market_state_universe": null,
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "VALUE_QUALITY_STATIC",
+            "MULTIFACTOR_STATIC",
+            "LOW_VOLATILITY_EQUITY"
+          ],
+          "strategy_count": 4,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2013-07-18",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/long-term-validation-phase-001-industry-job.json",
+          "source_sha256": "25748059903278fa338cd67077aa4d8661293f7259be677505cdbe95ce5af047",
+          "job_id": "long-term-validation-phase-001-industry-history",
+          "family_id": "LONG_TERM_VALIDATION_PHASE_001",
+          "trial_id": "industry-history",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "general_daily_concepts_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily OHLCV; frozen retrospective validation",
+          "universe": "ETF_LONG_TERM_INDUSTRY_HISTORY",
+          "market_state_universe": null,
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "INDUSTRY_ETF_MOMENTUM"
+          ],
+          "strategy_count": 2,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2013-01-02",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/long-term-validation-phase-001-sector-job.json",
+          "source_sha256": "944b3c10876afd38c753220b4c2eed5c733da31fbecd705e666d39c678014edd",
+          "job_id": "long-term-validation-phase-001-sector-history",
+          "family_id": "LONG_TERM_VALIDATION_PHASE_001",
+          "trial_id": "sector-history",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "general_daily_concepts_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily OHLCV; frozen retrospective validation",
+          "universe": "ETF_LONG_TERM_SECTOR_HISTORY",
+          "market_state_universe": null,
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "SECTOR_ETF_ROTATION"
+          ],
+          "strategy_count": 2,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2018-06-19",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        }
+      ],
+      "job_count": 4,
+      "declared_job_variants_lower_bound": 17,
+      "contains_unenumerated_jobs": true
+    },
+    {
+      "family_id": "MOMENTUM_STATE_RELIABILITY_STUDY_001",
+      "declarations": [
+        {
+          "source_path": "research/momentum-state-reliability-study-001.json",
+          "source_sha256": "9ee87aa0e3c0ee84ffc2cd6425993d23513577caf54d12c202c73e938f7356a3",
+          "family_id": "MOMENTUM_STATE_RELIABILITY_STUDY_001",
+          "status": "frozen_before_analysis",
+          "evidence_class": "retrospective_consumed"
+        }
+      ],
+      "jobs": [],
+      "job_count": 0,
+      "declared_job_variants_lower_bound": 0,
+      "contains_unenumerated_jobs": false
+    },
+    {
+      "family_id": "QQQ_BULL_LEADERSHIP_FORWARD_VALIDATION_001",
+      "declarations": [
+        {
+          "source_path": "research/qqq-bull-leadership-forward-validation-001.json",
+          "source_sha256": "2379f5b1f309a82b4922c73e5ddac32e956889f72cddbd4dec7cc895d7091402",
+          "family_id": "QQQ_BULL_LEADERSHIP_FORWARD_VALIDATION_001",
+          "status": "frozen_before_first_forward_session",
+          "evidence_class": "prospective_forward"
+        }
+      ],
+      "jobs": [],
+      "job_count": 0,
+      "declared_job_variants_lower_bound": 0,
+      "contains_unenumerated_jobs": false
+    },
+    {
+      "family_id": "RESEARCH_INTEGRITY_REASSESSMENT_001",
+      "declarations": [
+        {
+          "source_path": "research/research-integrity-reassessment-001.json",
+          "source_sha256": "4d2052950eda134e75857382dfd68f9dc255f058f6893dc70780916abcd956c4",
+          "family_id": "RESEARCH_INTEGRITY_REASSESSMENT_001",
+          "status": "active",
+          "evidence_class": "retrospective_consumed"
+        }
+      ],
+      "jobs": [],
+      "job_count": 0,
+      "declared_job_variants_lower_bound": 0,
+      "contains_unenumerated_jobs": false
+    },
+    {
+      "family_id": "ROLE_AWARE_BASELINE_REASSESSMENT_STUDY_001",
+      "declarations": [
+        {
+          "source_path": "research/role-aware-baseline-reassessment-study-001.json",
+          "source_sha256": "ee1a5fcef617ce6111f1aa2d87d6bcf85b56221c786b95dcfaa1af884959a7a0",
+          "family_id": "ROLE_AWARE_BASELINE_REASSESSMENT_STUDY_001",
+          "status": "locked_before_role_scorecard_generation",
+          "evidence_class": "retrospective_consumed"
+        }
+      ],
+      "jobs": [],
+      "job_count": 0,
+      "declared_job_variants_lower_bound": 0,
+      "contains_unenumerated_jobs": false
+    },
+    {
+      "family_id": "STATIC_60_30_10_STABILITY_FORWARD_SHADOW",
+      "declarations": [
+        {
+          "source_path": "research/static-60-30-10-forward-shadow.json",
+          "source_sha256": "52f3532b0e8a74f8dae261a81c5f570849a2a7a0354a9161102fe39bb5ba7c5d",
+          "family_id": "STATIC_60_30_10_STABILITY_FORWARD_SHADOW",
+          "status": "frozen_before_first_forward_session",
+          "evidence_class": "prospective_forward"
+        }
+      ],
+      "jobs": [],
+      "job_count": 0,
+      "declared_job_variants_lower_bound": 0,
+      "contains_unenumerated_jobs": false
+    },
+    {
+      "family_id": "TIER1_ETF_TOURNAMENT",
+      "declarations": [
+        {
+          "source_path": "research/tier1-generation-003.json",
+          "source_sha256": "d13478775c5c5633d2b5e61499b62d2ea08d64b4d9ae5225b6907c667de90a59",
+          "family_id": "TIER1_ETF_TOURNAMENT",
+          "status": null,
+          "evidence_class": "retrospective_consumed"
+        },
+        {
+          "source_path": "research/tier2-generation-001.json",
+          "source_sha256": "7c0ba6519a9b17b4890f71fb87d0951c3f19cb79e3709e0b86dfbba5fff9ab3d",
+          "family_id": "TIER1_ETF_TOURNAMENT",
+          "status": null,
+          "evidence_class": "retrospective_consumed"
+        },
+        {
+          "source_path": "research/tier2-generation-002.json",
+          "source_sha256": "182af736322ac581959fe59d0de5bc8c59ba0dd98c4168e4ac205db059d8c2a6",
+          "family_id": "TIER1_ETF_TOURNAMENT",
+          "status": null,
+          "evidence_class": "retrospective_consumed"
+        }
+      ],
+      "jobs": [
+        {
+          "source_path": "research/tier1-generation-003-job.json",
+          "source_sha256": "cb3853205a39eb45c6e3f98de3824aa6617e697bb4fbdb7db365b602d4b0278a",
+          "job_id": "tier1-generation-003-cross-asset-2026-09-03",
+          "family_id": "TIER1_ETF_TOURNAMENT",
+          "trial_id": "tier1-generation-003-cross-asset",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "tier1_etf_generation3_2007_2026-09-03_iex.csv",
+          "data_source": null,
+          "universe": "ETF_GENERATION_3",
+          "market_state_universe": null,
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "VOL_MANAGED_SPY",
+            "ETF_DUAL_MOMENTUM",
+            "SECTOR_ETF_ROTATION",
+            "CROSS_ASSET_DUAL_MOMENTUM",
+            "DIVERSIFIED_TREND",
+            "REGIME_BALANCED"
+          ],
+          "strategy_count": 7,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2018-06-19",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/tier1-generation-003-long-history-job.json",
+          "source_sha256": "7d052bc49f5b759c095565c7ca9ab26283f94db7434eaa66eab54ac7c58eb97a",
+          "job_id": "tier1-generation-003-long-history-2026-09-03",
+          "family_id": "TIER1_ETF_TOURNAMENT",
+          "trial_id": "tier1-generation-003-long-history-cross-asset",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "tier1_etf_generation3_2007_2026-09-03_yahoo.csv",
+          "data_source": "Yahoo adjusted daily chart endpoint; validation only",
+          "universe": "ETF_CROSS_ASSET_LONG_HISTORY",
+          "market_state_universe": null,
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "VOL_MANAGED_SPY",
+            "CROSS_ASSET_DUAL_MOMENTUM",
+            "DIVERSIFIED_TREND",
+            "REGIME_BALANCED"
+          ],
+          "strategy_count": 5,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2007-01-03",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/tier1-generation-003-yahoo-validation-job.json",
+          "source_sha256": "b132b7ed84351f3a9fb5753da9d28bc27fd65cd13a8fa12596eda720761e0eab",
+          "job_id": "tier1-generation-003-yahoo-validation-2026-09-03",
+          "family_id": "TIER1_ETF_TOURNAMENT",
+          "trial_id": "tier1-generation-003-cross-source-validation",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "tier1_etf_generation3_2007_2026-09-03_yahoo.csv",
+          "data_source": "Yahoo adjusted daily chart endpoint; validation only",
+          "universe": "ETF_GENERATION_3",
+          "market_state_universe": null,
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "VOL_MANAGED_SPY",
+            "ETF_DUAL_MOMENTUM",
+            "SECTOR_ETF_ROTATION",
+            "CROSS_ASSET_DUAL_MOMENTUM",
+            "DIVERSIFIED_TREND",
+            "REGIME_BALANCED"
+          ],
+          "strategy_count": 7,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2018-06-19",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/tier2-generation-001-job.json",
+          "source_sha256": "4aa043d8500ab24d51104beacf2efe63e37b86b9a10d45ca1d0931a961e0fd94",
+          "job_id": "tier2-generation-001-development",
+          "family_id": "TIER1_ETF_TOURNAMENT",
+          "trial_id": "tier2-sector-expansion-001",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "tier1_etf_generation3_2007_2026-09-03_yahoo.csv",
+          "data_source": "Yahoo adjusted daily chart endpoint; historical development only",
+          "universe": "ETF_TIER1_RESEARCH",
+          "market_state_universe": null,
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "SECTOR_ETF_ROTATION",
+            "SECTOR_ROTATION_CONCENTRATED",
+            "SECTOR_ROTATION_INV_VOL",
+            "REGIME_ROUTED_SECTOR"
+          ],
+          "strategy_count": 5,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2018-06-19",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        }
+      ],
+      "job_count": 4,
+      "declared_job_variants_lower_bound": 24,
+      "contains_unenumerated_jobs": true
+    },
+    {
+      "family_id": "TIER2_ETF_TOURNAMENT",
+      "declarations": [],
+      "jobs": [
+        {
+          "source_path": "research/focused-condition-generation-001-tier2-history-job.json",
+          "source_sha256": "1a3454cf6f62c52bbc18341419aa6fd1d5083cc44e7db76e41b866ec9d2e9952",
+          "job_id": "focused-condition-generation-001-tier2-history-2026-09-10",
+          "family_id": "TIER2_ETF_TOURNAMENT",
+          "trial_id": "focused-condition-generation-001-tier2-history",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "tier2_multi_sleeve_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily chart endpoint; historical development only",
+          "universe": "ETF_TIER2_MULTI_SLEEVE",
+          "market_state_universe": null,
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "SECTOR_ETF_ROTATION",
+            "FACTOR_ETF_MOMENTUM",
+            "INDUSTRY_ETF_MOMENTUM",
+            "STATIC_MULTI_SLEEVE",
+            "REGIME_MULTI_SLEEVE"
+          ],
+          "strategy_count": 6,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2018-06-19",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/tier2-generation-002-job.json",
+          "source_sha256": "5c695d01563d567e0e4f7f92016343e3e1912d1234c4e9ce049f6c04c2356791",
+          "job_id": "tier2-generation-002-development",
+          "family_id": "TIER2_ETF_TOURNAMENT",
+          "trial_id": "tier2-multi-sleeve-001",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "tier2_multi_sleeve_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily chart endpoint; historical development only",
+          "universe": "ETF_TIER2_MULTI_SLEEVE",
+          "market_state_universe": null,
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "SECTOR_ETF_ROTATION",
+            "FACTOR_ETF_MOMENTUM",
+            "INDUSTRY_ETF_MOMENTUM",
+            "STATIC_MULTI_SLEEVE",
+            "REGIME_MULTI_SLEEVE"
+          ],
+          "strategy_count": 6,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2018-06-19",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/transition-condition-generation-001-tier2-history-job.json",
+          "source_sha256": "7b1bde08b95f5b73564515255f4363956181839b2ddb2922ca965aaaa9fcf089",
+          "job_id": "transition-condition-generation-001-tier2-history-2026-09-10",
+          "family_id": "TIER2_ETF_TOURNAMENT",
+          "trial_id": "transition-condition-generation-001-tier2-history",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "tier2_multi_sleeve_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily chart endpoint; historical development only",
+          "universe": "ETF_TIER2_MULTI_SLEEVE",
+          "market_state_universe": null,
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "SECTOR_ETF_ROTATION",
+            "FACTOR_ETF_MOMENTUM",
+            "INDUSTRY_ETF_MOMENTUM",
+            "STATIC_MULTI_SLEEVE",
+            "REGIME_MULTI_SLEEVE"
+          ],
+          "strategy_count": 6,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2018-06-19",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        }
+      ],
+      "job_count": 3,
+      "declared_job_variants_lower_bound": 18,
+      "contains_unenumerated_jobs": true
+    },
+    {
+      "family_id": "UNIFIED_ROLE_AWARE_GENERATION_010",
+      "declarations": [],
+      "jobs": [
+        {
+          "source_path": "research/unified-role-aware-generation-010-baseline-job.json",
+          "source_sha256": "91679909b584557bfd142683de5c509446e6b4b43271b2c7f648a44be478e552",
+          "job_id": "unified-role-aware-generation-010-baseline-history-2026-09-15",
+          "family_id": "UNIFIED_ROLE_AWARE_GENERATION_010",
+          "trial_id": "unified-role-aware-generation-010-baseline",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "general_daily_concepts_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily OHLCV; retrospective research ending 2026-09-03",
+          "universe": "ETF_GENERAL_CONCEPTS",
+          "market_state_universe": null,
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "VOL_MANAGED_SPY",
+            "ETF_DUAL_MOMENTUM",
+            "SECTOR_ETF_ROTATION",
+            "CROSS_ASSET_DUAL_MOMENTUM",
+            "DIVERSIFIED_TREND",
+            "REGIME_BALANCED",
+            "SECTOR_ROTATION_CONCENTRATED",
+            "SECTOR_ROTATION_INV_VOL",
+            "REGIME_ROUTED_SECTOR",
+            "FACTOR_ETF_MOMENTUM",
+            "INDUSTRY_ETF_MOMENTUM",
+            "STATIC_MULTI_SLEEVE",
+            "REGIME_MULTI_SLEEVE",
+            "STATIC_60_30_10",
+            "INVERSE_VOLATILITY_BALANCED",
+            "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE"
+          ],
+          "strategy_count": 17,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2018-06-19",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/unified-role-aware-generation-010-defensive-job.json",
+          "source_sha256": "e6cfa6ebbc7900992bc9e90d7061060a7d564ce149d8e8484312a4e6ab38d98f",
+          "job_id": "unified-role-aware-generation-010-defensive-history-2026-09-15",
+          "family_id": "UNIFIED_ROLE_AWARE_GENERATION_010",
+          "trial_id": "unified-role-aware-generation-010-defensive",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "general_daily_concepts_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily OHLCV; retrospective research ending 2026-09-03",
+          "universe": "ETF_GENERAL_CONCEPTS",
+          "market_state_universe": null,
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+            "BREADTH_DETERIORATION_DEFENSIVE",
+            "EQUITY_TREND_DEFENSIVE",
+            "DRAWDOWN_BRAKE",
+            "VOLATILITY_SHOCK_DEFENSIVE",
+            "DEFENSIVE_ASSET_BREAKOUT",
+            "TREND_VOLATILITY_SCALED_EQUITY",
+            "DEFENSIVE_TREND_PERSISTENCE",
+            "BREADTH_DIVERGENCE_DEFENSIVE"
+          ],
+          "strategy_count": 10,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2018-06-19",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/unified-role-aware-generation-010-job.json",
+          "source_sha256": "156b4321f7b2aaacacfad3be7a4813ff87d56df1063ddda04c8dbb9e0347ce08",
+          "job_id": "unified-role-aware-generation-010-history-2026-09-15",
+          "family_id": "UNIFIED_ROLE_AWARE_GENERATION_010",
+          "trial_id": "unified-role-aware-generation-010",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "general_daily_concepts_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily OHLCV; retrospective research ending 2026-09-03",
+          "universe": "ETF_GENERAL_CONCEPTS",
+          "market_state_universe": null,
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "VOL_MANAGED_SPY",
+            "ETF_DUAL_MOMENTUM",
+            "SECTOR_ETF_ROTATION",
+            "CROSS_ASSET_DUAL_MOMENTUM",
+            "DIVERSIFIED_TREND",
+            "REGIME_BALANCED",
+            "SECTOR_ROTATION_CONCENTRATED",
+            "SECTOR_ROTATION_INV_VOL",
+            "REGIME_ROUTED_SECTOR",
+            "FACTOR_ETF_MOMENTUM",
+            "INDUSTRY_ETF_MOMENTUM",
+            "STATIC_MULTI_SLEEVE",
+            "REGIME_MULTI_SLEEVE",
+            "STATIC_60_30_10",
+            "INVERSE_VOLATILITY_BALANCED",
+            "SECTOR_SHORT_TERM_REVERSAL",
+            "SECTOR_PRICE_BREAKOUT_20D",
+            "MARKET_DIP_REBOUND_1D",
+            "VOLATILITY_CONTRACTION_BREAKOUT",
+            "DONCHIAN_TREND_BREAKOUT",
+            "SECTOR_MOMENTUM_ACCELERATION",
+            "BREADTH_THRUST_RECOVERY",
+            "OVERSOLD_TREND_REBOUND",
+            "BREADTH_DETERIORATION_DEFENSIVE",
+            "EQUITY_TREND_DEFENSIVE",
+            "DRAWDOWN_BRAKE",
+            "VOLATILITY_SHOCK_DEFENSIVE",
+            "TREND_PULLBACK_REBOUND",
+            "FAILED_BREAKDOWN_RECOVERY",
+            "DEFENSIVE_ASSET_BREAKOUT",
+            "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+            "TREND_VOLATILITY_SCALED_EQUITY",
+            "DEFENSIVE_TREND_PERSISTENCE",
+            "BREADTH_DIVERGENCE_DEFENSIVE",
+            "RELATIVE_STRENGTH_BREAKOUT",
+            "CONFIRMED_CRASH_RECOVERY",
+            "VOLUME_EXPANSION_BREAKOUT",
+            "VOLATILITY_ADJUSTED_ACCELERATION_BREAKOUT",
+            "OVERNIGHT_GAP_CONTINUATION",
+            "CROSS_SECTIONAL_ABNORMAL_RETURN_BREAKOUT",
+            "SECTOR_PARTICIPATION_BREAKOUT",
+            "MARKET_CONFIRMED_SECTOR_BREAKOUT"
+          ],
+          "strategy_count": 43,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2018-06-19",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        },
+        {
+          "source_path": "research/unified-role-aware-generation-010-tactical-job.json",
+          "source_sha256": "e5d3341297dc41c92cf0bb54f7d8cc57e57ec46b16dd88b3c1f17472fec8e32e",
+          "job_id": "unified-role-aware-generation-010-tactical-history-2026-09-15",
+          "family_id": "UNIFIED_ROLE_AWARE_GENERATION_010",
+          "trial_id": "unified-role-aware-generation-010-tactical",
+          "engine": "tier1_etf_daily",
+          "evidence_class": "retrospective_consumed",
+          "dataset": "general_daily_concepts_yahoo_2013_2026-09-03.csv",
+          "data_source": "Yahoo adjusted daily OHLCV; retrospective research ending 2026-09-03",
+          "universe": "ETF_GENERAL_CONCEPTS",
+          "market_state_universe": null,
+          "strategies": [
+            "SPY_BUY_HOLD",
+            "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+            "SECTOR_SHORT_TERM_REVERSAL",
+            "SECTOR_PRICE_BREAKOUT_20D",
+            "MARKET_DIP_REBOUND_1D",
+            "VOLATILITY_CONTRACTION_BREAKOUT",
+            "DONCHIAN_TREND_BREAKOUT",
+            "SECTOR_MOMENTUM_ACCELERATION",
+            "BREADTH_THRUST_RECOVERY",
+            "OVERSOLD_TREND_REBOUND",
+            "TREND_PULLBACK_REBOUND",
+            "FAILED_BREAKDOWN_RECOVERY",
+            "RELATIVE_STRENGTH_BREAKOUT",
+            "CONFIRMED_CRASH_RECOVERY",
+            "VOLUME_EXPANSION_BREAKOUT",
+            "VOLATILITY_ADJUSTED_ACCELERATION_BREAKOUT",
+            "OVERNIGHT_GAP_CONTINUATION",
+            "CROSS_SECTIONAL_ABNORMAL_RETURN_BREAKOUT",
+            "SECTOR_PARTICIPATION_BREAKOUT",
+            "MARKET_CONFIRMED_SECTOR_BREAKOUT"
+          ],
+          "strategy_count": 20,
+          "variant_enumeration_complete": false,
+          "enumerated_variant_count": null,
+          "required_common_start_date": "2018-06-19",
+          "discovery_end_date": "2024-09-02",
+          "holdout_start_date": "2024-09-03",
+          "forward_start_date": null,
+          "cost_ladder_bps": [
+            1.0,
+            5.0,
+            10.0,
+            20.0
+          ],
+          "primary_cost_bps": 10.0,
+          "router_authority": false
+        }
+      ],
+      "job_count": 4,
+      "declared_job_variants_lower_bound": 90,
+      "contains_unenumerated_jobs": true
+    }
+  ],
+  "excluded_examples": [
+    "research/job.example.json",
+    "research/tier1-job.example.json"
+  ],
+  "catalog_sha256": "2fbfcc8640c8d0f6eb3a0b5fe51c6b72979cae657677b4b3924bc6d94591d2aa"
+}
