@@ -1,0 +1,27 @@
+{
+  "study_id": "RESEARCH_INTEGRITY_REASSESSMENT_001",
+  "status": "active",
+  "standard": "RESEARCH_INTEGRITY_STANDARD_001",
+  "generation_015_status": "paused_and_unchanged",
+  "findings": {
+    "zero_no_trade_band_scope": ["LONG_TERM_EXECUTION_AWARE_ISOLATED_STRATEGIES_001"],
+    "zero_band_remediation": "superseded by LONG_TERM_EXECUTION_AWARE_ISOLATED_STRATEGIES_002",
+    "broader_issue": "Older state claims did not uniformly require a cost-sized median edge or strategy/state activation overlap."
+  },
+  "priority_reassessment": [
+    {"study": "LONG_TERM_STATE_SPECIALISTS_PHASE_007", "reason": "contained early eligible-for-further-validation labels", "archive_action": "reanalyse_existing_archives"},
+    {"study": "LONG_TERM_STATE_ACTIONABILITY_PHASE_008", "reason": "causal timing evidence informs downside design", "archive_action": "retain_event_evidence_but_do_not_treat_as_strategy_validation"},
+    {"study": "LONG_TERM_BASELINE_MECHANISMS_PHASE_010", "reason": "source of later state-strategy observations", "archive_action": "economic_materiality_reanalysis"},
+    {"study": "LITERATURE_REGIME_REPLICATION_STAGE_A_001", "reason": "complete literature strategies remain exploratory", "archive_action": "economic_materiality_reanalysis"}
+  ],
+  "conservative_results_preserved": [
+    "LONG_TERM_MULTI_ERA_VALIDATION_PHASE_011",
+    "BEAR_RECOVERING_SPECIALIST_VALIDATION_PHASE_012",
+    "BEAR_RECOVERY_STATE_TIMING_PHASE_013",
+    "LONG_TERM_PORTFOLIO_INSURANCE_PHASE_014",
+    "MOMENTUM_STATE_RELIABILITY_STUDY_001",
+    "LONG_TERM_ALLOCATION_GAP_REPLICATION_001"
+  ],
+  "policy": "No legacy eligible, passed, or near-pass label may support promotion until it passes the new economic-materiality and role-relevance audit. Historical files are preserved and never rewritten.",
+  "effects": {"router": false, "paper_trading": false, "live_trading": false, "promotion": false}
+}

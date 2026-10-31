@@ -1,0 +1,74 @@
+{
+  "study_id": "LONG_TERM_TURNING_POINT_FORWARD_VALIDATION_001",
+  "status": "frozen_prospective_shadow",
+  "frozen_at": "2026-10-29",
+  "forward_start": "2026-10-30",
+  "generation_015_status": "paused_and_unchanged",
+  "discovery_parent": "LONG_TERM_NOVEL_DOWNSIDE_MECHANISMS_001",
+  "discovery_evidence_effect": "hypothesis selection only; all sessions through 2026-10-29 are ineligible for acceptance",
+  "benchmark_strategy": "SPY_BUY_HOLD",
+  "state_confirmation_sessions": 3,
+  "target_confirmed_trend_state": "TRANSITION_DETERIORATING",
+  "primary_cost_bps": 10.0,
+  "stress_cost_bps": 20.0,
+  "cost_ladder_bps": [10.0, 20.0],
+  "forward_hypotheses": [
+    {"hypothesis_id": "fast-transition-deteriorating", "strategy": "TURNING_POINT_FAST_EQUITY", "role": "primary_state_specialist"},
+    {"hypothesis_id": "adaptive-transition-deteriorating", "strategy": "TURNING_POINT_MEDIUM_ADAPTIVE_DEFENSE", "role": "drawdown_control_challenger"},
+    {"hypothesis_id": "medium-transition-deteriorating", "strategy": "TURNING_POINT_MEDIUM_EQUITY", "role": "fixed_blend_challenger"},
+    {"hypothesis_id": "slow-transition-deteriorating", "strategy": "TURNING_POINT_SLOW_EQUITY", "role": "slow_signal_challenger"}
+  ],
+  "frozen_strategy_rules": {
+    "signal_time": "completed month-end close",
+    "execution_time": "next available adjusted open",
+    "rebalance_frequency": "monthly",
+    "no_trade_band": 0.02,
+    "cash_proxy": "SHY",
+    "parameter_source": "unchanged LONG_TERM_NOVEL_DOWNSIDE_MECHANISMS_001 definitions"
+  },
+  "minimum_evidence_before_acceptance": {
+    "completed_forward_sessions": 252,
+    "active_state_sessions": 63,
+    "complete_active_state_episodes": 8,
+    "non_overlapping_calendar_blocks": 3
+  },
+  "acceptance_gates": {
+    "primary_10bps": {
+      "active_relative_wealth_vs_spy_min": 0.0,
+      "median_complete_episode_excess_min": 0.0025,
+      "complete_episode_win_rate_min": 0.55,
+      "profit_factor_min": 1.25
+    },
+    "stress_20bps": {
+      "active_relative_wealth_vs_spy_min": 0.0,
+      "median_complete_episode_excess_min": 0.0,
+      "profit_factor_min": 1.10
+    },
+    "recurrence": {
+      "positive_non_overlapping_block_rate_min": 0.60,
+      "maximum_consecutive_losing_episodes": 3
+    },
+    "risk": {
+      "conditional_max_drawdown_disadvantage_vs_spy_max": 0.02
+    },
+    "multiplicity": {
+      "family": "all four hypotheses at primary cost",
+      "benjamini_hochberg_q_max": 0.10
+    }
+  },
+  "decision_policy": {
+    "all_gates_required": true,
+    "failure_or_insufficiency_keeps_candidate_in_research_only": true,
+    "historical_data_may_not_satisfy_forward_gates": true,
+    "router_authority": false,
+    "paper_trading_approved": false,
+    "live_trading_approved": false
+  },
+  "ledger": {
+    "append_only": true,
+    "idempotent_by_hypothesis_cost_session": true,
+    "hash_chained": true,
+    "broker_orders_enabled": false,
+    "separate_from_existing_six_strategy_shadow": true
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "standard_id": "RESEARCH_INTEGRITY_STANDARD_001",
+  "status": "effective_for_all_new_studies",
+  "effective_date": "2026-10-26",
+  "generation_015_status": "paused_and_unchanged",
+  "execution_requirements": {
+    "material_no_trade_band_required": true,
+    "default_no_trade_band_absolute_weight": 0.02,
+    "zero_band_allowed_only_for_explicit_single_execution_controls": true,
+    "signal_time": "completed session close",
+    "execution_time": "next tradable session open",
+    "costs_required_on_every_material_trade": true,
+    "minimum_cost_stress_bps": [10.0, 20.0]
+  },
+  "state_claim_requirements": {
+    "raw_and_confirmed_labels_reported_separately": true,
+    "minimum_active_holding_fraction": 0.50,
+    "minimum_primary_median_episode_excess_rule": "at least the modeled primary round-trip cost",
+    "minimum_stress_median_episode_excess_rule": "strictly positive after stressed costs and activation delay",
+    "minimum_stress_profit_factor": 1.0,
+    "complete_episode_boundaries_required": true,
+    "non_overlapping_calendar_blocks_required": true,
+    "complete_hypothesis_family_multiplicity_control_required": true
+  },
+  "strategy_requirements": {
+    "complete_default_active_and_exit_rules_required": true,
+    "whole_path_performance_required": true,
+    "state_specific_performance_required": true,
+    "turnover_and_trade_count_required": true,
+    "post_selected_hypotheses_are_exploratory_only": true,
+    "future_only_or_truly_unseen_replication_required_for_confirmation": true
+  },
+  "legacy_policy": {
+    "past_results_are_not_deleted": true,
+    "past_promotional_language_is_suspended_until_reassessment": true,
+    "rerun_only_when_execution_or_required_diagnostics_cannot_be_reconstructed": true,
+    "reanalyse_existing_immutable_archives_before_spending_compute_or_bandwidth": true
+  },
+  "effects": {"router": false, "paper_trading": false, "live_trading": false, "promotion": false}
+}

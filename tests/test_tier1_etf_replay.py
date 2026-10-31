@@ -9,7 +9,7 @@ from pathlib import Path
 
 from research.tier1_etf_replay import (
     LEGACY_STRATEGIES, STRATEGIES, Tier1Config, _causal_market_regimes, _cost_path_audit,
-    _targets, _validated_calendar,
+    _pairwise_summary, _promotion_gate_rows, _targets, _validated_calendar,
     _strategy_rebalance_frequency,
     config_from_job, load_daily_bars,
     run_tier1_job,
@@ -34,6 +34,39 @@ def write_bars(path: Path, sessions: int = 280):
 
 
 class Tier1ETFReplayTests(unittest.TestCase):
+    def test_empty_future_holdout_is_insufficient_not_an_error(self):
+        config = Tier1Config(
+            strategy_names=("SPY_BUY_HOLD", "VOL_MANAGED_SPY"),
+            primary_cost_bps=10.0,
+        )
+        rows = [
+            {"strategy": strategy, "cost_bps": 10.0, "period": "holdout",
+             "session_count": 0, "total_return": None, "max_drawdown": None,
+             "sharpe": None}
+            for strategy in config.strategy_names
+        ]
+        gates = _promotion_gate_rows(rows, config, "holdout")
+        self.assertEqual(1, len(gates))
+        self.assertFalse(gates[0]["sample_sufficient_for_promotion"])
+        self.assertIsNone(gates[0]["net_excess_return"])
+        self.assertFalse(gates[0]["eligible_for_further_validation"])
+
+    def test_pairwise_summary_marks_empty_future_holdout_insufficient(self):
+        config = Tier1Config(
+            strategy_names=("SPY_BUY_HOLD", "VOL_MANAGED_SPY"),
+            primary_cost_bps=10.0, discovery_end_date="2026-10-29",
+            holdout_start_date="2026-10-30",
+        )
+        periods = [
+            {"strategy": strategy, "cost_bps": 10.0, "period": "holdout",
+             "session_count": 0, "total_return": None}
+            for strategy in config.strategy_names
+        ]
+        rows = _pairwise_summary(periods, [], [], config)
+        self.assertEqual(1, len(rows))
+        self.assertFalse(rows[0]["holdout_sample_sufficient"])
+        self.assertIsNone(rows[0]["holdout_excess_return"])
+
     def test_config_accepts_baseline_core_diagnostic_profile(self):
         config = config_from_job({"tier1_config": {"diagnostic_profile": "baseline_core"}})
         self.assertEqual("baseline_core", config.diagnostic_profile)

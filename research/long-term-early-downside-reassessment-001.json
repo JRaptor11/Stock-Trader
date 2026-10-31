@@ -1,0 +1,85 @@
+{
+  "study_id": "LONG_TERM_EARLY_DOWNSIDE_REASSESSMENT_001",
+  "status": "frozen_before_reassessment",
+  "integrity_standard": "RESEARCH_INTEGRITY_STANDARD_001",
+  "parents": ["LONG_TERM_STATE_SPECIALISTS_PHASE_007", "LONG_TERM_STATE_ACTIONABILITY_PHASE_008", "LONG_TERM_EXECUTION_AWARE_ISOLATED_STRATEGIES_002"],
+  "generation_015_status": "paused_and_unchanged",
+  "purpose": "Reassess structurally distinct, complete downside mechanisms using economic materiality, actual activation overlap, next-open execution, and whole-path opportunity cost before inventing parameter variants.",
+  "existing_mechanisms": [
+    "VOL_MANAGED_SPY",
+    "TREND_VOLATILITY_SCALED_EQUITY",
+    "DRAWDOWN_BRAKE",
+    "BREADTH_DIVERGENCE_DEFENSIVE",
+    "EQUITY_TREND_DEFENSIVE"
+  ],
+  "benchmark_strategy": "SPY_BUY_HOLD",
+  "strategies": [
+    "VOL_MANAGED_SPY",
+    "TREND_VOLATILITY_SCALED_EQUITY",
+    "DRAWDOWN_BRAKE",
+    "BREADTH_DIVERGENCE_DEFENSIVE",
+    "EQUITY_TREND_DEFENSIVE"
+  ],
+  "trend_states": [
+    "BULL_ACCELERATING",
+    "BULL_DECELERATING",
+    "BEAR_RECOVERING",
+    "BEAR_DETERIORATING",
+    "TRANSITION_IMPROVING",
+    "TRANSITION_MIXED",
+    "TRANSITION_DETERIORATING"
+  ],
+  "family_size": 35,
+  "strategy_sources": {
+    "VOL_MANAGED_SPY": ["phase007_prehistory", "phase007_modern"],
+    "TREND_VOLATILITY_SCALED_EQUITY": ["phase011_modern"],
+    "DRAWDOWN_BRAKE": ["phase007_prehistory", "phase007_modern"],
+    "BREADTH_DIVERGENCE_DEFENSIVE": ["phase011_modern"],
+    "EQUITY_TREND_DEFENSIVE": ["phase007_prehistory", "phase007_modern"]
+  },
+  "strategy_role_contracts": [
+    {"strategy": "VOL_MANAGED_SPY", "active_symbols": ["SPY"], "role_overlap_required": false},
+    {"strategy": "TREND_VOLATILITY_SCALED_EQUITY", "active_symbols": ["SPY"], "role_overlap_required": false},
+    {"strategy": "DRAWDOWN_BRAKE", "active_symbols": ["SHY"], "role_overlap_required": true},
+    {"strategy": "BREADTH_DIVERGENCE_DEFENSIVE", "active_symbols": ["SHY"], "role_overlap_required": true},
+    {"strategy": "EQUITY_TREND_DEFENSIVE", "active_symbols": ["SHY", "BIL", "IEF", "GLD"], "role_overlap_required": true}
+  ],
+  "fixed_calendar_blocks": [
+    {"id": "OLDER_2008_2010", "source": "phase007_prehistory", "start": "2008-05-30", "end": "2010-12-31"},
+    {"id": "P7_MODERN_2012_2014", "source": "phase007_modern", "start": "2012-01-01", "end": "2014-12-31"},
+    {"id": "P7_MODERN_2015_2017", "source": "phase007_modern", "start": "2015-01-01", "end": "2017-12-31"},
+    {"id": "P7_MODERN_2018_2020", "source": "phase007_modern", "start": "2018-01-01", "end": "2020-12-31"},
+    {"id": "P7_MODERN_2021_2023", "source": "phase007_modern", "start": "2021-01-01", "end": "2023-12-31"},
+    {"id": "P7_MODERN_2024_CURRENT", "source": "phase007_modern", "start": "2024-01-01", "end": "9999-12-31", "partial": true},
+    {"id": "P11_MODERN_2019_2020", "source": "phase011_modern", "start": "2019-06-21", "end": "2020-12-31"},
+    {"id": "P11_MODERN_2021_2023", "source": "phase011_modern", "start": "2021-01-01", "end": "2023-12-31"},
+    {"id": "P11_MODERN_2024_CURRENT", "source": "phase011_modern", "start": "2024-01-01", "end": "9999-12-31", "partial": true}
+  ],
+  "costs_bps": [10.0, 20.0],
+  "activation_lags_sessions": [0, 1, 3],
+  "primary": {"cost_bps": 10.0, "activation_lag_sessions": 0},
+  "stress": {"cost_bps": 20.0, "activation_lag_sessions": 1},
+  "eligible_block": {"minimum_complete_episodes": 3, "minimum_scored_sessions": 15},
+  "reliability_gate": {
+    "minimum_complete_episodes": 20,
+    "minimum_eligible_blocks": 3,
+    "minimum_positive_block_fraction": 0.60,
+    "minimum_primary_episode_win_rate": 0.60,
+    "minimum_primary_median_episode_excess": 0.002,
+    "minimum_primary_profit_factor": 1.25,
+    "maximum_benjamini_hochberg_q": 0.05,
+    "minimum_stress_episode_win_rate": 0.55,
+    "minimum_stress_median_episode_excess": 0.002,
+    "minimum_stress_profit_factor": 1.0,
+    "minimum_active_holding_fraction": 0.50
+  },
+  "research_order": [
+    "reanalyse preserved Phase 007 and 008 archives",
+    "run only mechanisms missing from those archives",
+    "compare raw signal onset with confirmed-state attribution",
+    "retire failures before considering any new threshold variant"
+  ],
+  "fixed_execution": {"no_trade_band": 0.02, "primary_cost_bps": 10.0, "stress_cost_bps": 20.0, "signal_time": "completed close", "execution_time": "next open"},
+  "acceptance": {"minimum_episode_win_rate": 0.60, "minimum_median_episode_excess": 0.002, "minimum_profit_factor": 1.25, "minimum_stress_profit_factor": 1.0, "minimum_active_holding_fraction": 0.50, "minimum_positive_block_fraction": 0.60, "multiplicity_control": "Benjamini-Hochberg over the complete declared family"},
+  "effects": {"router": false, "paper_trading": false, "live_trading": false, "promotion": false, "parameter_retuning": false}
+}

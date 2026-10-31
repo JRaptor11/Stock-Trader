@@ -1,0 +1,66 @@
+{
+  "study_id": "LEGACY_STATE_CLAIMS_REASSESSMENT_001",
+  "status": "locked_before_reanalysis",
+  "integrity_standard": "RESEARCH_INTEGRITY_STANDARD_001",
+  "source_study": "LONG_TERM_STATE_SPECIALISTS_PHASE_007",
+  "source_archives": [
+    "long-term-state-specialists-phase-007-prehistory-yahoo-results.zip",
+    "long-term-state-specialists-phase-007-modern-yahoo-results.zip"
+  ],
+  "generation_015_status": "paused_and_unchanged",
+  "benchmark_strategy": "SPY_BUY_HOLD",
+  "strategies": [
+    "STATIC_INFLATION_AWARE",
+    "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE",
+    "INDUSTRY_ETF_MOMENTUM",
+    "SECTOR_ETF_ROTATION",
+    "VOL_MANAGED_SPY",
+    "EQUITY_TREND_DEFENSIVE",
+    "DRAWDOWN_BRAKE",
+    "VOLATILITY_SHOCK_DEFENSIVE",
+    "BREADTH_DETERIORATION_DEFENSIVE",
+    "DEFENSIVE_TREND_PERSISTENCE"
+  ],
+  "trend_states": ["BULL_ACCELERATING", "BULL_DECELERATING", "BEAR_RECOVERING", "BEAR_DETERIORATING", "TRANSITION_IMPROVING", "TRANSITION_MIXED", "TRANSITION_DETERIORATING"],
+  "family_size": 70,
+  "strategy_role_contracts": [
+    {"strategy": "EQUITY_TREND_DEFENSIVE", "active_symbols": ["SHY", "BIL", "IEF", "GLD"], "role_overlap_required": true},
+    {"strategy": "DRAWDOWN_BRAKE", "active_symbols": ["SHY"], "role_overlap_required": true},
+    {"strategy": "VOLATILITY_SHOCK_DEFENSIVE", "active_symbols": ["SHY", "BIL", "IEF", "GLD"], "role_overlap_required": true},
+    {"strategy": "BREADTH_DETERIORATION_DEFENSIVE", "active_symbols": ["SHY", "BIL", "IEF", "GLD"], "role_overlap_required": true},
+    {"strategy": "DEFENSIVE_TREND_PERSISTENCE", "active_symbols": ["SHY", "BIL", "IEF", "GLD"], "role_overlap_required": true}
+  ],
+  "fixed_calendar_blocks": [
+    {"id": "OLDER_2008_2010", "source": "prehistory", "start": "2008-05-30", "end": "2010-12-31"},
+    {"id": "OLDER_2011_2012", "source": "prehistory", "start": "2011-01-01", "end": "2012-12-31"},
+    {"id": "MODERN_2013_2015", "source": "modern", "start": "2013-01-01", "end": "2015-12-31"},
+    {"id": "MODERN_2016_2018", "source": "modern", "start": "2016-01-01", "end": "2018-12-31"},
+    {"id": "MODERN_2019_2021", "source": "modern", "start": "2019-01-01", "end": "2021-12-31"},
+    {"id": "MODERN_2022_2024", "source": "modern", "start": "2022-01-01", "end": "2024-12-31"},
+    {"id": "MODERN_2025_CURRENT", "source": "modern", "start": "2025-01-01", "end": "9999-12-31", "partial": true}
+  ],
+  "costs_bps": [10.0, 20.0],
+  "activation_lags_sessions": [0, 1, 3],
+  "primary": {"cost_bps": 10.0, "activation_lag_sessions": 0},
+  "stress": {"cost_bps": 20.0, "activation_lag_sessions": 1},
+  "eligible_block": {"minimum_complete_episodes": 3, "minimum_scored_sessions": 15},
+  "reliability_gate": {
+    "minimum_complete_episodes": 20,
+    "minimum_eligible_blocks": 3,
+    "minimum_positive_block_fraction": 0.60,
+    "minimum_primary_episode_win_rate": 0.60,
+    "minimum_primary_median_episode_excess": 0.002,
+    "minimum_primary_profit_factor": 1.25,
+    "maximum_benjamini_hochberg_q": 0.05,
+    "minimum_stress_episode_win_rate": 0.55,
+    "minimum_stress_median_episode_excess": 0.0,
+    "minimum_stress_profit_factor": 1.0
+  },
+  "interpretation": {
+    "historical_results": "reassessment_only",
+    "legacy_eligible_labels_suspended": true,
+    "role_overlap_audit_required_after_statistical_screen": true,
+    "router": false, "paper_trading": false, "live_trading": false,
+    "promotion": false, "parameter_retuning": false
+  }
+}

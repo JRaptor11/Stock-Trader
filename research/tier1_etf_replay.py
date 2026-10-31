@@ -42,6 +42,11 @@ from research.isolated_strategy_diagnostics import (
     build_tactical_horizon_comparisons,
 )
 from research.daily_strategy_interface import DailyStrategyRegistry, DailyStrategySpec
+from research.turning_point_cycles import (
+    TURNING_POINT_CYCLE_DEFINITION,
+    causal_turning_point_labels,
+    turning_point_cycle_scorecards,
+)
 
 
 UTC = timezone.utc
@@ -98,6 +103,15 @@ STRATEGIES = LEGACY_STRATEGIES + (
     "CROSS_SECTIONAL_ABNORMAL_RETURN_BREAKOUT",
     "SECTOR_PARTICIPATION_BREAKOUT",
     "MARKET_CONFIRMED_SECTOR_BREAKOUT",
+    "QQQ_BULL_TREND_LEADERSHIP",
+    "QQQ_BULL_DECELERATION_EXPLORATORY",
+    "BIL_RAW_BEAR_DETERIORATION",
+    "BIL_THREE_DAY_BEAR_DETERIORATION",
+    "BIL_RAW_TRANSITION_OR_BEAR_DETERIORATION",
+    "TURNING_POINT_SLOW_EQUITY",
+    "TURNING_POINT_FAST_EQUITY",
+    "TURNING_POINT_MEDIUM_EQUITY",
+    "TURNING_POINT_MEDIUM_ADAPTIVE_DEFENSE",
 ) + ALLOCATION_BENCHMARK_STRATEGIES
 CROSS_ASSET_RISK = ("SPY", "QQQ", "IWM", "TLT", "IEF", "GLD", "DBC", "EFA", "EEM", "VNQ")
 FACTOR_ETFS = ("MTUM", "QUAL", "VLUE", "USMV", "IWF", "IWD")
@@ -140,6 +154,15 @@ STRATEGY_REBALANCE_FREQUENCIES = {
     "CROSS_SECTIONAL_ABNORMAL_RETURN_BREAKOUT": "daily",
     "SECTOR_PARTICIPATION_BREAKOUT": "daily",
     "MARKET_CONFIRMED_SECTOR_BREAKOUT": "daily",
+    "QQQ_BULL_TREND_LEADERSHIP": "daily",
+    "QQQ_BULL_DECELERATION_EXPLORATORY": "daily",
+    "BIL_RAW_BEAR_DETERIORATION": "daily",
+    "BIL_THREE_DAY_BEAR_DETERIORATION": "daily",
+    "BIL_RAW_TRANSITION_OR_BEAR_DETERIORATION": "daily",
+    "TURNING_POINT_SLOW_EQUITY": "monthly",
+    "TURNING_POINT_FAST_EQUITY": "monthly",
+    "TURNING_POINT_MEDIUM_EQUITY": "monthly",
+    "TURNING_POINT_MEDIUM_ADAPTIVE_DEFENSE": "monthly",
 }
 
 
@@ -388,6 +411,31 @@ def _daily_volatility(closes: list[float], end: int, lookback: int = 20) -> floa
     return statistics.stdev(returns) if len(returns) > 1 else None
 
 
+def _return_correlation(first: list[float], second: list[float],
+                        lookback: int = 60) -> float | None:
+    if len(first) < lookback + 1 or len(second) < lookback + 1:
+        return None
+    first_returns = [
+        first[index] / first[index - 1] - 1.0
+        for index in range(len(first) - lookback, len(first))
+    ]
+    second_returns = [
+        second[index] / second[index - 1] - 1.0
+        for index in range(len(second) - lookback, len(second))
+    ]
+    first_vol = statistics.pstdev(first_returns)
+    second_vol = statistics.pstdev(second_returns)
+    if first_vol == 0.0 or second_vol == 0.0:
+        return None
+    first_mean = statistics.fmean(first_returns)
+    second_mean = statistics.fmean(second_returns)
+    covariance = statistics.fmean(
+        (left - first_mean) * (right - second_mean)
+        for left, right in zip(first_returns, second_returns)
+    )
+    return covariance / (first_vol * second_vol)
+
+
 def _breadth(histories: dict[str, list[float]], offset: int = 0, lookback: int = 50) -> float | None:
     observations = []
     for symbol in SECTOR_ETFS:
@@ -429,9 +477,68 @@ def _relative_momentum_defensive_targets(
     )
 
 
+def _canonical_raw_trend_state(closes: list[float]) -> str | None:
+    """Reproduce the frozen trend-state axis from close history only.
+
+    The target is generated after the current close and filled at the next
+    open, matching the state engine's use of information through t-1 for the
+    session-t label.  This intentionally excludes volatility and breadth so
+    each isolated strategy has a complete, auditable price-only rule.
+    """
+    if len(closes) <= 200 or len(closes) <= 63 or len(closes) <= 25:
+        return None
+    long_term = closes[-1] / statistics.fmean(closes[-200:]) - 1.0
+    medium = _return(closes, 63)
+    short = _return(closes, 20)
+    prior_short = _return(closes[:-5], 20)
+    if None in (medium, short, prior_short):
+        return None
+    acceleration = short - prior_short
+    if long_term >= 0 and medium >= 0:
+        return "BULL_ACCELERATING" if short >= 0 and acceleration >= 0 else "BULL_DECELERATING"
+    if long_term < 0 and medium < 0:
+        return "BEAR_DETERIORATING" if short < 0 and acceleration < 0 else "BEAR_RECOVERING"
+    if short >= 0 and acceleration >= 0:
+        return "TRANSITION_IMPROVING"
+    if short < 0 and acceleration < 0:
+        return "TRANSITION_DETERIORATING"
+    return "TRANSITION_MIXED"
+
+
+def _recent_raw_trend_states(closes: list[float], sessions: int) -> list[str | None]:
+    return [
+        _canonical_raw_trend_state(closes[: len(closes) - offset])
+        for offset in range(sessions - 1, -1, -1)
+    ]
+
+
 def _legacy_targets(name: str, histories: dict[str, list[float]], config: Tier1Config) -> dict[str, float]:
     spy = histories.get(config.benchmark_symbol, [])
     if name == "SPY_BUY_HOLD": return {config.benchmark_symbol: 1.0}
+    if name in {
+        "QQQ_BULL_TREND_LEADERSHIP",
+        "QQQ_BULL_DECELERATION_EXPLORATORY",
+        "BIL_RAW_BEAR_DETERIORATION",
+        "BIL_THREE_DAY_BEAR_DETERIORATION",
+        "BIL_RAW_TRANSITION_OR_BEAR_DETERIORATION",
+    }:
+        state = _canonical_raw_trend_state(spy)
+        default = {config.benchmark_symbol: 1.0}
+        if name == "QQQ_BULL_TREND_LEADERSHIP":
+            return {"QQQ": 1.0} if state in {
+                "BULL_ACCELERATING", "BULL_DECELERATING"
+            } else default
+        if name == "QQQ_BULL_DECELERATION_EXPLORATORY":
+            return {"QQQ": 1.0} if state == "BULL_DECELERATING" else default
+        if name == "BIL_RAW_BEAR_DETERIORATION":
+            return {"BIL": 1.0} if state == "BEAR_DETERIORATING" else default
+        if name == "BIL_THREE_DAY_BEAR_DETERIORATION":
+            states = _recent_raw_trend_states(spy, 3)
+            return ({"BIL": 1.0}
+                    if states == ["BEAR_DETERIORATING"] * 3 else default)
+        return ({"BIL": 1.0}
+                if state in {"TRANSITION_DETERIORATING", "BEAR_DETERIORATING"}
+                else default)
     if name == "GLOBAL_EQUITY_STATIC":
         required = ("SPY", "EFA", "EEM")
         return ({"SPY": 0.60, "EFA": 0.30, "EEM": 0.10}
@@ -663,6 +770,55 @@ def _legacy_targets(name: str, histories: dict[str, list[float]], config: Tier1C
         cash_weight = 1.0 - slot * len(selected)
         if cash_weight > 0:
             targets[config.cash_proxy_symbol] = cash_weight
+        return targets
+    if name in {
+        "TURNING_POINT_SLOW_EQUITY",
+        "TURNING_POINT_FAST_EQUITY",
+        "TURNING_POINT_MEDIUM_EQUITY",
+        "TURNING_POINT_MEDIUM_ADAPTIVE_DEFENSE",
+    }:
+        # Long-flat ETF adaptation of Goulding, Harvey, and Mazzoleni's fixed
+        # 12-month SLOW, 1-month FAST, and 50/50 MED signals. Signals use only
+        # the completed close and the resulting target executes at the next
+        # available open. The adaptation replaces short equity with defense.
+        slow = _return(spy, 252)
+        fast = _return(spy, 21)
+        if slow is None or fast is None:
+            return {config.cash_proxy_symbol: 1.0}
+        slow_exposure = 1.0 if slow >= 0.0 else 0.0
+        fast_exposure = 1.0 if fast >= 0.0 else 0.0
+        if name == "TURNING_POINT_SLOW_EQUITY":
+            equity_exposure = slow_exposure
+        elif name == "TURNING_POINT_FAST_EQUITY":
+            equity_exposure = fast_exposure
+        else:
+            equity_exposure = (slow_exposure + fast_exposure) / 2.0
+        defensive_exposure = 1.0 - equity_exposure
+        defensive_symbol = config.cash_proxy_symbol
+        if name == "TURNING_POINT_MEDIUM_ADAPTIVE_DEFENSE" and defensive_exposure:
+            ief = histories.get("IEF", [])
+            stock_bond_correlation = _return_correlation(spy, ief, 60)
+            ief_momentum = _return(ief, 63)
+            if (stock_bond_correlation is not None and stock_bond_correlation < 0.0
+                    and ief_momentum is not None and ief_momentum > 0.0):
+                defensive_symbol = "IEF"
+            else:
+                alternatives = [
+                    (_return(histories.get(symbol, []), 63), symbol)
+                    for symbol in ("BIL", "GLD")
+                ]
+                positive = [
+                    (score, symbol) for score, symbol in alternatives
+                    if score is not None and score > 0.0
+                ]
+                defensive_symbol = max(positive)[1] if positive else "BIL"
+        targets = {}
+        if equity_exposure:
+            targets[config.benchmark_symbol] = equity_exposure
+        if defensive_exposure:
+            targets[defensive_symbol] = (
+                targets.get(defensive_symbol, 0.0) + defensive_exposure
+            )
         return targets
     if name == "TREND_VOLATILITY_SCALED_EQUITY":
         if not _trend_positive(spy, config.trend_lookback_days):
@@ -959,6 +1115,15 @@ STRATEGY_CONCEPT_FAMILIES = {
     "CROSS_SECTIONAL_ABNORMAL_RETURN_BREAKOUT": "cross_sectional_abnormal_return",
     "SECTOR_PARTICIPATION_BREAKOUT": "broad_sector_participation_breakout",
     "MARKET_CONFIRMED_SECTOR_BREAKOUT": "market_confirmed_sector_breakout",
+    "QQQ_BULL_TREND_LEADERSHIP": "execution_aware_bull_trend_growth_leadership",
+    "QQQ_BULL_DECELERATION_EXPLORATORY": "execution_aware_post_selection_bull_deceleration_growth",
+    "BIL_RAW_BEAR_DETERIORATION": "execution_aware_first_signal_bear_deterioration_defense",
+    "BIL_THREE_DAY_BEAR_DETERIORATION": "execution_aware_three_day_bear_deterioration_defense",
+    "BIL_RAW_TRANSITION_OR_BEAR_DETERIORATION": "execution_aware_early_transition_deterioration_defense",
+    "TURNING_POINT_SLOW_EQUITY": "literature_12m_slow_long_flat_equity",
+    "TURNING_POINT_FAST_EQUITY": "literature_1m_fast_long_flat_equity",
+    "TURNING_POINT_MEDIUM_EQUITY": "literature_50_50_slow_fast_long_flat_equity",
+    "TURNING_POINT_MEDIUM_ADAPTIVE_DEFENSE": "literature_turning_point_equity_with_correlation_aware_defense_adaptation",
     "VOL_MANAGED_SPY": "volatility_managed_equity",
     "ETF_DUAL_MOMENTUM": "dual_momentum",
     "CROSS_ASSET_DUAL_MOMENTUM": "cross_asset_dual_momentum",
@@ -1286,10 +1451,21 @@ def _pairwise_summary(period_scorecards: list[dict], rolling_scorecards: list[di
                               if strategy in values and benchmark in values]
             walk_excess = [values[strategy] - values[benchmark] for values in walk_forward.values()
                            if strategy in values and benchmark in values]
+            strategy_return = primary[strategy].get("total_return")
+            benchmark_return = primary[benchmark].get("total_return")
+            holdout_sample_sufficient = (
+                strategy_return is not None and benchmark_return is not None
+                and int(primary[strategy].get("session_count") or 0) > 0
+                and int(primary[benchmark].get("session_count") or 0) > 0
+            )
             result.append({
                 "strategy": strategy, "benchmark": benchmark,
                 "cost_bps": config.primary_cost_bps,
-                "holdout_excess_return": primary[strategy]["total_return"] - primary[benchmark]["total_return"],
+                "holdout_sample_sufficient": holdout_sample_sufficient,
+                "holdout_excess_return": (
+                    strategy_return - benchmark_return
+                    if holdout_sample_sufficient else None
+                ),
                 "rolling_windows": len(rolling_excess),
                 "rolling_win_rate": sum(value > 0 for value in rolling_excess) / max(1, len(rolling_excess)),
                 "rolling_average_excess_return": statistics.fmean(rolling_excess) if rolling_excess else None,
@@ -1340,6 +1516,53 @@ def _read_daily_spool(path: Path) -> list[dict]:
     return rows
 
 
+def _promotion_gate_rows(period_scorecards: list[dict], config: Tier1Config,
+                         promotion_period: str) -> list[dict]:
+    """Build diagnostic gates while treating an empty future holdout as insufficient."""
+    primary = {
+        row["strategy"]: row for row in period_scorecards
+        if row["cost_bps"] == config.primary_cost_bps
+        and row["period"] == promotion_period
+    }
+    benchmark = primary["SPY_BUY_HOLD"]
+    rows = []
+    for strategy, row in sorted(primary.items()):
+        if strategy == "SPY_BUY_HOLD":
+            continue
+        sample_sufficient = (
+            int(row.get("session_count") or 0) > 0
+            and int(benchmark.get("session_count") or 0) > 0
+            and row.get("total_return") is not None
+            and benchmark.get("total_return") is not None
+        )
+        beats = bool(
+            sample_sufficient
+            and row["total_return"] > benchmark["total_return"]
+        )
+        risk_improves = bool(
+            sample_sufficient
+            and (
+                row["max_drawdown"] > benchmark["max_drawdown"]
+                or row["sharpe"] > benchmark["sharpe"]
+            )
+        )
+        rows.append({
+            "strategy": strategy, "benchmark": "SPY_BUY_HOLD",
+            "evaluation_period": promotion_period,
+            "sample_sufficient_for_promotion": sample_sufficient,
+            "net_excess_return": (
+                row["total_return"] - benchmark["total_return"]
+                if sample_sufficient else None
+            ),
+            "return_gate": beats, "risk_gate": risk_improves,
+            "eligible_for_further_validation": (
+                sample_sufficient and beats and risk_improves
+            ),
+            "paper_trading_approved": False,
+        })
+    return rows
+
+
 def run_tier1_job(job: dict, bars_path: Path, archive_path: Path, source_sha256: str, progress_callback=None) -> Path:
     config=config_from_job(job); universe=resolve_universe(config.universe_name); symbols=set(universe)
     raw_dates,bars=load_daily_bars(bars_path,symbols)
@@ -1379,17 +1602,37 @@ def run_tier1_job(job: dict, bars_path: Path, archive_path: Path, source_sha256:
             })
         if progress_callback: progress_callback({"stage":"tier1_strategy_tournament","stage_completed_rows":index,"stage_total_rows":len(tasks),"stage_percent_complete":round(index/len(tasks)*100,2)})
     promotion_period = "holdout" if config.holdout_start_date else "full"
-    primary={r["strategy"]:r for r in period_scorecards if r["cost_bps"]==config.primary_cost_bps and r["period"]==promotion_period}; benchmark=primary["SPY_BUY_HOLD"]
-    promotions=[]
-    for strategy,row in sorted(primary.items()):
-        if strategy=="SPY_BUY_HOLD": continue
-        beats=row["total_return"]>benchmark["total_return"]
-        risk_improves=row["max_drawdown"]>benchmark["max_drawdown"] or row["sharpe"]>benchmark["sharpe"]
-        promotions.append({"strategy":strategy,"benchmark":"SPY_BUY_HOLD","evaluation_period":promotion_period,"net_excess_return":row["total_return"]-benchmark["total_return"],"return_gate":beats,"risk_gate":risk_improves,"eligible_for_further_validation":beats and risk_improves,"paper_trading_approved":False})
+    primary={r["strategy"]:r for r in period_scorecards if r["cost_bps"]==config.primary_cost_bps and r["period"]==promotion_period}
+    promotions=_promotion_gate_rows(period_scorecards,config,promotion_period)
     rolling_scorecards=_rolling_scorecards(all_daily,config)
     cost_path_audit=_cost_path_audit(scorecards,all_trades,config)
     walk_forward_scorecards=_walk_forward_scorecards(all_daily,config)
     regime_scorecards=_regime_scorecards(all_daily,dates,bars,config)
+    turning_point_enabled = any(
+        strategy.startswith("TURNING_POINT_") for strategy in config.strategy_names
+    )
+    turning_point_labels = []
+    turning_point_episodes = []
+    turning_point_attribution = []
+    turning_point_episode_returns = []
+    if turning_point_enabled:
+        turning_point_labels = causal_turning_point_labels(
+            dates, bars, config.benchmark_symbol, scored_start,
+        )
+        for cost in config.cost_ladder_bps:
+            cost = float(cost)
+            daily_at_cost = (
+                all_daily if cost == float(config.primary_cost_bps)
+                else _read_daily_spool(cost_daily_paths[cost])
+            )
+            (episodes, attribution, episode_returns) = turning_point_cycle_scorecards(
+                daily_at_cost, turning_point_labels, config.initial_cash,
+                benchmark_strategy="SPY_BUY_HOLD", cost_bps=cost,
+            )
+            if not turning_point_episodes:
+                turning_point_episodes = episodes
+            turning_point_attribution.extend(attribution)
+            turning_point_episode_returns.extend(episode_returns)
     state_universe = resolve_universe(
         config.market_state_universe_name or config.universe_name
     )
@@ -1536,9 +1779,16 @@ def run_tier1_job(job: dict, bars_path: Path, archive_path: Path, source_sha256:
         "bucket_method": "causal expanding-history quintiles",
         "canonical_market_state_effect": "none",
     }
+    manifest["turning_point_cycle_diagnostics"] = {
+        "enabled": turning_point_enabled,
+        "definition": TURNING_POINT_CYCLE_DEFINITION,
+        "canonical_market_state_effect": "none",
+        "promotion_effect": "diagnostic only",
+    }
     archive_path.parent.mkdir(parents=True,exist_ok=True)
     with zipfile.ZipFile(archive_path,"w",zipfile.ZIP_DEFLATED,compresslevel=1) as bundle:
-        bundle.write(all_daily_path,arcname="tier1_daily.csv"); _write_csv(bundle,"tier1_trades.csv",all_trades); _write_csv(bundle,"tier1_cost_ladder_scorecard.csv",scorecards); _write_csv(bundle,"tier1_cost_path_audit.csv",cost_path_audit); _write_csv(bundle,"tier1_period_scorecard.csv",period_scorecards); _write_csv(bundle,"tier1_promotion_gates.csv",promotions); _write_csv(bundle,"tier1_rolling_window_scorecard.csv",rolling_scorecards); _write_csv(bundle,"tier1_walk_forward_scorecard.csv",walk_forward_scorecards); _write_csv(bundle,"tier1_regime_scorecard.csv",regime_scorecards); _write_csv(bundle,"tier1_market_conditions.csv",list(market_conditions.values())); _write_csv(bundle,"tier1_condition_scorecard.csv",condition_rows); _write_csv(bundle,"tier1_condition_pair_scorecard.csv",condition_pair_rows); _write_csv(bundle,"tier1_market_state_labels.csv",state_labels); _write_csv(bundle,"tier1_market_state_episodes.csv",state_episodes); _write_csv(bundle,"tier1_market_state_attribution.csv",state_attribution); _write_csv(bundle,"tier1_market_state_episode_returns.csv",state_episode_returns); _write_csv(bundle,"tier1_market_state_period_scorecard.csv",state_periods); _write_csv(bundle,"tier1_market_state_inference.csv",state_inference); _write_csv(bundle,"tier1_market_state_cost_sensitivity.csv",state_costs); _write_csv(bundle,"tier1_market_state_transition_scorecard.csv",state_transitions); _write_csv(bundle,"tier1_market_state_chronological_folds.csv",state_folds); _write_csv(bundle,"tier1_market_state_fold_recurrence.csv",state_fold_recurrence); _write_csv(bundle,"tier1_market_state_transition_horizons.csv",state_transition_horizons); _write_csv(bundle,"tier1_hypothesis_survival.csv",state_survival); _write_csv(bundle,"tier1_market_state_hierarchy_period_scorecard.csv",hierarchy_periods); _write_csv(bundle,"tier1_market_state_hierarchy_inference.csv",hierarchy_inference); _write_csv(bundle,"tier1_market_state_hierarchy_cost_sensitivity.csv",hierarchy_costs); _write_csv(bundle,"tier1_market_state_hierarchy_chronological_folds.csv",hierarchy_folds); _write_csv(bundle,"tier1_market_state_hierarchy_fold_recurrence.csv",hierarchy_recurrence); _write_csv(bundle,"tier1_market_state_hierarchy_survival.csv",hierarchy_survival); _write_csv(bundle,"tier1_state_actionability_sessions.csv",state_actionability_sessions); _write_csv(bundle,"tier1_state_actionability_summary.csv",state_actionability_summary); _write_csv(bundle,"tier1_state_actionability_episode_segments.csv",state_actionability_segments); _write_csv(bundle,"tier1_downside_event_sessions.csv",downside_event_sessions); _write_csv(bundle,"tier1_downside_event_summary.csv",downside_event_summary); _write_csv(bundle,"tier1_downside_event_overlap.csv",downside_event_overlap); _write_csv(bundle,"tier1_pairwise_summary.csv",pairwise_summary); _write_csv(bundle,"tier1_event_diagnostics.csv",event_rows); _write_csv(bundle,"tier1_event_summary.csv",event_summary); _write_csv(bundle,"tier1_event_horizon_summary.csv",event_horizons); _write_csv(bundle,"tier1_event_condition_summary.csv",event_conditions); _write_csv(bundle,"tier1_breakout_opportunities.csv",breakout_opportunities); _write_csv(bundle,"tier1_breakout_opportunity_summary.csv",breakout_opportunity_summary); _write_csv(bundle,"tier1_role_aware_evidence.csv",evidence_matrix); _write_csv(bundle,"tier1_tactical_baseline_comparisons.csv",tactical_comparisons); _write_csv(bundle,"tier1_tactical_override_summary.csv",tactical_summary); _write_csv(bundle,"tier1_baseline_state_leaderboard.csv",baseline_leaderboard); _write_csv(bundle,"tier1_defensive_baseline_comparisons.csv",defensive_comparisons); _write_csv(bundle,"tier1_tactical_horizon_comparisons.csv",tactical_horizon_comparisons); _write_csv(bundle,"tier1_tactical_horizon_summary.csv",tactical_horizon_summary); _write_csv(bundle,"tier1_locked_tactical_validation.csv",locked_tactical_validation); _write_csv(bundle,"tier1_defensive_distinctness.csv",defensive_distinctness); _write_csv(bundle,"tier1_baseline_era_details.csv",baseline_era_details); _write_csv(bundle,"tier1_baseline_era_recurrence.csv",baseline_era_recurrence); _write_csv(bundle,"tier1_baseline_confirmation_sensitivity.csv",baseline_confirmation_sensitivity); _write_csv(bundle,"tier1_state_transition_timing.csv",transition_timing_rows); _write_csv(bundle,"tier1_generation_candidate_map.csv",generation_candidate_map)
+        bundle.write(all_daily_path,arcname="tier1_daily.csv"); _write_csv(bundle,"tier1_trades.csv",all_trades); _write_csv(bundle,"tier1_cost_ladder_scorecard.csv",scorecards); _write_csv(bundle,"tier1_cost_path_audit.csv",cost_path_audit); _write_csv(bundle,"tier1_period_scorecard.csv",period_scorecards); _write_csv(bundle,"tier1_promotion_gates.csv",promotions); _write_csv(bundle,"tier1_rolling_window_scorecard.csv",rolling_scorecards); _write_csv(bundle,"tier1_walk_forward_scorecard.csv",walk_forward_scorecards); _write_csv(bundle,"tier1_regime_scorecard.csv",regime_scorecards); _write_csv(bundle,"tier1_turning_point_cycle_labels.csv",turning_point_labels); _write_csv(bundle,"tier1_turning_point_cycle_episodes.csv",turning_point_episodes); _write_csv(bundle,"tier1_turning_point_cycle_attribution.csv",turning_point_attribution); _write_csv(bundle,"tier1_turning_point_cycle_episode_returns.csv",turning_point_episode_returns); _write_csv(bundle,"tier1_market_conditions.csv",list(market_conditions.values())); _write_csv(bundle,"tier1_condition_scorecard.csv",condition_rows); _write_csv(bundle,"tier1_condition_pair_scorecard.csv",condition_pair_rows); _write_csv(bundle,"tier1_market_state_labels.csv",state_labels); _write_csv(bundle,"tier1_market_state_episodes.csv",state_episodes); _write_csv(bundle,"tier1_market_state_attribution.csv",state_attribution); _write_csv(bundle,"tier1_market_state_episode_returns.csv",state_episode_returns); _write_csv(bundle,"tier1_market_state_period_scorecard.csv",state_periods); _write_csv(bundle,"tier1_market_state_inference.csv",state_inference); _write_csv(bundle,"tier1_market_state_cost_sensitivity.csv",state_costs); _write_csv(bundle,"tier1_market_state_transition_scorecard.csv",state_transitions); _write_csv(bundle,"tier1_market_state_chronological_folds.csv",state_folds); _write_csv(bundle,"tier1_market_state_fold_recurrence.csv",state_fold_recurrence); _write_csv(bundle,"tier1_market_state_transition_horizons.csv",state_transition_horizons); _write_csv(bundle,"tier1_hypothesis_survival.csv",state_survival); _write_csv(bundle,"tier1_market_state_hierarchy_period_scorecard.csv",hierarchy_periods); _write_csv(bundle,"tier1_market_state_hierarchy_inference.csv",hierarchy_inference); _write_csv(bundle,"tier1_market_state_hierarchy_cost_sensitivity.csv",hierarchy_costs); _write_csv(bundle,"tier1_market_state_hierarchy_chronological_folds.csv",hierarchy_folds); _write_csv(bundle,"tier1_market_state_hierarchy_fold_recurrence.csv",hierarchy_recurrence); _write_csv(bundle,"tier1_market_state_hierarchy_survival.csv",hierarchy_survival); _write_csv(bundle,"tier1_state_actionability_sessions.csv",state_actionability_sessions); _write_csv(bundle,"tier1_state_actionability_summary.csv",state_actionability_summary); _write_csv(bundle,"tier1_state_actionability_episode_segments.csv",state_actionability_segments); _write_csv(bundle,"tier1_downside_event_sessions.csv",downside_event_sessions); _write_csv(bundle,"tier1_downside_event_summary.csv",downside_event_summary); _write_csv(bundle,"tier1_downside_event_overlap.csv",downside_event_overlap); _write_csv(bundle,"tier1_pairwise_summary.csv",pairwise_summary); _write_csv(bundle,"tier1_event_diagnostics.csv",event_rows); _write_csv(bundle,"tier1_event_summary.csv",event_summary); _write_csv(bundle,"tier1_event_horizon_summary.csv",event_horizons); _write_csv(bundle,"tier1_event_condition_summary.csv",event_conditions); _write_csv(bundle,"tier1_breakout_opportunities.csv",breakout_opportunities); _write_csv(bundle,"tier1_breakout_opportunity_summary.csv",breakout_opportunity_summary); _write_csv(bundle,"tier1_role_aware_evidence.csv",evidence_matrix); _write_csv(bundle,"tier1_tactical_baseline_comparisons.csv",tactical_comparisons); _write_csv(bundle,"tier1_tactical_override_summary.csv",tactical_summary); _write_csv(bundle,"tier1_baseline_state_leaderboard.csv",baseline_leaderboard); _write_csv(bundle,"tier1_defensive_baseline_comparisons.csv",defensive_comparisons); _write_csv(bundle,"tier1_tactical_horizon_comparisons.csv",tactical_horizon_comparisons); _write_csv(bundle,"tier1_tactical_horizon_summary.csv",tactical_horizon_summary); _write_csv(bundle,"tier1_locked_tactical_validation.csv",locked_tactical_validation); _write_csv(bundle,"tier1_defensive_distinctness.csv",defensive_distinctness); _write_csv(bundle,"tier1_baseline_era_details.csv",baseline_era_details); _write_csv(bundle,"tier1_baseline_era_recurrence.csv",baseline_era_recurrence); _write_csv(bundle,"tier1_baseline_confirmation_sensitivity.csv",baseline_confirmation_sensitivity); _write_csv(bundle,"tier1_state_transition_timing.csv",transition_timing_rows); _write_csv(bundle,"tier1_generation_candidate_map.csv",generation_candidate_map)
+        bundle.writestr("tier1_turning_point_cycle_definition.json",json.dumps(TURNING_POINT_CYCLE_DEFINITION,indent=2))
         bundle.writestr("tier1_market_state_definition.json",json.dumps(STATE_DEFINITION,indent=2))
         bundle.writestr("tier1_manifest.json",json.dumps(manifest,indent=2,default=list)); bundle.writestr("tier1_summary.json",json.dumps({"primary_cost_bps":config.primary_cost_bps,"promotion_period":promotion_period,"scorecards":list(primary.values()),"promotion_gates":promotions},indent=2))
     spool.cleanup()

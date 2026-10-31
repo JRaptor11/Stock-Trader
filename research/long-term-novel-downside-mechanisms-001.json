@@ -1,0 +1,81 @@
+{
+  "study_id": "LONG_TERM_NOVEL_DOWNSIDE_MECHANISMS_001",
+  "status": "frozen_before_return_analysis",
+  "frozen_at": "2026-10-29",
+  "generation_015_status": "paused_and_unchanged",
+  "purpose": "Test externally grounded downside mechanisms that are structurally different from the failed drawdown, moving-average, breadth-divergence, and volatility-threshold rules without constructing a router or searching parameters.",
+  "primary_sources": [
+    {
+      "title": "Momentum turning points",
+      "url": "https://doi.org/10.1016/j.jfineco.2023.05.007",
+      "finding_used": "The signs of fixed 12-month slow and one-month fast time-series momentum identify bull, correction, bear, and rebound cycles; a fixed equal blend is the medium-speed strategy."
+    },
+    {
+      "title": "The correlation of equity and bond returns",
+      "url": "https://www.bis.org/publ/qtrpdf/r_qt2312.pdf",
+      "finding_used": "Treasury diversification can weaken when stock-bond correlation becomes positive, particularly in inflation-dominant environments."
+    },
+    {
+      "title": "Cross-asset signals and time series momentum",
+      "url": "https://doi.org/10.1016/j.jfineco.2019.02.011",
+      "finding_used": "Equity and bond trend information can contain cross-asset predictive information; this supports testing defensive-asset state separately from equity trend."
+    }
+  ],
+  "candidates": [
+    {
+      "strategy": "TURNING_POINT_SLOW_EQUITY",
+      "classification": "published_signal_long_flat_adaptation",
+      "rule": "At month end hold 100 percent SPY when the lagged 252-session return is nonnegative; otherwise hold 100 percent SHY."
+    },
+    {
+      "strategy": "TURNING_POINT_FAST_EQUITY",
+      "classification": "published_signal_long_flat_adaptation",
+      "rule": "At month end hold 100 percent SPY when the lagged 21-session return is nonnegative; otherwise hold 100 percent SHY."
+    },
+    {
+      "strategy": "TURNING_POINT_MEDIUM_EQUITY",
+      "classification": "published_fixed_blend_long_flat_adaptation",
+      "rule": "At month end allocate equal fixed weight to the slow and fast long-flat signals, producing 100, 50, or 0 percent SPY exposure with the remainder in SHY."
+    },
+    {
+      "strategy": "TURNING_POINT_MEDIUM_ADAPTIVE_DEFENSE",
+      "classification": "literature_informed_etf_adaptation",
+      "rule": "Preserve the medium strategy's SPY exposure. Allocate its defensive remainder to IEF only when lagged 60-session SPY-IEF return correlation is negative and lagged 63-session IEF return is positive; otherwise choose the stronger positive lagged 63-session return of BIL or GLD, defaulting to BIL."
+    }
+  ],
+  "controls": ["SPY_BUY_HOLD", "STATIC_60_30_10", "VOL_MANAGED_SPY"],
+  "turning_point_cycle_definition": {
+    "BULL": "slow nonnegative and fast nonnegative",
+    "CORRECTION": "slow nonnegative and fast negative",
+    "BEAR": "slow negative and fast negative",
+    "REBOUND": "slow negative and fast nonnegative"
+  },
+  "fixed_execution": {
+    "signal_time": "completed month-end close",
+    "execution_time": "next available open",
+    "rebalance_frequency": "monthly",
+    "no_trade_band": 0.02,
+    "cost_ladder_bps": [1.0, 5.0, 10.0, 20.0],
+    "primary_cost_bps": 10.0,
+    "cash_proxy": "SHY"
+  },
+  "fixed_universe": "ETF_LONG_TERM_STATE_SPECIALISTS_EXACT",
+  "evaluation": {
+    "whole_path": ["CAGR", "Sharpe", "maximum drawdown", "relative wealth versus same-window SPY"],
+    "conditional": ["published turning-point cycle", "raw canonical trend state", "confirmed canonical trend state"],
+    "recurrence": "whole episodes and non-overlapping calendar blocks",
+    "acceptance": "cost-sized median episode edge, positive stress profit factor, block recurrence, family-wide Benjamini-Hochberg control, and no unacceptable whole-path opportunity cost"
+  },
+  "blocked_future_candidate": {
+    "mechanism": "high-yield option-adjusted-spread equity-risk filter",
+    "reason": "requires release-time point-in-time credit-spread ingestion and an independently credible fixed rule; ETF price ratios are not an equivalent substitute",
+    "may_enter_current_family": false
+  },
+  "effects": {
+    "router": false,
+    "paper_trading": false,
+    "live_trading": false,
+    "promotion": false,
+    "parameter_retuning": false
+  }
+}

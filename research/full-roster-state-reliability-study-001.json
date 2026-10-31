@@ -1,0 +1,79 @@
+{
+  "study_id": "FULL_ROSTER_STATE_RELIABILITY_STUDY_001",
+  "status": "locked_before_full_roster_state_reliability_analysis",
+  "parent_studies": [
+    "LONG_TERM_BASELINE_MECHANISMS_PHASE_010",
+    "LONG_TERM_MULTI_ERA_VALIDATION_PHASE_011"
+  ],
+  "generation_015_status": "paused_and_unchanged",
+  "purpose": "Test the complete unchanged Phase 010 mechanism roster in every confirmed causal trend state using independent whole episodes, non-overlapping eras, delay and cost stress, and family-wide multiplicity control.",
+  "benchmark_strategy": "SPY_BUY_HOLD",
+  "strategies": [
+    "GLOBAL_EQUITY_STATIC",
+    "STATIC_60_30_10",
+    "INVERSE_VOLATILITY_BALANCED",
+    "STATIC_INFLATION_AWARE",
+    "VOL_MANAGED_SPY",
+    "CROSS_ASSET_DUAL_MOMENTUM",
+    "DIVERSIFIED_TREND",
+    "REGIME_BALANCED",
+    "CROSS_ASSET_RELATIVE_MOMENTUM_DEFENSIVE"
+  ],
+  "trend_states": [
+    "BULL_ACCELERATING",
+    "BULL_DECELERATING",
+    "BEAR_RECOVERING",
+    "BEAR_DETERIORATING",
+    "TRANSITION_IMPROVING",
+    "TRANSITION_MIXED",
+    "TRANSITION_DETERIORATING"
+  ],
+  "family_size": 63,
+  "fixed_calendar_blocks": [
+    {"id": "OLDER_2008_2010", "source": "prehistory", "start": "2008-05-30", "end": "2010-12-31"},
+    {"id": "MODERN_2012_2014", "source": "modern", "start": "2012-01-01", "end": "2014-12-31"},
+    {"id": "MODERN_2015_2017", "source": "modern", "start": "2015-01-01", "end": "2017-12-31"},
+    {"id": "MODERN_2018_2020", "source": "modern", "start": "2018-01-01", "end": "2020-12-31"},
+    {"id": "MODERN_2021_2023", "source": "modern", "start": "2021-01-01", "end": "2023-12-31"},
+    {"id": "MODERN_2024_CURRENT", "source": "modern", "start": "2024-01-01", "end": "9999-12-31", "partial": true}
+  ],
+  "costs_bps": [10.0, 20.0],
+  "activation_lags_sessions": [0, 1, 3],
+  "primary": {"cost_bps": 10.0, "activation_lag_sessions": 0},
+  "stress": {"cost_bps": 20.0, "activation_lag_sessions": 1},
+  "episode_policy": {
+    "state_field": "trend_state",
+    "require_whole_episode_inside_one_calendar_block": true,
+    "exclude_archive_boundary_truncation": true,
+    "exclude_block_boundary_truncation": true,
+    "ties_count_as_non_wins": true
+  },
+  "eligible_block": {
+    "minimum_complete_episodes": 3,
+    "minimum_scored_sessions": 15
+  },
+  "reliability_gate": {
+    "minimum_complete_episodes": 20,
+    "minimum_eligible_blocks": 3,
+    "minimum_positive_block_fraction": 0.60,
+    "minimum_primary_episode_win_rate": 0.60,
+    "require_positive_primary_median_episode_excess": true,
+    "minimum_primary_profit_factor": 1.25,
+    "maximum_benjamini_hochberg_q": 0.05,
+    "minimum_stress_episode_win_rate": 0.55,
+    "require_positive_stress_median_episode_excess": true
+  },
+  "inference": {
+    "primary_test": "one-sided exact binomial sign test of episode excess versus zero",
+    "multiplicity": "Benjamini-Hochberg across the complete 63-cell strategy-by-trend-state family",
+    "selection_rule": "No strategy or state may be omitted after results are observed. Missing or insufficient cells remain in the family with p=1."
+  },
+  "effects": {
+    "router": false,
+    "paper_trading": false,
+    "live_trading": false,
+    "promotion": false,
+    "parameter_retuning": false
+  },
+  "interpretation_rule": "A passing cell is eligible only for a separate frozen replication or prospective shadow. This study cannot authorize strategy switching or capital allocation."
+}

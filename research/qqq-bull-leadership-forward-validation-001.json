@@ -1,0 +1,35 @@
+{
+  "study_id": "QQQ_BULL_LEADERSHIP_FORWARD_VALIDATION_001",
+  "status": "frozen_before_first_forward_session",
+  "parent_study": "LONG_TERM_EXECUTION_AWARE_ISOLATED_STRATEGIES_002",
+  "integrity_standard": "RESEARCH_INTEGRITY_STANDARD_001",
+  "generation_015_status": "paused_and_unchanged",
+  "forward_start": "2026-10-27",
+  "strategy": {
+    "id": "QQQ_BULL_TREND_LEADERSHIP",
+    "active_rule": "Hold QQQ when the raw causal trend state is BULL_ACCELERATING or BULL_DECELERATING.",
+    "inactive_rule": "Hold SPY.",
+    "signal_time": "completed session close",
+    "execution_time": "next completed session adjusted open",
+    "no_trade_band": 0.02,
+    "cost_bps": 10.0,
+    "stress_cost_bps": 20.0,
+    "retuning": false
+  },
+  "evidence": {
+    "historical_results": "exploratory_and_consumed_by_discovery",
+    "confirmatory_source": "future_only_append_only_broker_free_ledger",
+    "minimum_sessions_before_decision": 252,
+    "minimum_complete_target_state_episodes": 20
+  },
+  "acceptance": {
+    "minimum_target_state_win_rate": 0.60,
+    "minimum_target_state_median_excess": 0.002,
+    "minimum_target_state_profit_factor": 1.25,
+    "minimum_active_holding_fraction": 0.50,
+    "minimum_stress_profit_factor": 1.0,
+    "require_positive_whole_path_relative_wealth": true,
+    "require_hash_chain_and_portfolio_invariants": true
+  },
+  "effects": {"router": false, "paper_trading": false, "live_trading": false, "promotion": false, "broker_orders_enabled": false}
+}
