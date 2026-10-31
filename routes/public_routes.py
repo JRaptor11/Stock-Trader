@@ -2,6 +2,8 @@
 
 import time
 import logging
+import os
+import platform
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
@@ -90,6 +92,9 @@ async def uptime_health_check():
             {
                 "status": "ok",
                 "uptime": round(time.time() - app_state.get("startup_time", time.time()), 2),
+                "git_commit": os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT"),
+                "git_branch": os.getenv("RENDER_GIT_BRANCH") or os.getenv("GIT_BRANCH"),
+                "python_version": platform.python_version(),
             }
         )
     except Exception as e:
