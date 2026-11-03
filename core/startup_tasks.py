@@ -28,6 +28,7 @@ from trading.portfolio_reconciler import run_portfolio_reconciler
 from config import runtime_config as config
 from utils.threading_utils import safe_thread
 from utils.system_utils import monitor_system_resources
+from utils.http_utils import configure_default_request_timeout
 from trading.trade_utils import ensure_trade_logs_exist
 from utils.lifecycle_utils import (
     record_program_startup,
@@ -98,6 +99,21 @@ async def background_startup_after_bind() -> None:
         app_state["stock_data_client"] = StockHistoricalDataClient(
             config.API_KEY,
             config.SECRET_KEY,
+        )
+        market_data_connect_timeout = max(
+            1.0,
+            float(os.getenv("ALPACA_MARKET_DATA_CONNECT_TIMEOUT_SECONDS", "5")),
+        )
+        market_data_read_timeout = max(
+            1.0,
+            float(os.getenv("ALPACA_MARKET_DATA_READ_TIMEOUT_SECONDS", "20")),
+        )
+        configure_default_request_timeout(
+            app_state["stock_data_client"],
+            (
+                market_data_connect_timeout,
+                market_data_read_timeout,
+            ),
         )
 
         if not callable(app_state["trading_client"].get_all_positions) or not callable(

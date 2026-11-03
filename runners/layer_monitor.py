@@ -22,6 +22,7 @@ from layers.layer_bar_gate import (
     build_distinct_bar_report,
 )
 from utils.numeric import safe_float, safe_int
+from utils.async_utils import run_sync_with_heartbeat
 
 from config import runtime_config as config
 from market.bar_data import (
@@ -35,8 +36,6 @@ from layers.layer1_ranker import Layer1StockRanker
 from layers.layer2_portfolio import Layer2PortfolioBuilder
 from layers.layer3_rebalancer import (
     run_layer3_dry_run,
-    _get_account_snapshot,
-    _get_positions_snapshot,
     build_layer3_shadow_plan,
     source_bar_market_session_info,
 )
@@ -3103,8 +3102,30 @@ def run_opening_live_fallback_shadow(
         append_layer_opening_shadow_cycle_row(row)
         return row
 
-    account = _get_account_snapshot()
-    positions = _get_positions_snapshot()
+    # This path is diagnostic-only and runs while production is waiting for a
+    # fresh REST cohort. Never let it make synchronous broker requests on the
+    # monitor event loop. The reconciler already maintains a recent broker
+    # snapshot for read-only observation.
+    cached_snapshot = (
+        app_state.get("portfolio_reconcile", {})
+        .get("broker_snapshot", {})
+        or {}
+    )
+    account = dict(cached_snapshot.get("account") or {})
+    positions = dict(cached_snapshot.get("positions") or {})
+
+    if not account:
+        balance_state = app_state.get("services", {}).get(
+            "balance_tracker",
+            {},
+        )
+        account = {
+            "source": "cached_balance_tracker",
+            "broker_snapshot_ok": False,
+            "equity": safe_float(balance_state.get("equity"), 0.0),
+            "cash": safe_float(balance_state.get("balance"), 0.0),
+            "buying_power": safe_float(balance_state.get("balance"), 0.0),
+        }
     equity = safe_float(account.get("equity"), 0.0)
     cash = safe_float(account.get("cash"), 0.0)
 
@@ -5761,21 +5782,63 @@ async def _wait_for_distinct_fresh_rest_bars(
             or not freshness_market_hours_only
         )
 
-        bars_by_symbol = (
-            fetch_recent_bars_with_min_count(
-                app_state.get(
-                    "stock_data_client"
+        fetch_started = time.monotonic()
+
+        def refresh_fetch_heartbeat():
+            now_iso = datetime.now(timezone.utc).isoformat()
+            app_state.setdefault("layers", {}).setdefault(
+                "monitor",
+                {},
+            ).update({
+                "status": "running",
+                "heartbeat_at": now_iso,
+                "last_phase": "fetching_rest_bars",
+                "rest_bar_fetch_attempt": attempts,
+                "rest_bar_fetch_started_at": gate_state.get(
+                    "fetch_started_at"
                 ),
+            })
+            gate_state.update({
+                "fetch_in_progress": True,
+                "fetch_heartbeat_at": now_iso,
+                "fetch_attempt": attempts,
+            })
+
+        gate_state["fetch_started_at"] = datetime.now(
+            timezone.utc
+        ).isoformat()
+        gate_state["fetch_in_progress"] = True
+
+        try:
+            bars_by_symbol = await run_sync_with_heartbeat(
+                fetch_recent_bars_with_min_count,
+                app_state.get("stock_data_client"),
                 symbols,
                 min_bars=180,
                 timeframe_minutes=5,
                 initial_lookback_hours=96,
                 max_lookback_hours=336,
-                min_ready_symbols=(
-                    required_fresh_symbols
-                ),
+                min_ready_symbols=required_fresh_symbols,
+                heartbeat_callback=refresh_fetch_heartbeat,
+                heartbeat_interval_seconds=15.0,
             )
-        )
+        finally:
+            fetch_finished_at = datetime.now(timezone.utc).isoformat()
+            gate_state.update({
+                "fetch_in_progress": False,
+                "fetch_finished_at": fetch_finished_at,
+                "fetch_seconds": round(
+                    time.monotonic() - fetch_started,
+                    3,
+                ),
+            })
+            app_state.setdefault("layers", {}).setdefault(
+                "monitor",
+                {},
+            ).update({
+                "heartbeat_at": fetch_finished_at,
+                "last_phase": "processing_rest_bars",
+            })
 
         (
             freshness_probe,
