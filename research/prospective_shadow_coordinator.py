@@ -21,7 +21,10 @@ from research.tier1_etf_replay import (
     _strategy_rebalance_frequency,
 )
 from research.universes import resolve_universe
-from research.market_state_episodes import causal_state_labels
+from research.market_state_episodes import (
+    advance_confirmed_market_state,
+    causal_state_labels,
+)
 
 
 STRATEGIES = (
@@ -330,7 +333,7 @@ class ProspectiveShadowCoordinator:
         if not derived:
             raise ValueError("state_evidence cannot produce a canonical market state")
         raw_state = derived["raw_core_state"]
-        state = self.state.setdefault("market_state", {
+        state = dict(self.state.get("market_state") or {
             "active": None, "pending": None, "pending_count": 0})
         bootstrap_state_evidence = payload.get("bootstrap_state_evidence")
         if state["active"] is None and bootstrap_state_evidence:
@@ -339,23 +342,14 @@ class ProspectiveShadowCoordinator:
             labels = causal_state_labels(bootstrap_state_evidence, 3)
             if labels:
                 state["active"] = labels[sorted(labels)[-1]]["core_state"]
-        if state["active"] is None:
-            state["active"] = raw_state
-        elif raw_state == state["active"]:
-            state["pending"], state["pending_count"] = None, 0
-        elif raw_state == state["pending"]:
-            state["pending_count"] += 1
-        else:
-            state["pending"], state["pending_count"] = raw_state, 1
-        if state["pending_count"] >= 3:
-            state["active"] = state["pending"]
-            state["pending"], state["pending_count"] = None, 0
+        state = advance_confirmed_market_state(state, raw_state, 3)
         supplied_raw = payload.get("raw_state")
         supplied_confirmed = payload.get("confirmed_state")
         if supplied_raw and supplied_raw != raw_state:
             raise ValueError("supplied raw market state disagrees with causal evidence")
         if supplied_confirmed and supplied_confirmed != state["active"]:
             raise ValueError("supplied confirmed market state disagrees with coordinator state")
+        self.state["market_state"] = state
         warnings = []
         quote_diagnostics = opening_quote_diagnostics(
             bars, payload.get("opening_quote_diagnostics")

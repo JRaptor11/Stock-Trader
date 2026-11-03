@@ -1,12 +1,41 @@
 import unittest
 
 from research.market_state_episodes import (
-    causal_state_labels, market_state_scorecards, project_state_labels,
-    state_episodes,
+    advance_confirmed_market_state, causal_state_labels,
+    market_state_scorecards, project_state_labels, state_episodes,
 )
 
 
 class MarketStateEpisodeTests(unittest.TestCase):
+    def test_single_step_confirmation_continues_authoritative_state(self):
+        transition = "TRANSITION_DETERIORATING__NORMAL_VOL__MIXED_BREADTH"
+        prior = {
+            "active": "BULL_DECELERATING__LOW_VOL__MIXED_BREADTH",
+            "pending": transition,
+            "pending_count": 2,
+        }
+
+        advanced = advance_confirmed_market_state(prior, transition, 3)
+
+        self.assertEqual(transition, advanced["active"])
+        self.assertIsNone(advanced["pending"])
+        self.assertEqual(0, advanced["pending_count"])
+        self.assertEqual(2, prior["pending_count"])
+
+    def test_single_step_confirmation_clears_reverted_pending_state(self):
+        active = "BULL_DECELERATING__LOW_VOL__MIXED_BREADTH"
+        prior = {
+            "active": active,
+            "pending": "TRANSITION_DETERIORATING__NORMAL_VOL__MIXED_BREADTH",
+            "pending_count": 2,
+        }
+
+        advanced = advance_confirmed_market_state(prior, active, 3)
+
+        self.assertEqual(active, advanced["active"])
+        self.assertIsNone(advanced["pending"])
+        self.assertEqual(0, advanced["pending_count"])
+
     def _conditions(self):
         base = {
             "trend_200d_distance": .10, "trend_63d_return": .08,

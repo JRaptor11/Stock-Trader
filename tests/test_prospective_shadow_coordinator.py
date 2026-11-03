@@ -152,8 +152,10 @@ class CoordinatorTests(unittest.TestCase):
             payload["bars"][symbols[-1]] = {"open": 100, "high": 100, "low": 100,
                                              "close": 100, "volume": 1_000_000}
             payload["raw_state"] = "BEAR_DETERIORATING__HIGH_VOL__NARROW_BREADTH"
+            prior_state = dict(coordinator.state["market_state"])
             with self.assertRaisesRegex(ValueError, "disagrees"):
                 coordinator.process_session(payload)
+            self.assertEqual(prior_state, coordinator.state["market_state"])
         finally:
             for path in sorted(root.rglob("*"), reverse=True):
                 if path.is_file(): path.unlink()
@@ -285,6 +287,7 @@ class CoordinatorTests(unittest.TestCase):
         try:
             seed = ProspectiveShadowCoordinator(root, Store())._empty()
             seed.pop("expected_next_session")
+            seed.pop("readiness")
             seed["market_state"] = None
             seed["last_session"] = "2026-09-25"
             seed["pending"] = {

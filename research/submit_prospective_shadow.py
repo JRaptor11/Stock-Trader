@@ -13,7 +13,10 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from research.market_conditions import causal_market_conditions
-from research.market_state_episodes import causal_state_labels
+from research.market_state_episodes import (
+    advance_confirmed_market_state,
+    causal_state_labels,
+)
 from research.universes import resolve_universe
 
 
@@ -154,6 +157,16 @@ def main() -> None:
         document["opening_quote_diagnostics"] = quotes
         document["opening_quote_collection"] = metadata
     if status.get("last_session") is not None:
+        expected = status.get("expected_next_session")
+        if expected and expected != document["session"]:
+            raise ValueError(
+                f"coordinator expects {expected}; payload contains {document['session']}"
+            )
+        document["confirmed_state"] = advance_confirmed_market_state(
+            status.get("market_state"),
+            document["raw_state"],
+            3,
+        )["active"]
         document.pop("bootstrap_histories", None)
         if (status.get("market_state") or {}).get("active"):
             document.pop("bootstrap_state_evidence", None)

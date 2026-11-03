@@ -53,6 +53,38 @@ STATE_DEFINITION = {
 HIERARCHY_LEVELS = ("trend_volatility", "trend_breadth", "trend")
 
 
+def advance_confirmed_market_state(
+    current: dict | None,
+    raw_state: str,
+    confirmation_sessions: int = 3,
+) -> dict:
+    """Advance one causal confirmation step without mutating ``current``."""
+    if confirmation_sessions < 1:
+        raise ValueError("confirmation_sessions must be positive")
+    if not raw_state:
+        raise ValueError("raw_state is required")
+
+    state = dict(current or {})
+    state.setdefault("active", None)
+    state.setdefault("pending", None)
+    state["pending_count"] = int(state.get("pending_count") or 0)
+
+    if state["active"] is None:
+        state["active"] = raw_state
+        state["pending"], state["pending_count"] = None, 0
+    elif raw_state == state["active"]:
+        state["pending"], state["pending_count"] = None, 0
+    elif raw_state == state["pending"]:
+        state["pending_count"] += 1
+    else:
+        state["pending"], state["pending_count"] = raw_state, 1
+
+    if state["pending_count"] >= confirmation_sessions:
+        state["active"] = state["pending"]
+        state["pending"], state["pending_count"] = None, 0
+    return state
+
+
 def _compound(values: list[float]) -> float:
     return math.prod(1.0 + value for value in values) - 1.0
 
