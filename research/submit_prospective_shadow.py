@@ -84,11 +84,26 @@ def fetch_first_iex_opening_quotes(
     return quotes, metadata
 
 
-def build_payload(csv_path: Path, next_session: str, code_revision: str) -> dict:
-    rows = list(csv.DictReader(csv_path.open(encoding="utf-8-sig")))
+def build_payload(
+    csv_path: Path,
+    next_session: str,
+    code_revision: str,
+    *,
+    session: str | None = None,
+) -> dict:
+    with csv_path.open(encoding="utf-8-sig") as handle:
+        rows = list(csv.DictReader(handle))
+    if session is not None:
+        rows = [row for row in rows if row["timestamp"][:10] <= session]
+    if not rows:
+        raise ValueError("daily-bar dataset is empty for the requested session")
     by_symbol = defaultdict(list)
     for row in rows: by_symbol[row["symbol"]].append(row)
     latest = max(row["timestamp"][:10] for row in rows)
+    if session is not None and latest != session:
+        raise ValueError(
+            f"daily-bar dataset does not contain requested completed session {session}"
+        )
     histories, bars = {}, {}
     for symbol, values in by_symbol.items():
         values.sort(key=lambda row: row["timestamp"])
@@ -122,37 +137,39 @@ def build_payload(csv_path: Path, next_session: str, code_revision: str) -> dict
             "confirmed_state": latest_label["core_state"]}
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--csv", required=True, type=Path)
-    parser.add_argument("--next-session", required=True)
-    parser.add_argument("--code-revision", required=True)
-    parser.add_argument("--token-env", required=True, type=Path)
-    parser.add_argument(
-        "--opening-quotes-json", type=Path,
-        help="Optional diagnostic first-quote evidence; never used for fills.",
-    )
-    parser.add_argument(
-        "--alpaca-env", type=Path,
-        help="Optionally fetch the first historical IEX quote after 09:30 ET.",
-    )
-    parser.add_argument("--url", default="https://stock-trader-9du8.onrender.com")
-    args = parser.parse_args()
-    token = _token(args.token_env)
+def submit_completed_session(
+    *,
+    csv_path: Path,
+    next_session: str,
+    code_revision: str,
+    token_env: Path,
+    url: str = "https://stock-trader-9du8.onrender.com",
+    session: str | None = None,
+    opening_quotes_json: Path | None = None,
+    alpaca_env: Path | None = None,
+) -> dict:
+    """Submit one session and preserve the coordinator's authoritative state clock."""
+    token = _token(token_env)
     status_request = urllib.request.Request(
-        args.url.rstrip("/") + "/api/shadow/status",
-        headers={"Authorization": "Bearer " + token})
+        url.rstrip("/") + "/api/shadow/status",
+        headers={"Authorization": "Bearer " + token},
+    )
     with urllib.request.urlopen(status_request, timeout=120) as response:
         status = json.load(response)
-    document = build_payload(args.csv, args.next_session, args.code_revision)
-    if args.opening_quotes_json:
+    document = build_payload(
+        csv_path,
+        next_session,
+        code_revision,
+        session=session,
+    )
+    if opening_quotes_json:
         document["opening_quote_diagnostics"] = json.loads(
-            args.opening_quotes_json.read_text(encoding="utf-8")
+            opening_quotes_json.read_text(encoding="utf-8")
         )
-    elif args.alpaca_env:
+    elif alpaca_env:
         quotes, metadata = fetch_first_iex_opening_quotes(
             session=document["session"], symbols=list(document["bars"]),
-            alpaca_env=args.alpaca_env,
+            alpaca_env=alpaca_env,
         )
         document["opening_quote_diagnostics"] = quotes
         document["opening_quote_collection"] = metadata
@@ -172,11 +189,45 @@ def main() -> None:
             document.pop("bootstrap_state_evidence", None)
     payload = json.dumps(document).encode()
     request = urllib.request.Request(
-        args.url.rstrip("/") + "/api/shadow/sessions", data=payload, method="POST",
+        url.rstrip("/") + "/api/shadow/sessions", data=payload, method="POST",
         headers={"Authorization": "Bearer " + token,
-                 "Content-Type": "application/json"})
+                 "Content-Type": "application/json"},
+    )
     with urllib.request.urlopen(request, timeout=120) as response:
-        print(json.dumps(json.load(response), indent=2))
+        return json.load(response)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--csv", required=True, type=Path)
+    parser.add_argument("--next-session", required=True)
+    parser.add_argument(
+        "--session",
+        help="Completed session to submit when the CSV extends beyond that date.",
+    )
+    parser.add_argument("--code-revision", required=True)
+    parser.add_argument("--token-env", required=True, type=Path)
+    parser.add_argument(
+        "--opening-quotes-json", type=Path,
+        help="Optional diagnostic first-quote evidence; never used for fills.",
+    )
+    parser.add_argument(
+        "--alpaca-env", type=Path,
+        help="Optionally fetch the first historical IEX quote after 09:30 ET.",
+    )
+    parser.add_argument("--url", default="https://stock-trader-9du8.onrender.com")
+    args = parser.parse_args()
+    result = submit_completed_session(
+        csv_path=args.csv,
+        next_session=args.next_session,
+        code_revision=args.code_revision,
+        token_env=args.token_env,
+        url=args.url,
+        session=args.session,
+        opening_quotes_json=args.opening_quotes_json,
+        alpaca_env=args.alpaca_env,
+    )
+    print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__": main()
