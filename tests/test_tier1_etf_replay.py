@@ -8,9 +8,10 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from research.tier1_etf_replay import (
-    LEGACY_STRATEGIES, STRATEGIES, Tier1Config, _causal_market_regimes, _cost_path_audit,
+    ARTIFACT_PROFILES, LEGACY_STRATEGIES, STRATEGIES, Tier1Config,
+    _causal_market_regimes, _cost_path_audit,
     _pairwise_summary, _promotion_gate_rows, _targets, _validated_calendar,
-    _strategy_rebalance_frequency,
+    _strategy_rebalance_frequency, _write_csv, _write_text_artifact,
     config_from_job, load_daily_bars,
     run_tier1_job,
 )
@@ -380,6 +381,21 @@ class Tier1ETFReplayTests(unittest.TestCase):
                 self.assertEqual(b"", bundle.read("tier1_event_diagnostics.csv"))
                 self.assertEqual(b"", bundle.read("tier1_state_transition_timing.csv"))
                 self.assertEqual(b"", bundle.read("tier1_generation_candidate_map.csv"))
+
+    def test_forward_artifact_profile_writes_only_required_members(self):
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "compact.zip"
+            with zipfile.ZipFile(archive, "w") as bundle:
+                bundle._artifact_allowlist = ARTIFACT_PROFILES["forward_ledger"]
+                _write_csv(bundle, "tier1_daily.csv", [{"date": "2026-11-06"}])
+                _write_csv(bundle, "tier1_trades.csv", [{"date": "2026-11-06"}])
+                _write_text_artifact(bundle, "tier1_manifest.json", "{}")
+                _write_text_artifact(bundle, "tier1_market_state_definition.json", "{}")
+            with zipfile.ZipFile(archive) as bundle:
+                self.assertEqual(
+                    {"tier1_daily.csv", "tier1_manifest.json"},
+                    set(bundle.namelist()),
+                )
 
 
 if __name__ == "__main__": unittest.main()

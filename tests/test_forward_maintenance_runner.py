@@ -1,15 +1,20 @@
 import json
 import tempfile
 import unittest
+import urllib.error
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from research.forward_maintenance_runner import (
     Journal,
     RunLock,
+    _make_job,
     _merge_nonoverlapping_csv,
+    _retry_network,
     build_calendar_plan,
+    require_free_space,
     validate_preflight,
 )
 
@@ -122,6 +127,53 @@ class ForwardMaintenanceRunnerTests(unittest.TestCase):
             self.assertEqual("RuntimeError", document["error_type"])
             self.assertFalse(document["broker_orders_enabled"])
             self.assertNotIn("traceback", document)
+
+    def test_disk_guard_fails_before_work_below_reserve(self):
+        usage = type("Usage", (), {"free": 99})()
+        with patch(
+            "research.forward_maintenance_runner.shutil.disk_usage",
+            return_value=usage,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "insufficient local disk space"):
+                require_free_space(Path("."), 100)
+            self.assertEqual(99, require_free_space(Path("."), 99)["free_bytes"])
+
+    def test_network_retry_is_bounded_and_recovers(self):
+        attempts = []
+
+        def operation():
+            attempts.append(len(attempts) + 1)
+            if len(attempts) < 3:
+                raise urllib.error.URLError("temporary")
+            return "ok"
+
+        with patch("research.forward_maintenance_runner.time_module.sleep") as sleep:
+            self.assertEqual("ok", _retry_network("test", operation, attempts=4))
+        self.assertEqual([1, 2, 3], attempts)
+        self.assertEqual(2, sleep.call_count)
+
+    def test_compact_job_profile_is_explicit_and_uses_core_diagnostics(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.json"
+            destination = root / "job.json"
+            source.write_text(
+                json.dumps({"tier1_config": {"primary_cost_bps": 10}}),
+                encoding="utf-8",
+            )
+            _make_job(
+                source,
+                destination,
+                job_id="test",
+                bars_csv="bars.csv",
+                data_source="test",
+                artifact_profile="forward_ledger",
+            )
+            document = json.loads(destination.read_text(encoding="utf-8"))
+            self.assertEqual("forward_ledger", document["artifact_profile"])
+            self.assertEqual(
+                "baseline_core", document["tier1_config"]["diagnostic_profile"]
+            )
 
 
 if __name__ == "__main__":

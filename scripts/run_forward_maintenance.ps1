@@ -36,4 +36,11 @@ finally {
 if ($null -eq $result) {
     $result = 1
 }
+
+# Keep operational evidence bounded. The current log is always among the newest.
+Get-ChildItem -LiteralPath $logRoot -Filter 'forward-maintenance-*.log' -File |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -Skip 30 |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+
 exit $result

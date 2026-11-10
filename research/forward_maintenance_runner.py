@@ -16,6 +16,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time as time_module
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -38,6 +40,8 @@ UTC = timezone.utc
 EASTERN = ZoneInfo("America/New_York")
 DEFAULT_SERVICE_URL = "https://stock-trader-9du8.onrender.com"
 DEFAULT_MINIMUM_REVISION = "01c1105"
+DEFAULT_MINIMUM_FREE_BYTES = 3 * 1024**3
+WORKER_MINIMUM_FREE_BYTES = 1024**3
 FRESHNESS_PREFIXES = ("latest session is ", "remote shadow is at ")
 
 
@@ -197,6 +201,42 @@ def _json_request(url: str, *, headers: dict[str, str] | None = None,
     request = urllib.request.Request(url, headers=headers or {})
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.load(response)
+
+
+def _retry_network(label: str, operation, *, attempts: int = 4) -> Any:
+    """Retry bounded transient network failures without hiding final errors."""
+    if attempts < 1:
+        raise ValueError("network retry attempts must be positive")
+    for attempt in range(1, attempts + 1):
+        try:
+            return operation()
+        except urllib.error.HTTPError as exc:
+            if exc.code < 500 and exc.code != 429:
+                raise
+            error: BaseException = exc
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
+            error = exc
+        if attempt == attempts:
+            raise RuntimeError(
+                f"{label} failed after {attempts} attempts: {error}"
+            ) from error
+        time_module.sleep(min(2 ** (attempt - 1), 8))
+
+
+def require_free_space(path: Path, minimum_free_bytes: int) -> dict[str, int]:
+    """Fail before downloads/workers when the local safety reserve is absent."""
+    if minimum_free_bytes < 0:
+        raise ValueError("minimum free bytes cannot be negative")
+    usage = shutil.disk_usage(path)
+    if usage.free < minimum_free_bytes:
+        raise RuntimeError(
+            "insufficient local disk space: "
+            f"{usage.free} bytes free; {minimum_free_bytes} required"
+        )
+    return {
+        "free_bytes": usage.free,
+        "minimum_free_bytes": minimum_free_bytes,
+    }
 
 
 def _parse_calendar_time(day: str, value: str) -> datetime:
@@ -383,16 +423,19 @@ def _download(
     secret = values.get("SECRET_KEY") or values.get("APCA_API_SECRET_KEY")
     if not api_key or not secret:
         raise ValueError("Alpaca read-only credentials are missing")
-    result = download_alpaca_bars(
-        symbols=list(symbols),
-        start=start,
-        end=end,
-        feed="iex",
-        timeframe="1Day",
-        chunk_days=366,
-        api_key=api_key,
-        secret_key=secret,
-        output=output,
+    result = _retry_network(
+        "Alpaca adjusted daily download",
+        lambda: download_alpaca_bars(
+            symbols=list(symbols),
+            start=start,
+            end=end,
+            feed="iex",
+            timeframe="1Day",
+            chunk_days=366,
+            api_key=api_key,
+            secret_key=secret,
+            output=output,
+        ),
     )
     missing = [
         symbol for symbol in symbols
@@ -426,6 +469,7 @@ def _read_state_cursor(path: Path) -> str:
 
 
 def _run_worker_job(job: Path, data_root: Path, results_root: Path) -> Path:
+    require_free_space(results_root.parent, WORKER_MINIMUM_FREE_BYTES)
     environment = dict(os.environ)
     environment.update({
         "SERVICE_MODE": "historical_research",
@@ -460,11 +504,15 @@ def _run_worker_job(job: Path, data_root: Path, results_root: Path) -> Path:
 
 
 def _make_job(source: Path, destination: Path, *, job_id: str,
-              bars_csv: str, data_source: str) -> None:
+              bars_csv: str, data_source: str,
+              artifact_profile: str = "full") -> None:
     document = json.loads(source.read_text(encoding="utf-8"))
     document["job_id"] = job_id
     document["bars_csv"] = bars_csv
     document["data_source"] = data_source
+    document["artifact_profile"] = artifact_profile
+    if artifact_profile != "full":
+        document.setdefault("tier1_config", {})["diagnostic_profile"] = "baseline_core"
     destination.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
 
 
@@ -591,6 +639,7 @@ def _run_turning_point(
         job_id=job_id,
         bars_csv=merged.name,
         data_source="frozen historical source plus adjusted Alpaca IEX daily incremental",
+        artifact_profile="turning_point_forward",
     )
     archive = _run_worker_job(job, merged.parent, temporary / "turning-results")
     destination = ledger_root / f"long-term-turning-point-forward-validation-001-{plan.latest_completed}-results.zip"
@@ -668,6 +717,7 @@ def _run_weekly_tracks(
             job_id=job_id,
             bars_csv=merged.name,
             data_source="frozen Yahoo adjusted history plus adjusted Alpaca IEX daily incremental",
+            artifact_profile="forward_ledger",
         )
         archive = _run_worker_job(job, merged.parent, temporary / f"weekly-results-{cohort}")
         destination = weekly_root / f"{job_id}-results.zip"
@@ -702,17 +752,25 @@ def run(args: argparse.Namespace) -> dict:
     runtime_root.mkdir(parents=True, exist_ok=True)
     journal = Journal(runtime_root / "last-run.json")
     try:
+        disk = require_free_space(runtime_root, args.minimum_free_bytes)
+        journal.stage("disk_preflight", **disk)
         plan = fetch_calendar_plan(args.alpaca_env)
         if args.completed_session:
             if args.completed_session not in plan.sessions:
                 raise ValueError("completed-session override is not in the market calendar")
             plan = calendar_plan_for_latest(plan.sessions, args.completed_session)
-        health = _service_health(args.service_url)
+        health = _retry_network(
+            "research service health",
+            lambda: _service_health(args.service_url),
+        )
         deployed = str(health.get("git_commit") or "")
         _require_descendant(repo_root, args.minimum_revision, deployed)
         token = _research_token(args.token_env)
-        preflight = _guard_report(
-            repo_root, workspace_root, args.service_url, token, plan
+        preflight = _retry_network(
+            "forward maintenance preflight guard",
+            lambda: _guard_report(
+                repo_root, workspace_root, args.service_url, token, plan
+            ),
         )
         validate_preflight(preflight)
         journal.stage(
@@ -781,7 +839,12 @@ def run(args: argparse.Namespace) -> dict:
                 temporary=temporary,
             )
             journal.stage("weekly_tracks", result=weekly)
-        post = _guard_report(repo_root, workspace_root, args.service_url, token, plan)
+        post = _retry_network(
+            "forward maintenance post guard",
+            lambda: _guard_report(
+                repo_root, workspace_root, args.service_url, token, plan
+            ),
+        )
         if not post["ok"] or post.get("broker_orders_enabled") is not False:
             raise RuntimeError("post-maintenance guard did not pass: " + json.dumps(post))
         summary = {
@@ -814,6 +877,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--service-url", default=DEFAULT_SERVICE_URL)
     parser.add_argument("--minimum-revision", default=DEFAULT_MINIMUM_REVISION)
+    parser.add_argument(
+        "--minimum-free-bytes",
+        type=int,
+        default=int(os.getenv(
+            "FORWARD_MAINTENANCE_MINIMUM_FREE_BYTES",
+            str(DEFAULT_MINIMUM_FREE_BYTES),
+        )),
+    )
     parser.add_argument("--completed-session")
     parser.add_argument("--plan-only", action="store_true")
     args = parser.parse_args(argv)

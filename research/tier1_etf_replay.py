@@ -49,6 +49,23 @@ from research.turning_point_cycles import (
 )
 
 
+ARTIFACT_PROFILES = {
+    "full": None,
+    "forward_ledger": frozenset({
+        "tier1_daily.csv",
+        "tier1_manifest.json",
+        "tier1_summary.json",
+    }),
+    "turning_point_forward": frozenset({
+        "tier1_daily.csv",
+        "tier1_manifest.json",
+        "tier1_summary.json",
+        "tier1_market_state_labels.csv",
+        "tier1_turning_point_cycle_labels.csv",
+    }),
+}
+
+
 UTC = timezone.utc
 SECTOR_ETFS = ("XLC", "XLY", "XLP", "XLE", "XLF", "XLV", "XLI", "XLB", "XLRE", "XLK", "XLU")
 LEGACY_STRATEGIES = (
@@ -1479,6 +1496,9 @@ def _pairwise_summary(period_scorecards: list[dict], rolling_scorecards: list[di
 
 def _write_csv(bundle, name: str, rows):
     """Stream rows into ZIP so large diagnostics never exist twice in memory."""
+    allowlist = getattr(bundle, "_artifact_allowlist", None)
+    if allowlist is not None and name not in allowlist:
+        return
     import io
     iterator = iter(rows)
     try:
@@ -1490,6 +1510,12 @@ def _write_csv(bundle, name: str, rows):
         with io.TextIOWrapper(raw, encoding="utf-8", newline="") as stream:
             writer=csv.DictWriter(stream,fieldnames=list(first))
             writer.writeheader(); writer.writerow(first); writer.writerows(iterator)
+
+
+def _write_text_artifact(bundle, name: str, value: str) -> None:
+    allowlist = getattr(bundle, "_artifact_allowlist", None)
+    if allowlist is None or name in allowlist:
+        bundle.writestr(name, value)
 
 
 def _append_csv(path: Path, rows: list[dict]) -> None:
@@ -1564,6 +1590,9 @@ def _promotion_gate_rows(period_scorecards: list[dict], config: Tier1Config,
 
 
 def run_tier1_job(job: dict, bars_path: Path, archive_path: Path, source_sha256: str, progress_callback=None) -> Path:
+    artifact_profile = str(job.get("artifact_profile") or "full")
+    if artifact_profile not in ARTIFACT_PROFILES:
+        raise ValueError(f"unsupported Tier 1 artifact profile: {artifact_profile}")
     config=config_from_job(job); universe=resolve_universe(config.universe_name); symbols=set(universe)
     raw_dates,bars=load_daily_bars(bars_path,symbols)
     dates,coverage=_validated_calendar(raw_dates,bars,universe,config)
@@ -1785,11 +1814,13 @@ def run_tier1_job(job: dict, bars_path: Path, archive_path: Path, source_sha256:
         "canonical_market_state_effect": "none",
         "promotion_effect": "diagnostic only",
     }
+    manifest["artifact_profile"] = artifact_profile
     archive_path.parent.mkdir(parents=True,exist_ok=True)
     with zipfile.ZipFile(archive_path,"w",zipfile.ZIP_DEFLATED,compresslevel=1) as bundle:
+        bundle._artifact_allowlist = ARTIFACT_PROFILES[artifact_profile]
         bundle.write(all_daily_path,arcname="tier1_daily.csv"); _write_csv(bundle,"tier1_trades.csv",all_trades); _write_csv(bundle,"tier1_cost_ladder_scorecard.csv",scorecards); _write_csv(bundle,"tier1_cost_path_audit.csv",cost_path_audit); _write_csv(bundle,"tier1_period_scorecard.csv",period_scorecards); _write_csv(bundle,"tier1_promotion_gates.csv",promotions); _write_csv(bundle,"tier1_rolling_window_scorecard.csv",rolling_scorecards); _write_csv(bundle,"tier1_walk_forward_scorecard.csv",walk_forward_scorecards); _write_csv(bundle,"tier1_regime_scorecard.csv",regime_scorecards); _write_csv(bundle,"tier1_turning_point_cycle_labels.csv",turning_point_labels); _write_csv(bundle,"tier1_turning_point_cycle_episodes.csv",turning_point_episodes); _write_csv(bundle,"tier1_turning_point_cycle_attribution.csv",turning_point_attribution); _write_csv(bundle,"tier1_turning_point_cycle_episode_returns.csv",turning_point_episode_returns); _write_csv(bundle,"tier1_market_conditions.csv",list(market_conditions.values())); _write_csv(bundle,"tier1_condition_scorecard.csv",condition_rows); _write_csv(bundle,"tier1_condition_pair_scorecard.csv",condition_pair_rows); _write_csv(bundle,"tier1_market_state_labels.csv",state_labels); _write_csv(bundle,"tier1_market_state_episodes.csv",state_episodes); _write_csv(bundle,"tier1_market_state_attribution.csv",state_attribution); _write_csv(bundle,"tier1_market_state_episode_returns.csv",state_episode_returns); _write_csv(bundle,"tier1_market_state_period_scorecard.csv",state_periods); _write_csv(bundle,"tier1_market_state_inference.csv",state_inference); _write_csv(bundle,"tier1_market_state_cost_sensitivity.csv",state_costs); _write_csv(bundle,"tier1_market_state_transition_scorecard.csv",state_transitions); _write_csv(bundle,"tier1_market_state_chronological_folds.csv",state_folds); _write_csv(bundle,"tier1_market_state_fold_recurrence.csv",state_fold_recurrence); _write_csv(bundle,"tier1_market_state_transition_horizons.csv",state_transition_horizons); _write_csv(bundle,"tier1_hypothesis_survival.csv",state_survival); _write_csv(bundle,"tier1_market_state_hierarchy_period_scorecard.csv",hierarchy_periods); _write_csv(bundle,"tier1_market_state_hierarchy_inference.csv",hierarchy_inference); _write_csv(bundle,"tier1_market_state_hierarchy_cost_sensitivity.csv",hierarchy_costs); _write_csv(bundle,"tier1_market_state_hierarchy_chronological_folds.csv",hierarchy_folds); _write_csv(bundle,"tier1_market_state_hierarchy_fold_recurrence.csv",hierarchy_recurrence); _write_csv(bundle,"tier1_market_state_hierarchy_survival.csv",hierarchy_survival); _write_csv(bundle,"tier1_state_actionability_sessions.csv",state_actionability_sessions); _write_csv(bundle,"tier1_state_actionability_summary.csv",state_actionability_summary); _write_csv(bundle,"tier1_state_actionability_episode_segments.csv",state_actionability_segments); _write_csv(bundle,"tier1_downside_event_sessions.csv",downside_event_sessions); _write_csv(bundle,"tier1_downside_event_summary.csv",downside_event_summary); _write_csv(bundle,"tier1_downside_event_overlap.csv",downside_event_overlap); _write_csv(bundle,"tier1_pairwise_summary.csv",pairwise_summary); _write_csv(bundle,"tier1_event_diagnostics.csv",event_rows); _write_csv(bundle,"tier1_event_summary.csv",event_summary); _write_csv(bundle,"tier1_event_horizon_summary.csv",event_horizons); _write_csv(bundle,"tier1_event_condition_summary.csv",event_conditions); _write_csv(bundle,"tier1_breakout_opportunities.csv",breakout_opportunities); _write_csv(bundle,"tier1_breakout_opportunity_summary.csv",breakout_opportunity_summary); _write_csv(bundle,"tier1_role_aware_evidence.csv",evidence_matrix); _write_csv(bundle,"tier1_tactical_baseline_comparisons.csv",tactical_comparisons); _write_csv(bundle,"tier1_tactical_override_summary.csv",tactical_summary); _write_csv(bundle,"tier1_baseline_state_leaderboard.csv",baseline_leaderboard); _write_csv(bundle,"tier1_defensive_baseline_comparisons.csv",defensive_comparisons); _write_csv(bundle,"tier1_tactical_horizon_comparisons.csv",tactical_horizon_comparisons); _write_csv(bundle,"tier1_tactical_horizon_summary.csv",tactical_horizon_summary); _write_csv(bundle,"tier1_locked_tactical_validation.csv",locked_tactical_validation); _write_csv(bundle,"tier1_defensive_distinctness.csv",defensive_distinctness); _write_csv(bundle,"tier1_baseline_era_details.csv",baseline_era_details); _write_csv(bundle,"tier1_baseline_era_recurrence.csv",baseline_era_recurrence); _write_csv(bundle,"tier1_baseline_confirmation_sensitivity.csv",baseline_confirmation_sensitivity); _write_csv(bundle,"tier1_state_transition_timing.csv",transition_timing_rows); _write_csv(bundle,"tier1_generation_candidate_map.csv",generation_candidate_map)
-        bundle.writestr("tier1_turning_point_cycle_definition.json",json.dumps(TURNING_POINT_CYCLE_DEFINITION,indent=2))
-        bundle.writestr("tier1_market_state_definition.json",json.dumps(STATE_DEFINITION,indent=2))
-        bundle.writestr("tier1_manifest.json",json.dumps(manifest,indent=2,default=list)); bundle.writestr("tier1_summary.json",json.dumps({"primary_cost_bps":config.primary_cost_bps,"promotion_period":promotion_period,"scorecards":list(primary.values()),"promotion_gates":promotions},indent=2))
+        _write_text_artifact(bundle,"tier1_turning_point_cycle_definition.json",json.dumps(TURNING_POINT_CYCLE_DEFINITION,indent=2))
+        _write_text_artifact(bundle,"tier1_market_state_definition.json",json.dumps(STATE_DEFINITION,indent=2))
+        _write_text_artifact(bundle,"tier1_manifest.json",json.dumps(manifest,indent=2,default=list)); _write_text_artifact(bundle,"tier1_summary.json",json.dumps({"primary_cost_bps":config.primary_cost_bps,"promotion_period":promotion_period,"scorecards":list(primary.values()),"promotion_gates":promotions},indent=2))
     spool.cleanup()
     return archive_path
