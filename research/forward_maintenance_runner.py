@@ -40,7 +40,10 @@ UTC = timezone.utc
 EASTERN = ZoneInfo("America/New_York")
 DEFAULT_SERVICE_URL = "https://stock-trader-9du8.onrender.com"
 DEFAULT_MINIMUM_REVISION = "01c1105"
-DEFAULT_MINIMUM_FREE_BYTES = 3 * 1024**3
+# Compact forward artifacts keep the entire maintenance workload far below this
+# reserve.  Keep a second, independent 1 GiB check immediately before every
+# historical worker so unrelated disk growth cannot turn into a partial run.
+DEFAULT_MINIMUM_FREE_BYTES = 1536 * 1024**2
 WORKER_MINIMUM_FREE_BYTES = 1024**3
 FRESHNESS_PREFIXES = ("latest session is ", "remote shadow is at ")
 
