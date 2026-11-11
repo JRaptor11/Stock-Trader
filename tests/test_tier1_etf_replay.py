@@ -397,5 +397,11 @@ class Tier1ETFReplayTests(unittest.TestCase):
                     set(bundle.namelist()),
                 )
 
+    def test_turning_point_profile_preserves_ledger_definition(self):
+        self.assertIn(
+            "tier1_market_state_definition.json",
+            ARTIFACT_PROFILES["turning_point_forward"],
+        )
+
 
 if __name__ == "__main__": unittest.main()

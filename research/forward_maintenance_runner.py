@@ -514,8 +514,6 @@ def _make_job(source: Path, destination: Path, *, job_id: str,
     document["bars_csv"] = bars_csv
     document["data_source"] = data_source
     document["artifact_profile"] = artifact_profile
-    if artifact_profile != "full":
-        document.setdefault("tier1_config", {})["diagnostic_profile"] = "baseline_core"
     destination.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
 
 

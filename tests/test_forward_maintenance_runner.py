@@ -152,13 +152,16 @@ class ForwardMaintenanceRunnerTests(unittest.TestCase):
         self.assertEqual([1, 2, 3], attempts)
         self.assertEqual(2, sleep.call_count)
 
-    def test_compact_job_profile_is_explicit_and_uses_core_diagnostics(self):
+    def test_compact_job_profile_preserves_frozen_diagnostics(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             source = root / "source.json"
             destination = root / "job.json"
             source.write_text(
-                json.dumps({"tier1_config": {"primary_cost_bps": 10}}),
+                json.dumps({"tier1_config": {
+                    "primary_cost_bps": 10,
+                    "diagnostic_profile": "full",
+                }}),
                 encoding="utf-8",
             )
             _make_job(
@@ -171,9 +174,7 @@ class ForwardMaintenanceRunnerTests(unittest.TestCase):
             )
             document = json.loads(destination.read_text(encoding="utf-8"))
             self.assertEqual("forward_ledger", document["artifact_profile"])
-            self.assertEqual(
-                "baseline_core", document["tier1_config"]["diagnostic_profile"]
-            )
+            self.assertEqual("full", document["tier1_config"]["diagnostic_profile"])
 
 
 if __name__ == "__main__":

@@ -59,6 +59,7 @@ ARTIFACT_PROFILES = {
     "turning_point_forward": frozenset({
         "tier1_daily.csv",
         "tier1_manifest.json",
+        "tier1_market_state_definition.json",
         "tier1_summary.json",
         "tier1_market_state_labels.csv",
         "tier1_turning_point_cycle_labels.csv",
